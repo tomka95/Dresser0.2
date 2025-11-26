@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
+import httpx
+from PIL import Image
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -20,23 +22,23 @@ load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 CLOTHING_LIST_PROMPT = """
-You are a fashion vision parser.
+From the input image, you are a fashion vision assistant.
 
-You will be given a single photo of a person wearing clothes.
+Task:
+- Detect ALL visible clothing items and accessories worn by the person
+  in the photo.
 
-TASK:
-1. Identify ALL distinct visible clothing items and accessories worn by the person (outerwear, tops, bottoms, dresses, shoes, hats, bags, jewelry, belts, etc.).
-2. Return them as a SINGLE LINE, comma-separated list, from outermost layer to innermost, left to right where reasonable.
-3. Use short, concrete descriptions (e.g. "green plaid overshirt", "cream hoodie", "beige chinos", "white sneakers").
-4. DO NOT include the person, body parts, background, or duplicate synonyms.
+Output format:
+- Return a SINGLE LINE containing a comma-separated list of short,
+  human-readable item names, in order from top to bottom.
+- Example: "dark navy NY Yankees cap, striped button-up shirt,
+  camel wool coat, medium-wash straight-leg jeans, black flats with bow"
 
-OUTPUT FORMAT:
-- EXACTLY one line of plain text
-- Items separated by commas
-- No numbering, no bullets, no extra commentary.
-
-Example of correct style:
-"burgundy bomber jacket, striped knit sweater, light wash straight jeans, white sneakers"
+Constraints:
+- Include accessories like hats, belts, bags, scarves, jewelry, shoes.
+- Do not include hair, skin, body parts, or background objects.
+- Do not include sizes or brands here.
+- Do NOT add any extra text before or after the list.
 """
 
 BRAND_JSON_PROMPT = """
@@ -100,10 +102,9 @@ def sanitize_filename(item_name: str) -> str:
 
 
 async def detect_clothing_items(image_path: str) -> List[str]:
-    """Given a local image path, call OpenAI Vision and return a list of item names."""
+    """Call Vision to detect clothing items and return a list of item names."""
     image_data = await ImageLoader.load(image_path)
 
-    # Encode raw bytes to base64 STRING and build a data URL
     b64_str = base64.b64encode(image_data.data).decode("utf-8")
     data_url = f"data:image/{image_data.format};base64,{b64_str}"
 
@@ -124,71 +125,107 @@ async def detect_clothing_items(image_path: str) -> List[str]:
     )
 
     text = resp.choices[0].message.content.strip()
+    # Split by comma and normalize
     items = [part.strip() for part in text.split(",") if part.strip()]
     # Clean item names: strip quotes and whitespace
     items = [item.strip(' "\'') for item in items]
     return items
 
 
-def build_item_image_prompt(item_name: str) -> str:
-    return f"""
-You are a product photographer for an online clothing store.
+async def generate_item_image_with_responses(
+    item_name: str,
+    outfit_image_path: str,
+    output_dir: str,
+) -> str:
+    """
+    Using the Responses API, generate a new product-style image of ONLY
+    the given item from the original outfit photo.
 
-Your job is to create a photo that looks like a REAL, existing garment,
-not a 3D render or illustration.
+    - Sends the full outfit photo as an input_image.
+    - Sends an input_text instruction referencing `item_name`.
+    - Uses the built-in image_generation tool to produce a new image.
+    - Saves the result as PNG in output_dir and returns the file path.
+    """
+    os.makedirs(output_dir, exist_ok=True)
 
-ITEM TO SHOW:
-- A {item_name} taken from the outfit in the original photo.
+    # Load the original outfit image as bytes + format
+    image_data = await ImageLoader.load(outfit_image_path)
 
-STYLE & REALISM:
-- It must look like a natural studio photograph of a physical garment.
-- Avoid any "AI art" look, surreal lighting, neon glows, or exaggerated sharpness.
-- Show subtle, realistic fabric texture and small, natural wrinkles.
-- Preserve realistic stitching, seams, hems, pockets, buttons, zippers, and tags.
-- If there is visible printed text or a logo on the original item, copy the visible
-  text exactly and DO NOT invent new words or brands.
+    # Convert raw bytes to a base64 data URL string for JSON transport
+    b64_str = base64.b64encode(image_data.data).decode("utf-8")
 
-FRAMING & BACKGROUND:
-- Show the entire garment clearly inside the frame (no cropping off edges).
-- Use a clean, plain white or very light neutral background.
-- Use simple, even studio lighting with soft shadows.
-- No models, no body parts, no props, no environment.
+    # Derive a MIME type from the image format
+    fmt = (image_data.format or "jpeg").lower()
+    if fmt in ("jpg", "jpeg"):
+        mime_type = "image/jpeg"
+    else:
+        mime_type = f"image/{fmt}"
 
-FAITHFULNESS TO ORIGINAL:
-- Match the true colors, pattern layout, and proportions of the original item
-  as closely as possible.
-- Do NOT idealize, stylize, or redesign the garment.
-- Do NOT change fit, silhouette, or key details.
+    data_url = f"data:{mime_type};base64,{b64_str}"
 
-OUTPUT:
-- A single front-facing, product-style photo of ONLY this {item_name},
-  suitable for an e-commerce product listing and for visual search to
-  find similar real-world products.
+    # Text instruction for this specific item
+    instruction = f"""
+You are an image editing assistant for a fashion e-commerce site.
+
+You are given a full-body outfit photo of a person. Your task is to use
+the built-in image_generation tool to generate a NEW studio-style product
+image of ONLY this item from the photo:
+
+Item: {item_name}
+
+Requirements:
+- Base the generated image on how this item actually appears in the photo:
+  color, shade, pattern, material, logos, bows, seams, and other visible
+  design details.
+- Do NOT change or idealize the design. Preserve the real-world look as
+  closely as possible.
+- Remove the person and all other clothing items.
+- Place the item on a clean white or very light neutral background.
+- Use realistic studio lighting with soft, natural shadows.
+- The item must be fully visible in frame (no edges cut off).
+- Output a single, front-facing product-style image suitable for an
+  online clothing catalog.
 """
 
-
-async def generate_item_image(item_name: str, output_dir: str) -> str:
-    """Generate a product-style image for a single item and save it to output_dir."""
-    os.makedirs(output_dir, exist_ok=True)
-    prompt = build_item_image_prompt(item_name)
-
-    img_resp = await client.images.generate(
-        model="dall-e-3",  # Note: Using dall-e-3 (user specified gpt-image-1)
-        prompt=prompt,
-        size="1024x1024",
-        n=1,
-        response_format="b64_json",
+    # Build Responses API input with both text and image
+    response = await client.responses.create(
+        model="gpt-4o",  # or "gpt-4.1" depending on what is configured
+        tools=[{"type": "image_generation"}],
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": instruction},
+                    {
+                        "type": "input_image",
+                        "image_url": data_url,
+                    },
+                ],
+            }
+        ],
     )
 
-    b64_data = img_resp.data[0].b64_json
+    # Extract the image_generation_call result (base64 image)
+    image_base64 = None
+    for output in response.output:
+        if output.type == "image_generation_call":
+            # In the Responses API, the generated image data is in .result
+            image_base64 = output.result
+            break
 
+    if not image_base64:
+        raise RuntimeError(
+            f"No image_generation_call result returned for item: {item_name}"
+        )
+
+    # Save image to disk
     safe_name = sanitize_filename(item_name)
-    file_path = Path(output_dir) / f"{safe_name}.png"
+    final_path = Path(output_dir) / f"{safe_name}.png"
 
-    with open(file_path, "wb") as f:
-        f.write(base64.b64decode(b64_data))
+    with open(final_path, "wb") as f:
+        f.write(base64.b64decode(image_base64))
 
-    return str(file_path)
+    return str(final_path)
 
 
 async def get_brand_metadata_for_image(image_path: str) -> Dict[str, Any]:
@@ -256,12 +293,18 @@ async def process_outfit_image(
     - Save JSON summary to `json_summary_path`.
     - Return list of ItemResult.
     """
-    items = await detect_clothing_items(outfit_image_path)
+    os.makedirs(images_output_dir, exist_ok=True)
 
-    # Generate all product images in parallel
+    detected_items = await detect_clothing_items(outfit_image_path)
+
+    # Generate item images using Responses API, with the original photo as input
     image_tasks = [
-        generate_item_image(item_name=item, output_dir=images_output_dir)
-        for item in items
+        generate_item_image_with_responses(
+            item_name=item,
+            outfit_image_path=outfit_image_path,
+            output_dir=images_output_dir,
+        )
+        for item in detected_items
     ]
     image_paths = await asyncio.gather(*image_tasks)
 
@@ -272,8 +315,14 @@ async def process_outfit_image(
     metadatas = await asyncio.gather(*metadata_tasks)
 
     results: List[ItemResult] = []
-    for item_name, img_path, meta in zip(items, image_paths, metadatas):
-        results.append(ItemResult(name=item_name, image_path=img_path, metadata=meta))
+    for item, img_path, meta in zip(detected_items, image_paths, metadatas):
+        results.append(
+            ItemResult(
+                name=item,
+                image_path=img_path,
+                metadata=meta,
+            )
+        )
 
     # Save JSON summary: a list of objects with image name + metadata
     summary_payload = [

@@ -45,9 +45,11 @@ async def test_full_outfit_pipeline_integration(tmp_path: Path):
     )
 
     # Basic sanity checks
-    assert len(results) > 0
+    assert len(results) > 0, "At least one item should be detected"
     for r in results:
-        assert os.path.exists(r.image_path)
+        assert os.path.exists(r.image_path), f"Generated image should exist: {r.image_path}"
+        assert r.name, "Item name should not be empty"
+        assert r.metadata, "Item metadata should not be empty"
 
     assert json_summary_path.exists()
 
