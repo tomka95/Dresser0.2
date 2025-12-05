@@ -1,0 +1,20 @@
+{
+  "name": "dresser",
+  "version": "0.2.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=apps/web",
+    "type-check": "npm run type-check --workspace=apps/web"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}
+
+
+
