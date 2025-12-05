@@ -1,7 +1,7 @@
 """Configuration constants for the Gmail clothing extraction pipeline."""
 
 # Maximum number of years to look back when scanning emails
-MAX_YEARS_TO_SCAN = 0.1
+MAX_YEARS_TO_SCAN = .2
 
 # Maximum concurrent LLM extraction requests
 MAX_CONCURRENT_EXTRACTIONS = 5

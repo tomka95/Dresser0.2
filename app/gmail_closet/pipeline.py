@@ -1,86 +1,96 @@
-"""Main pipeline that ties together Gmail scanning and clothing extraction."""
+"""Main pipeline that ties together Gmail scanning and clothing extraction.
 
-import asyncio
+This version keeps the external behavior the same (Gmail email + app password in,
+List[Item] out) but replaces the old LLM-based extraction with our internal
+heuristic parser.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime, timedelta
-from typing import List
+from typing import Iterable, List, Tuple
 
-from .config import MAX_CONCURRENT_EXTRACTIONS, MAX_YEARS_TO_SCAN
+from .config import MAX_YEARS_TO_SCAN
 from .filters import is_potential_clothing_email
 from .gmail_client import GmailClient
-from .llm_extractor import extract_clothing_purchase_from_email
-from .models import GmailCredentials, Item
+from .models import EmailMetadata, GmailCredentials, Item
+from app.services.email_smart_search import Email
+from app.services.clothing_receipt_parser import parse_clothing_items_from_email
+
+
+def _calculate_since(max_years: int | None) -> datetime:
+    """Return the datetime to use as the lower bound when scanning emails."""
+    years = max_years if max_years is not None else MAX_YEARS_TO_SCAN
+    if years <= 0:
+        years = 1
+    # Rough conversion from years to days is enough for this use case.
+    return datetime.utcnow() - timedelta(days=365 * years)
+
+
+def _iter_candidate_emails(
+    creds: GmailCredentials,
+    since: datetime,
+) -> Iterable[Tuple[EmailMetadata, str]]:
+    """Yield (metadata, plain_text_body) for Gmail messages worth considering.
+
+    Uses GmailClient to fetch messages since ``since`` and then applies
+    is_potential_clothing_email to discard obviously irrelevant receipts.
+    """
+    with GmailClient(email=creds.email, app_password=creds.app_password) as client:
+        for metadata, body_text in client.iter_purchase_like_messages(since=since):
+            if not is_potential_clothing_email(metadata, body_text):
+                continue
+            yield metadata, body_text
 
 
 async def extract_items_from_gmail(
     creds: GmailCredentials,
-    max_years: int = MAX_YEARS_TO_SCAN,
+    max_years: int | None = None,
 ) -> List[Item]:
-    """Connect to Gmail, scan purchase-like emails, and return clothing items.
+    """Connect to Gmail, scan purchase-like clothing emails, and return items.
 
-    This function:
-    1. Connects to Gmail using the provided credentials
-    2. Searches for purchase/receipt emails
-    3. Filters emails that might contain clothing purchases
-    4. Uses LLM to extract clothing items from filtered emails
-    5. Returns a deduplicated list of Item objects
+    Flow:
+        1. Compute ``since`` based on max_years (or MAX_YEARS_TO_SCAN).
+        2. Use GmailClient to iterate purchase-like emails since that date.
+        3. Filter further with is_potential_clothing_email.
+        4. Wrap each email as Email (our internal dataclass).
+        5. Parse clothing items with parse_clothing_items_from_email.
+        6. Map ParsedClothingItem → Item and deduplicate.
 
     Args:
-        creds: Gmail credentials (email + app_password).
-        max_years: Maximum number of years to look back (default from config).
+        creds: Gmail email + app password for IMAP access.
+        max_years: Optional override for how far back to scan.
 
     Returns:
-        List of Item objects representing clothing/accessory purchases.
+        A list of deduplicated Item objects representing clothing purchases.
     """
-    since = datetime.utcnow() - timedelta(days=365 * max_years)
-    items: List[Item] = []
+    since = _calculate_since(max_years)
+    raw_items: List[Item] = []
 
-    # Semaphore to limit concurrent LLM calls
-    sem = asyncio.Semaphore(MAX_CONCURRENT_EXTRACTIONS)
+    for metadata, body_text in _iter_candidate_emails(creds, since):
+        email_obj = Email(
+            id=metadata.message_id,
+            subject=metadata.subject or "",
+            body=body_text or "",
+            sender=metadata.sender,
+            date=metadata.sent_at.isoformat() if metadata.sent_at else None,
+        )
 
-    async def process_email(metadata, body_text):
-        """Process a single email: filter and extract if applicable."""
-        # First, apply cheap deterministic filter
-        if not is_potential_clothing_email(metadata, body_text):
-            return
-
-        # Then, use LLM to extract (with concurrency limit)
-        async with sem:
-            purchase = await extract_clothing_purchase_from_email(metadata, body_text)
-
-        if purchase:
-            items.extend(purchase.items)
-
-    tasks = []
-
-    # Connect to Gmail and process emails
-    with GmailClient(creds.email, creds.app_password) as client:
-        import logging
-
-        logger = logging.getLogger("dresser.gmail")
-
-        # Count how many total purchase-like emails Gmail returned
-        all_messages = list(client.iter_purchase_like_messages(since=since))
-        logger.info(f"Fetched {len(all_messages)} emails from Gmail matching date criteria.")
-
-        # Now apply the subject-based filter and log how many remain
-        filtered_messages = []
-        for metadata, body_text in all_messages:
-            if is_potential_clothing_email(metadata, body_text):
-                filtered_messages.append((metadata, body_text))
-
-        logger.info(f"{len(filtered_messages)} emails passed subject-based purchase filter.")
-
-        # Create tasks
-        for metadata, body_text in filtered_messages:
-            tasks.append(asyncio.create_task(process_email(metadata, body_text)))
-
-    # Wait for all tasks to complete
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        parsed_clothing_items = parse_clothing_items_from_email(email_obj)
+        for parsed in parsed_clothing_items:
+            name = parsed.product_name or parsed.category or "Clothing item"
+            raw_items.append(
+                Item(
+                    name=name,
+                    store=parsed.store,
+                    price=parsed.price,
+                    image=parsed.image_alt,
+                )
+            )
 
     # Deduplicate items by (name, store, price)
-    unique = {}
-    for item in items:
+    unique: dict[tuple[str, str, float | None], Item] = {}
+    for item in raw_items:
         key = (
             item.name.lower().strip(),
             (item.store or "").lower().strip(),
@@ -90,4 +100,3 @@ async def extract_items_from_gmail(
             unique[key] = item
 
     return list(unique.values())
-
