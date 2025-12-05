@@ -39,6 +39,7 @@ class Item(BaseModel):
     name: str  # e.g. "Black skinny jeans"
     store: Optional[str] = None  # e.g. "Zara"
     price: Optional[float] = None  # total price for this line item
+    image: Optional[str] = None  # e.g. alt text or image identifier
 
 
 class ClothingPurchase(BaseModel):
