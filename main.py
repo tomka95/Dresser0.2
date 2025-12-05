@@ -4,14 +4,21 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine
-from app.models import User, ClothingItem
-from app.dependencies import get_db
 from app.security import hash_password, verify_password
 from app.gmail_closet import router as gmail_router
+
+import os
+import tempfile
+
+from app.models import User, ClothingItem
+from app.dependencies import get_db
+from app.services.outfit_db_service import save_outfit_results_to_db
+from app.utils.supabase_storage import SupabaseStorageClient
+from app.services.clothing_pipeline import process_outfit_image
 
 Base.metadata.create_all(bind=engine)
 
@@ -108,20 +115,53 @@ def login(email: str, password: str, db: Session = Depends(get_db)):
     return {"id": str(user.id), "email": user.email}
 
 
+@app.post("/users/{user_id}/outfit-image")
+async def upload_outfit_image(
+    user_id: UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    # 1) Validate user
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-########################
-from app.db import SessionLocal
-from app.models import User
+    # 2) Save uploaded file to a temporary path
+    suffix = os.path.splitext(file.filename)[1] or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        temp_path = tmp.name
 
-def db_check():
-    db = SessionLocal()
-    try:
-        # try a simple query
-        users = db.query(User).limit(5).all()
-        print("Connected to Supabase! Found", len(users), "users")
-    finally:
-        db.close()
-###########################################
+    # 3) Define output directory & JSON summary path for pipeline
+    base_output_dir = os.path.join("outfit_outputs", str(user_id))
+    images_output_dir = os.path.join(base_output_dir, "items")
+    json_summary_path = os.path.join(base_output_dir, "summary.json")
+
+    # 4) Run the clothing pipeline on the outfit image
+    # We assume process_outfit_image is async and returns List[ItemResult]
+    results = await process_outfit_image(
+        outfit_image_path=temp_path,
+        images_output_dir=images_output_dir,
+        json_summary_path=json_summary_path,
+    )
+
+    # 5) Initialize Supabase storage client
+    storage_client = SupabaseStorageClient.from_env()
+
+    # 6) Save items + images + tags into DB
+    created_items = save_outfit_results_to_db(
+        db=db,
+        user_id=user_id,
+        results=results,
+        storage_client=storage_client,
+    )
+
+    return {
+        "user_id": str(user_id),
+        "items_created": created_items,
+    }
+
 
 if __name__ == "__main__":
     import threading
@@ -129,8 +169,6 @@ if __name__ == "__main__":
     import webbrowser
 
     import uvicorn
-
-    db_check()
 
     # TODO: Remove this auto-open behavior before production.
     def open_swagger():
