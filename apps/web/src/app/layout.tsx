@@ -14,31 +14,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        <nav className="border-b">
-          <div className="container mx-auto px-4 py-4">
-            <div className="flex items-center justify-between">
-              <Link href="/" className="text-xl font-bold">
-                Dresser
-              </Link>
-              <div className="flex gap-6">
-                <Link
-                  href="/closet"
-                  className="text-sm font-medium hover:text-gray-600"
-                >
-                  Closet
-                </Link>
-                <Link
-                  href="/outfits"
-                  className="text-sm font-medium hover:text-gray-600"
-                >
-                  Outfits
-                </Link>
-              </div>
-            </div>
-          </div>
-        </nav>
-        <main>{children}</main>
+      <body className="bg-neutral-900 flex justify-center min-h-screen">
+        <div className="w-full max-w-[430px] min-h-screen bg-background relative shadow-2xl overflow-hidden">
+          <main className="h-full overflow-y-auto scrollbar-hide">
+            {children}
+          </main>
+        </div>
       </body>
     </html>
   );

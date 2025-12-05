@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
 
-    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint
+    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint, Table
 
 )
 
@@ -13,6 +13,15 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from .db import Base
+
+
+# Association table for many-to-many relationship between ClothingItem and Tag
+clothing_item_tags = Table(
+    'clothing_item_tags',
+    Base.metadata,
+    Column('clothing_item_id', UUID(as_uuid=True), ForeignKey('clothing_items.id', ondelete='CASCADE'), primary_key=True),
+    Column('tag_id', UUID(as_uuid=True), ForeignKey('tags.id', ondelete='CASCADE'), primary_key=True)
+)
 
 
 class User(Base):

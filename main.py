@@ -4,7 +4,8 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine
@@ -26,6 +27,18 @@ app = FastAPI(
     title="Dresser AI MVP",
     description="AI Closet / Stylist App",
     version="0.2.0",
+)
+
+# Configure CORS to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",  # Next.js dev server
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Enable INFO-level logging globally
@@ -86,7 +99,7 @@ def create_clothing_item(
 
 
 @app.post("/signup")
-def signup(email: str, password: str, db: Session = Depends(get_db)):
+def signup(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
@@ -103,7 +116,7 @@ def signup(email: str, password: str, db: Session = Depends(get_db)):
 
 
 @app.post("/login")
-def login(email: str, password: str, db: Session = Depends(get_db)):
+def login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
