@@ -12,8 +12,22 @@ from .models import ClothingPurchase, EmailMetadata, Item
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client
-client = AsyncOpenAI()
+# Initialize OpenAI client lazily
+_client: Optional[AsyncOpenAI] = None
+
+
+def get_openai_client() -> AsyncOpenAI:
+    """Get or create the OpenAI client instance."""
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY environment variable is not set. "
+                "Please set it in your .env file or environment."
+            )
+        _client = AsyncOpenAI(api_key=api_key)
+    return _client
 
 SYSTEM_PROMPT = """
 You are an assistant that reads online shopping emails and extracts ONLY clothing and fashion accessory purchases.
@@ -79,6 +93,7 @@ Email body:
 """
 
     try:
+        client = get_openai_client()
         response = await client.chat.completions.create(
             model="gpt-4o-mini",  # OpenAI model for JSON extraction
             response_format={"type": "json_object"},
