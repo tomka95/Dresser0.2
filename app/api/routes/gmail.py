@@ -167,6 +167,7 @@ async def extract_clothing_from_gmail(
     Raises:
         HTTPException: If Gmail not connected or extraction fails
     """
+   
     # Validate user has Google account with Gmail access
     if not current_user.google_account:
         raise HTTPException(
@@ -180,13 +181,19 @@ async def extract_clothing_from_gmail(
             detail="Gmail access not granted. Please reconnect with Gmail permissions.",
         )
     
+    # TODO: Remove this debug logging
+    
     try:
         # Run the OAuth-based pipeline
+        # TODO: Remove this debug logging
         items = await extract_items_from_gmail_oauth(
             user=current_user,
             db=db,
             max_years=max_years,
         )
+        
+        # TODO: Remove this debug logging
+        logger.info(f"[TODO DEBUG] extract_clothing_from_gmail returning {len(items)} items: {[item.dict() for item in items]}")
         
         return {
             "connected": True,
@@ -194,6 +201,7 @@ async def extract_clothing_from_gmail(
         }
         
     except Exception as e:
+        # TODO: Remove this debug logging
         logger.error(f"Failed to extract clothing items for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=500,

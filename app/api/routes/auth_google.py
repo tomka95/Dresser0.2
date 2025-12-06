@@ -1,7 +1,7 @@
 """FastAPI router for Google OAuth authentication."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -278,7 +278,7 @@ def _upsert_google_account(
     """
     google_account = db.query(GoogleAccount).filter(GoogleAccount.user_id == user_id).first()
 
-    token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+    token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
     if not google_account:
         # Create new GoogleAccount

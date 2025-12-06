@@ -7,6 +7,7 @@ heuristic parser.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Iterable, List, Tuple
 
@@ -19,6 +20,8 @@ from app.services.email_smart_search import Email
 from app.services.clothing_receipt_parser import parse_clothing_items_from_email
 from app.models import GoogleAccount, User
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 
 def _calculate_since(max_years: int | None) -> datetime:
@@ -66,11 +69,27 @@ def _iter_candidate_emails_oauth(
     Yields:
         Tuples of (EmailMetadata, plain_text_body) for candidate emails
     """
+    # TODO: Remove this debug logging
+    
     with GmailOAuthClient(google_account=google_account, db=db) as client:
+        total_emails = 0
+        filtered_out = 0
+        passed_filter = 0
+        
         for metadata, body_text in client.iter_purchase_like_messages(since=since):
+            total_emails += 1
+
+            
             if not is_potential_clothing_email(metadata, body_text):
+                filtered_out += 1
+
                 continue
+            
+            passed_filter += 1
+
             yield metadata, body_text
+        
+
 
 
 async def extract_items_from_gmail(
@@ -176,8 +195,12 @@ async def extract_items_from_gmail_oauth(
     since = _calculate_since(max_years)
     raw_items: List[Item] = []
 
+   
     # Use OAuth-based iteration (same logic as IMAP version, just different client)
+    emails_processed = 0
     for metadata, body_text in _iter_candidate_emails_oauth(google_account, db, since):
+        emails_processed += 1
+      
         email_obj = Email(
             id=metadata.message_id,
             subject=metadata.subject or "",
@@ -187,6 +210,7 @@ async def extract_items_from_gmail_oauth(
         )
 
         parsed_clothing_items = parse_clothing_items_from_email(email_obj)
+      
         for parsed in parsed_clothing_items:
             name = parsed.product_name or parsed.category or "Clothing item"
             raw_items.append(
@@ -198,6 +222,7 @@ async def extract_items_from_gmail_oauth(
                 )
             )
 
+
     # Deduplicate items by (name, store, price) - same logic as IMAP version
     unique: dict[tuple[str, str, float | None], Item] = {}
     for item in raw_items:
@@ -208,6 +233,7 @@ async def extract_items_from_gmail_oauth(
         )
         if key not in unique:
             unique[key] = item
+
 
     return list(unique.values())
 

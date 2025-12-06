@@ -27,8 +27,8 @@ export default function GoogleCallbackPage() {
         // Store authentication data
         setAuth(data);
 
-        // Redirect to closet page
-        router.push("/closet");
+        // Redirect to Gmail sync page to extract clothing items
+        router.push("/gmail-sync");
       } catch (e: any) {
         console.error("Google authentication error:", e);
         setError(e.message || "Failed to authenticate with Google");

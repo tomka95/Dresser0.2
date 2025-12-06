@@ -4,7 +4,7 @@ Handles token refresh and provides authenticated Gmail API clients.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -33,9 +33,24 @@ def ensure_fresh_token(google_account: GoogleAccount, db: Session) -> str:
     """
     # Check if token is still valid (with 5 minute buffer)
     if google_account.token_expiry:
-        now = datetime.utcnow()
+        # Ensure both datetimes are timezone-aware (UTC)
+        now = datetime.now(timezone.utc)
+        
+        # Get token_expiry and ensure it's timezone-aware
+        token_expiry = google_account.token_expiry
+        # Convert naive datetime to UTC-aware if needed
+        if token_expiry.tzinfo is None:
+            # If naive, assume it's UTC and make it timezone-aware
+            token_expiry = token_expiry.replace(tzinfo=timezone.utc)
+        else:
+            # If already timezone-aware, convert to UTC for comparison
+            token_expiry = token_expiry.astimezone(timezone.utc)
+        
         buffer = timedelta(minutes=5)
-        if google_account.token_expiry > now + buffer:
+        expiry_with_buffer = now + buffer
+        
+        # Both should now be timezone-aware UTC, safe to compare
+        if token_expiry > expiry_with_buffer:
             # Token is still valid
             return google_account.access_token
     
@@ -64,7 +79,7 @@ def ensure_fresh_token(google_account: GoogleAccount, db: Session) -> str:
         
         # Update the GoogleAccount with new tokens
         google_account.access_token = token_data["access_token"]
-        google_account.token_expiry = datetime.utcnow() + timedelta(
+        google_account.token_expiry = datetime.now(timezone.utc) + timedelta(
             seconds=token_data.get("expires_in", 3600)
         )
         
