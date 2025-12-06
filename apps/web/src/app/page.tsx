@@ -1,9 +1,17 @@
+"use client";
+
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { FloatingClothes } from '@/components/landing/FloatingClothes';
 import { GoogleIcon } from '@/components/icons/GoogleIcon';
+import { getGoogleOAuthUrl } from '@/config/authConfig';
 
 export default function HomePage() {
+  const handleGoogleLogin = () => {
+    const url = getGoogleOAuthUrl();
+    window.location.href = url;
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-black text-white relative overflow-hidden">
       {/* Header */}
@@ -48,6 +56,7 @@ export default function HomePage() {
         
         <Button 
           variant="outline" 
+          onClick={handleGoogleLogin}
           className="w-full text-lg font-medium h-12 rounded-xl border-gray-700 bg-gray-900/50 text-white hover:bg-gray-800 flex items-center justify-center gap-2"
         >
           <GoogleIcon className="w-5 h-5" />

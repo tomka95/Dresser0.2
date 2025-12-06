@@ -19,7 +19,7 @@ export default function RootLayout({
           <main className="h-full overflow-y-auto scrollbar-hide">
             {children}
           </main>
-        </div>
+          </div>
       </body>
     </html>
   );
