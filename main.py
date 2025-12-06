@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db import Base, engine
 from app.security import hash_password, verify_password
 from app.gmail_closet import router as gmail_router
+from app.api.routes import auth_google, gmail
 
 import os
 import tempfile
@@ -19,6 +20,9 @@ from app.dependencies import get_db
 from app.services.outfit_db_service import save_outfit_results_to_db
 from app.utils.supabase_storage import SupabaseStorageClient
 from app.services.clothing_pipeline import process_outfit_image
+
+# TODO: Database migrations
+# This project does not currently use Alembic for migrations.
 
 Base.metadata.create_all(bind=engine)
 
@@ -36,6 +40,12 @@ logging.basicConfig(
 
 # Gmail clothing extraction endpoints (for Dresser MVP)
 app.include_router(gmail_router)
+
+# Authentication endpoints
+app.include_router(auth_google.router)
+
+# Gmail API endpoints (requires authentication)
+app.include_router(gmail.router)
 
 
 @app.get("/health")

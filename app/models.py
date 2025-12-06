@@ -28,10 +28,18 @@ class User(Base):
 
     display_name = Column(String, nullable=True)
 
+    google_sub = Column(String, unique=True, index=True, nullable=True)
+
+    full_name = Column(String, nullable=True)
+
+    avatar_url = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
     clothing_items = relationship("ClothingItem", back_populates="user", cascade="all, delete-orphan")
+
+    google_account = relationship("GoogleAccount", back_populates="user", uselist=False)
 
 
 
@@ -115,4 +123,31 @@ class Tag(Base):
 
 
     clothing_items = relationship("ClothingItem", secondary="clothing_item_tags", back_populates="tags")
+
+
+class GoogleAccount(Base):
+
+    __tablename__ = "google_accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+
+    google_sub = Column(String, index=True, nullable=False)
+
+    email = Column(String, index=True, nullable=False)
+
+    access_token = Column(String, nullable=False)
+
+    refresh_token = Column(String, nullable=True)
+
+    scope = Column(String, nullable=True)
+
+    token_expiry = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="google_account")
 
