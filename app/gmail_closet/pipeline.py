@@ -43,60 +43,6 @@ def _iter_candidate_emails(
             yield metadata, body_text
 
 
-def _process_emails(email_data: List[Tuple[EmailMetadata, str]]) -> List[Item]:
-    """Process a list of emails and extract clothing items.
-    
-    This is the shared core logic used by both IMAP and OAuth extraction paths.
-    
-    Args:
-        email_data: List of (EmailMetadata, body_text) tuples
-        
-    Returns:
-        Deduplicated list of Item objects
-    """
-    raw_items: List[Item] = []
-    
-    for metadata, body_text in email_data:
-        # Apply filtering
-        if not is_potential_clothing_email(metadata, body_text):
-            continue
-        
-        # Convert to Email object for parser
-        email_obj = Email(
-            id=metadata.message_id,
-            subject=metadata.subject or "",
-            body=body_text or "",
-            sender=metadata.sender,
-            date=metadata.sent_at.isoformat() if metadata.sent_at else None,
-        )
-        
-        # Parse clothing items from email
-        parsed_clothing_items = parse_clothing_items_from_email(email_obj)
-        for parsed in parsed_clothing_items:
-            name = parsed.product_name or parsed.category or "Clothing item"
-            raw_items.append(
-                Item(
-                    name=name,
-                    store=parsed.store,
-                    price=parsed.price,
-                    image=parsed.image_alt,
-                )
-            )
-    
-    # Deduplicate items by (name, store, price)
-    unique: dict[tuple[str, str, float | None], Item] = {}
-    for item in raw_items:
-        key = (
-            item.name.lower().strip(),
-            (item.store or "").lower().strip(),
-            item.price,
-        )
-        if key not in unique:
-            unique[key] = item
-    
-    return list(unique.values())
-
-
 async def extract_items_from_gmail(
     creds: GmailCredentials,
     max_years: int | None = None,
@@ -119,9 +65,38 @@ async def extract_items_from_gmail(
         A list of deduplicated Item objects representing clothing purchases.
     """
     since = _calculate_since(max_years)
-    
-    # Collect emails from IMAP
-    email_data = list(_iter_candidate_emails(creds, since))
-    
-    # Process through shared pipeline
-    return _process_emails(email_data)
+    raw_items: List[Item] = []
+
+    for metadata, body_text in _iter_candidate_emails(creds, since):
+        email_obj = Email(
+            id=metadata.message_id,
+            subject=metadata.subject or "",
+            body=body_text or "",
+            sender=metadata.sender,
+            date=metadata.sent_at.isoformat() if metadata.sent_at else None,
+        )
+
+        parsed_clothing_items = parse_clothing_items_from_email(email_obj)
+        for parsed in parsed_clothing_items:
+            name = parsed.product_name or parsed.category or "Clothing item"
+            raw_items.append(
+                Item(
+                    name=name,
+                    store=parsed.store,
+                    price=parsed.price,
+                    image=parsed.image_alt,
+                )
+            )
+
+    # Deduplicate items by (name, store, price)
+    unique: dict[tuple[str, str, float | None], Item] = {}
+    for item in raw_items:
+        key = (
+            item.name.lower().strip(),
+            (item.store or "").lower().strip(),
+            item.price,
+        )
+        if key not in unique:
+            unique[key] = item
+
+    return list(unique.values())

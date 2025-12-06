@@ -1,23 +1,9 @@
-"use client";
-
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { FloatingClothes } from '@/components/landing/FloatingClothes';
 import { GoogleIcon } from '@/components/icons/GoogleIcon';
-import { startGmailOAuth } from '@/lib/api/gmail';
 
 export default function HomePage() {
-  const handleGoogleLogin = async () => {
-    try {
-      const { authorization_url } = await startGmailOAuth();
-      // Redirect user to Google OAuth
-      window.location.href = authorization_url;
-    } catch (error) {
-      console.error('Failed to start Google OAuth:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      alert(`Failed to connect to Google: ${errorMessage}. Please make sure the backend server is running on port 8000.`);
-    }
-  };
   return (
     <div className="min-h-screen flex flex-col bg-black text-white relative overflow-hidden">
       {/* Header */}
@@ -61,7 +47,6 @@ export default function HomePage() {
         </div>
         
         <Button 
-          onClick={handleGoogleLogin}
           variant="outline" 
           className="w-full text-lg font-medium h-12 rounded-xl border-gray-700 bg-gray-900/50 text-white hover:bg-gray-800 flex items-center justify-center gap-2"
         >
