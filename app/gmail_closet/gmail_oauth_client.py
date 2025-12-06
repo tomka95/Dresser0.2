@@ -1,0 +1,192 @@
+"""Gmail OAuth client using Gmail REST API.
+
+Provides the same interface as GmailClient but uses OAuth tokens.
+"""
+
+import base64
+import logging
+from datetime import datetime
+from typing import Iterable, Optional, Tuple
+
+from googleapiclient.discovery import Resource
+from sqlalchemy.orm import Session
+
+from app.models import GoogleAccount
+from app.services.gmail_oauth_service import get_gmail_client
+from .models import EmailMetadata
+
+logger = logging.getLogger(__name__)
+
+
+class GmailOAuthClient:
+    """OAuth-based Gmail client using Gmail REST API.
+    
+    Provides the same interface as the IMAP-based GmailClient but uses
+    OAuth tokens stored in GoogleAccount.
+    """
+
+    def __init__(self, google_account: GoogleAccount, db: Session):
+        """Initialize Gmail OAuth client.
+        
+        Args:
+            google_account: GoogleAccount instance with OAuth tokens
+            db: Database session for token refresh if needed
+        """
+        self.google_account = google_account
+        self.db = db
+        self.gmail: Optional[Resource] = None
+
+    def __enter__(self) -> "GmailOAuthClient":
+        """Context manager entry: create Gmail API client."""
+        self.gmail = get_gmail_client(self.google_account, self.db)
+        logger.info(f"Connected to Gmail API for user {self.google_account.user_id}")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit: cleanup."""
+        self.gmail = None
+
+    def iter_purchase_like_messages(
+        self, since: datetime
+    ) -> Iterable[Tuple[EmailMetadata, str]]:
+        """Yield tuples of (EmailMetadata, raw_body_text) for purchase-like emails.
+        
+        Searches for emails using Gmail REST API. This method provides the same
+        interface as the IMAP version but uses OAuth authentication.
+        
+        Args:
+            since: Only search emails since this datetime.
+            
+        Yields:
+            Tuples of (EmailMetadata, plain_text_body) for each matching email.
+        """
+        if not self.gmail:
+            raise RuntimeError("GmailOAuthClient must be used as a context manager")
+
+        # Convert datetime to Unix timestamp for Gmail API
+        since_timestamp = int(since.timestamp())
+        
+        # Build search query
+        # Using "after:" for date filtering
+        # Could add "category:purchases" but being broad for now
+        query = f"after:{since_timestamp}"
+        
+        logger.info(f"Searching Gmail with query: {query}")
+        
+        try:
+            # List messages matching the query
+            results = self.gmail.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=500  # Adjust as needed
+            ).execute()
+            
+            messages = results.get('messages', [])
+            logger.info(f"Found {len(messages)} messages since {since}")
+            
+            # Fetch each message in detail
+            for msg_ref in messages:
+                try:
+                    msg_id = msg_ref['id']
+                    
+                    # Get full message
+                    message = self.gmail.users().messages().get(
+                        userId='me',
+                        id=msg_id,
+                        format='full'
+                    ).execute()
+                    
+                    # Extract metadata and body
+                    metadata, body_text = self._parse_gmail_message(message)
+                    
+                    yield (metadata, body_text)
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to fetch/parse message {msg_id}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Gmail API error: {e}")
+            raise
+
+    def _parse_gmail_message(self, message: dict) -> Tuple[EmailMetadata, str]:
+        """Parse a Gmail API message into EmailMetadata and body text.
+        
+        Args:
+            message: Gmail API message dict
+            
+        Returns:
+            Tuple of (EmailMetadata, plain_text_body)
+        """
+        msg_id = message['id']
+        thread_id = message.get('threadId', msg_id)
+        snippet = message.get('snippet', '')
+        
+        # Extract headers
+        headers = {h['name']: h['value'] for h in message['payload'].get('headers', [])}
+        subject = headers.get('Subject', '')
+        sender = headers.get('From', '')
+        
+        # Parse date
+        internal_date_ms = int(message.get('internalDate', 0))
+        sent_at = datetime.fromtimestamp(internal_date_ms / 1000) if internal_date_ms else datetime.utcnow()
+        
+        # Get labels (Gmail categories)
+        labels = message.get('labelIds', [])
+        
+        # Extract body text
+        body_text = self._extract_body_text(message['payload'])
+        
+        metadata = EmailMetadata(
+            message_id=msg_id,
+            thread_id=thread_id,
+            subject=subject,
+            sender=sender,
+            sent_at=sent_at,
+            snippet=snippet,
+            labels=labels,
+        )
+        
+        return metadata, body_text
+
+    def _extract_body_text(self, payload: dict) -> str:
+        """Extract plain text body from Gmail message payload.
+        
+        Args:
+            payload: Gmail message payload dict
+            
+        Returns:
+            Plain text body
+        """
+        parts = []
+        
+        # If the payload has a body directly
+        if 'body' in payload and 'data' in payload['body']:
+            data = payload['body']['data']
+            text = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+            parts.append(text)
+        
+        # If the payload has parts (multipart message)
+        if 'parts' in payload:
+            for part in payload['parts']:
+                mime_type = part.get('mimeType', '')
+                
+                # Recursively handle nested parts
+                if 'parts' in part:
+                    parts.append(self._extract_body_text(part))
+                # Extract text/plain parts
+                elif mime_type == 'text/plain' and 'data' in part.get('body', {}):
+                    data = part['body']['data']
+                    text = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                    parts.append(text)
+                # Fall back to text/html if no plain text
+                elif mime_type == 'text/html' and 'data' in part.get('body', {}) and not parts:
+                    data = part['body']['data']
+                    html = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                    # Simple HTML stripping (could use BeautifulSoup for better results)
+                    import re
+                    text = re.sub('<[^<]+?>', '', html)
+                    parts.append(text)
+        
+        return '\n\n'.join(parts)
+

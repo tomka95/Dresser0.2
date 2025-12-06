@@ -2,6 +2,7 @@
 
 import logging
 from typing import List, Dict, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -13,6 +14,8 @@ from app.services.gmail_service import (
     ensure_valid_google_access_token,
     get_gmail_service,
 )
+from app.gmail_closet.pipeline import extract_items_from_gmail_oauth
+from app.gmail_closet.models import Item
 
 logger = logging.getLogger(__name__)
 
@@ -134,5 +137,66 @@ async def list_recent_messages(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch Gmail messages: {str(e)}",
+        )
+
+
+@router.post("/clothing-items")
+async def extract_clothing_from_gmail(
+    max_years: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Extract clothing items from Gmail purchase emails using OAuth.
+    
+    This endpoint:
+    1. Validates the user has a connected Google account with Gmail access
+    2. Scans purchase emails from Gmail using the OAuth-based pipeline
+    3. Extracts clothing items using the existing parsing logic
+    4. Returns the list of items found
+    
+    Args:
+        max_years: Optional limit on how far back to scan (default from config)
+        current_user: Authenticated user from JWT
+        db: Database session
+        
+    Returns:
+        Dictionary with:
+            - connected: bool (always True if successful)
+            - items: List[Item] (clothing items found)
+            
+    Raises:
+        HTTPException: If Gmail not connected or extraction fails
+    """
+    # Validate user has Google account with Gmail access
+    if not current_user.google_account:
+        raise HTTPException(
+            status_code=400,
+            detail="Gmail is not connected. Please sign in with Google first.",
+        )
+    
+    if not current_user.google_account.refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Gmail access not granted. Please reconnect with Gmail permissions.",
+        )
+    
+    try:
+        # Run the OAuth-based pipeline
+        items = await extract_items_from_gmail_oauth(
+            user=current_user,
+            db=db,
+            max_years=max_years,
+        )
+        
+        return {
+            "connected": True,
+            "items": [item.dict() for item in items],
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to extract clothing items for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to extract clothing items: {str(e)}",
         )
 
