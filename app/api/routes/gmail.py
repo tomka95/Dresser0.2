@@ -14,6 +14,7 @@ from app.services.gmail_service import (
     ensure_valid_google_access_token,
     get_gmail_service,
 )
+from app.services.email_clothing_service import save_email_items_for_user
 from app.gmail_closet.pipeline import extract_items_from_gmail_oauth
 from app.gmail_closet.models import Item
 
@@ -142,7 +143,7 @@ async def list_recent_messages(
 
 @router.post("/clothing-items")
 async def extract_clothing_from_gmail(
-    max_years: int | None = None,
+    max_years: float | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -185,26 +186,34 @@ async def extract_clothing_from_gmail(
     
     try:
         # Run the OAuth-based pipeline
-        # TODO: Remove this debug logging
         items = await extract_items_from_gmail_oauth(
             user=current_user,
             db=db,
             max_years=max_years,
         )
         
-        # TODO: Remove this debug logging
-        logger.info(f"[TODO DEBUG] extract_clothing_from_gmail returning {len(items)} items: {[item.dict() for item in items]}")
+        # Save items to database
+        saved_items = save_email_items_for_user(
+            db=db,
+            user_id=current_user.id,
+            items=items,
+        )
+        
+        logger.info(f"Extracted {len(items)} items from Gmail, saved {len(saved_items)} new items to database for user {current_user.id}")
         
         return {
             "connected": True,
             "items": [item.dict() for item in items],
+            "saved_count": len(saved_items),
         }
         
     except Exception as e:
-        # TODO: Remove this debug logging
         logger.error(f"Failed to extract clothing items for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to extract clothing items: {str(e)}",
         )
+
+
+
 

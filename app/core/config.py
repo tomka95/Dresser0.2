@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     GMAIL_IMAP_HOST: str
     GMAIL_IMAP_PORT: int
-    GMAIL_MAX_YEARS: int
+    GMAIL_MAX_YEARS: float
     GMAIL_IMAP_TIMEOUT: int
 
     DB_USER: str

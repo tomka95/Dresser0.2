@@ -1,14 +1,11 @@
 """FastAPI router for Google OAuth authentication."""
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-from uuid import UUID
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -20,270 +17,192 @@ from app.security import create_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/auth",
+    prefix="/auth/google",
     tags=["auth"],
 )
 
 
-class GoogleAuthRequest(BaseModel):
-    """Request model for Google OAuth authorization code."""
-
+class GoogleCallbackRequest(BaseModel):
     code: str
+    redirect_uri: Optional[str] = None
 
 
-class GoogleAuthResponse(BaseModel):
-    """Response model for Google OAuth authentication."""
-
-    access_token: str
-    token_type: str
-    user: dict
-    has_gmail_access: bool
-
-
-@router.post("/google", response_model=GoogleAuthResponse)
-async def google_auth(
-    request: GoogleAuthRequest,
+@router.post("/callback")
+async def google_callback(
+    request: GoogleCallbackRequest,
     db: Session = Depends(get_db),
-) -> GoogleAuthResponse:
-    """Handle Google OAuth login and Gmail access token storage.
-
+) -> Dict[str, Any]:
+    """Handle Google OAuth callback and exchange authorization code for tokens.
+    
     This endpoint:
-    1. Exchanges the authorization code with Google for tokens
-    2. Verifies the id_token and extracts user info
-    3. Creates or updates the User and GoogleAccount records
-    4. Returns a JWT access token and user info
-
+    1. Exchanges the authorization code for access/refresh tokens
+    2. Fetches user info from Google
+    3. Creates or updates User and GoogleAccount records
+    4. Returns JWT token and Google tokens to the frontend
+    
     Args:
-        request: Request containing the Google authorization code
+        request: Request body containing the OAuth authorization code
         db: Database session
-
+        
     Returns:
-        GoogleAuthResponse with JWT token and user info
-
-    Raises:
-        HTTPException: If authentication fails or Google returns an error
+        Dictionary with:
+            - access_token: JWT token for API authentication
+            - refresh_token: Google refresh token (if provided)
+            - user: User information
     """
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        logger.error("Google OAuth credentials not configured")
         raise HTTPException(
             status_code=500,
-            detail="Google OAuth is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
+            detail="Google OAuth is not configured on the server",
         )
-
-    # Step 1: Exchange authorization code for tokens
-    token_response = await _exchange_code_for_tokens(request.code)
-
-    id_token_str = token_response.get("id_token")
-    access_token = token_response.get("access_token")
-    refresh_token = token_response.get("refresh_token")
-    expires_in = token_response.get("expires_in", 3600)
-    scope = token_response.get("scope", "")
-
-    if not id_token_str or not access_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid token response from Google: missing id_token or access_token",
-        )
-
-    # Step 2: Verify id_token and extract user info
-    try:
-        user_info = _verify_and_extract_user_info(id_token_str)
-    except ValueError as e:
-        logger.error(f"Failed to verify Google id_token: {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid Google token: {str(e)}")
-
-    google_sub = user_info.get("sub")
-    email = user_info.get("email")
-    name = user_info.get("name")
-    picture = user_info.get("picture")
-
-    if not email:
-        raise HTTPException(status_code=400, detail="Google token missing email claim")
-
-    # Step 3: Upsert User
-    user = _upsert_user(db, google_sub, email, name, picture)
-
-    # Step 4: Upsert GoogleAccount
-    google_account = _upsert_google_account(
-        db,
-        user.id,
-        google_sub,
-        email,
-        access_token,
-        refresh_token,
-        scope,
-        expires_in,
-    )
-
-    # Step 5: Create our JWT token
-    jwt_token = create_access_token(data={"sub": str(user.id)})
-
-    return GoogleAuthResponse(
-        access_token=jwt_token,
-        token_type="bearer",
-        user={
-            "id": str(user.id),
-            "email": user.email,
-            "full_name": user.full_name,
-            "avatar_url": user.avatar_url,
-        },
-        has_gmail_access=google_account.refresh_token is not None,
-    )
-
-
-async def _exchange_code_for_tokens(code: str) -> dict:
-    """Exchange Google authorization code for tokens.
-
-    Args:
-        code: Authorization code from Google
-
-    Returns:
-        Dictionary with tokens from Google
-
-    Raises:
-        HTTPException: If token exchange fails
-    """
+    
+    # Exchange authorization code for tokens
     token_url = "https://oauth2.googleapis.com/token"
-    data = {
-        "code": code,
+    
+    # Use redirect_uri from request, or from settings, or default
+    # The redirect_uri MUST match exactly what was used in the authorization request
+    redirect_uri = (
+        request.redirect_uri 
+        or settings.GOOGLE_REDIRECT_URI 
+        or "http://localhost:3000/google/callback"
+    )
+    
+    logger.info(f"Exchanging Google code with redirect_uri: {redirect_uri}")
+    
+    token_data = {
+        "code": request.code,
         "client_id": settings.GOOGLE_CLIENT_ID,
         "client_secret": settings.GOOGLE_CLIENT_SECRET,
-        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
     }
-
+    
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                token_url,
-                data=data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            response.raise_for_status()
-            return response.json()
+        response = httpx.post(
+            token_url,
+            data=token_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        token_response = response.json()
     except httpx.HTTPStatusError as e:
-        logger.error(f"Google token exchange failed with status {e.response.status_code}: {e.response.text}")
+        error_text = e.response.text
+        logger.error(f"Failed to exchange Google code: {e.response.status_code} - {error_text}")
+        
+        # Try to parse Google's error response for more details
+        try:
+            error_json = e.response.json()
+            error_detail = error_json.get("error_description", error_json.get("error", "Unknown error"))
+        except:
+            error_detail = error_text or "Failed to exchange authorization code with Google"
+        
         raise HTTPException(
             status_code=400,
-            detail=f"Google token exchange failed: {e.response.text}",
+            detail=f"Failed to exchange authorization code: {error_detail}",
         )
     except Exception as e:
         logger.error(f"Unexpected error during token exchange: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error during token exchange: {str(e)}",
+            detail=f"Unexpected error during authentication: {str(e)}",
         )
-
-
-def _verify_and_extract_user_info(id_token_str: str) -> dict:
-    """Verify Google id_token and extract user information.
-
-    Args:
-        id_token_str: JWT id_token from Google
-
-    Returns:
-        Dictionary with user info (sub, email, name, picture)
-
-    Raises:
-        ValueError: If token verification fails
-    """
+    
+    access_token = token_response.get("access_token")
+    refresh_token = token_response.get("refresh_token")
+    expires_in = token_response.get("expires_in", 3600)
+    scope = token_response.get("scope", "")
+    
+    if not access_token:
+        raise HTTPException(
+            status_code=400,
+            detail="No access token received from Google",
+        )
+    
+    # Fetch user info from Google
+    userinfo_url = "https://www.googleapis.com/oauth2/v2/userinfo"
     try:
-        request_obj = google_requests.Request()
-        idinfo = id_token.verify_oauth2_token(
-            id_token_str,
-            request_obj,
-            settings.GOOGLE_CLIENT_ID,
+        userinfo_response = httpx.get(
+            userinfo_url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10.0,
         )
-        return idinfo
-    except ValueError as e:
-        logger.error(f"Google id_token verification failed: {e}")
-        raise
-
-
-def _upsert_user(
-    db: Session,
-    google_sub: str,
-    email: str,
-    name: Optional[str],
-    picture: Optional[str],
-) -> User:
-    """Create or update a User record.
-
-    Args:
-        db: Database session
-        google_sub: Google user ID (sub claim)
-        email: User email
-        name: User full name (optional)
-        picture: User avatar URL (optional)
-
-    Returns:
-        User instance
-    """
-    # Try to find existing user by google_sub or email
+        userinfo_response.raise_for_status()
+        userinfo = userinfo_response.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Failed to fetch user info: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to fetch user information from Google",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error fetching user info: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error fetching user information: {str(e)}",
+        )
+    
+    google_sub = userinfo.get("id")
+    email = userinfo.get("email")
+    name = userinfo.get("name")
+    picture = userinfo.get("picture")
+    
+    if not google_sub or not email:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user information from Google",
+        )
+    
+    # Find or create User
     user = db.query(User).filter(User.google_sub == google_sub).first()
+    
     if not user:
+        # Try to find by email if no user with this google_sub exists
         user = db.query(User).filter(User.email == email).first()
-
-    if not user:
-        # Create new user
-        user = User(
-            email=email,
-            google_sub=google_sub,
-            full_name=name,
-            avatar_url=picture,
-            hashed_password="",  # OAuth users don't have passwords
-        )
-        db.add(user)
-    else:
-        # Update existing user (don't overwrite non-null with null)
-        if google_sub and not user.google_sub:
+        
+        if user:
+            # Update existing user with google_sub
             user.google_sub = google_sub
-        if name and not user.full_name:
-            user.full_name = name
-        elif name:
-            user.full_name = name  # Update if new name provided
-        if picture and not user.avatar_url:
-            user.avatar_url = picture
-        elif picture:
-            user.avatar_url = picture  # Update if new picture provided
-
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-def _upsert_google_account(
-    db: Session,
-    user_id: UUID,
-    google_sub: str,
-    email: str,
-    access_token: str,
-    refresh_token: Optional[str],
-    scope: Optional[str],
-    expires_in: int,
-) -> GoogleAccount:
-    """Create or update a GoogleAccount record.
-
-    Args:
-        db: Database session
-        user_id: User UUID
-        google_sub: Google user ID
-        email: User email
-        access_token: Google access token
-        refresh_token: Google refresh token (optional)
-        scope: OAuth scope string
-        expires_in: Token expiration in seconds
-
-    Returns:
-        GoogleAccount instance
-    """
-    google_account = db.query(GoogleAccount).filter(GoogleAccount.user_id == user_id).first()
-
-    token_expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-    if not google_account:
+        else:
+            # Create new user
+            user = User(
+                email=email,
+                google_sub=google_sub,
+                display_name=name,
+                full_name=name,
+                avatar_url=picture,
+                hashed_password="",  # No password for OAuth users
+            )
+            db.add(user)
+            db.flush()  # Flush to get user.id
+    
+    # Update user info if available
+    if name and not user.full_name:
+        user.full_name = name
+    if picture and not user.avatar_url:
+        user.avatar_url = picture
+    if name and not user.display_name:
+        user.display_name = name
+    
+    # Create or update GoogleAccount
+    google_account = db.query(GoogleAccount).filter(GoogleAccount.user_id == user.id).first()
+    
+    token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+    
+    if google_account:
+        # Update existing GoogleAccount
+        google_account.google_sub = google_sub
+        google_account.email = email
+        google_account.access_token = access_token
+        google_account.token_expiry = token_expiry
+        google_account.scope = scope
+        if refresh_token:
+            google_account.refresh_token = refresh_token
+    else:
         # Create new GoogleAccount
         google_account = GoogleAccount(
-            user_id=user_id,
+            user_id=user.id,
             google_sub=google_sub,
             email=email,
             access_token=access_token,
@@ -292,19 +211,23 @@ def _upsert_google_account(
             token_expiry=token_expiry,
         )
         db.add(google_account)
-    else:
-        # Update existing GoogleAccount
-        google_account.access_token = access_token
-        google_account.scope = scope
-        google_account.token_expiry = token_expiry
-        # Only update refresh_token if Google provided a new one
-        if refresh_token:
-            google_account.refresh_token = refresh_token
-        # Update email and google_sub if they changed
-        google_account.email = email
-        google_account.google_sub = google_sub
-
+    
     db.commit()
-    db.refresh(google_account)
-    return google_account
-
+    db.refresh(user)
+    
+    # Create JWT token for the user
+    jwt_token = create_access_token(data={"sub": str(user.id)})
+    
+    logger.info(f"Successfully authenticated user {user.id} via Google OAuth")
+    
+    return {
+        "access_token": jwt_token,
+        "refresh_token": refresh_token,
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "display_name": user.display_name,
+            "full_name": user.full_name,
+            "avatar_url": user.avatar_url,
+        },
+    }

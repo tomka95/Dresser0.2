@@ -16,6 +16,7 @@ from .filters import is_potential_clothing_email
 from .gmail_client import GmailClient
 from .gmail_oauth_client import GmailOAuthClient
 from .models import EmailMetadata, GmailCredentials, Item
+from .preprocessing import clean_email_body
 from app.services.email_smart_search import Email
 from app.services.clothing_receipt_parser import parse_clothing_items_from_email
 from app.models import GoogleAccount, User
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
-def _calculate_since(max_years: int | None) -> datetime:
+def _calculate_since(max_years: float | None) -> datetime:
     """Return the datetime to use as the lower bound when scanning emails."""
     years = max_years if max_years is not None else MAX_YEARS_TO_SCAN
     if years <= 0:
@@ -69,7 +70,6 @@ def _iter_candidate_emails_oauth(
     Yields:
         Tuples of (EmailMetadata, plain_text_body) for candidate emails
     """
-    # TODO: Remove this debug logging
     
     with GmailOAuthClient(google_account=google_account, db=db) as client:
         total_emails = 0
@@ -79,10 +79,8 @@ def _iter_candidate_emails_oauth(
         for metadata, body_text in client.iter_purchase_like_messages(since=since):
             total_emails += 1
 
-            
             if not is_potential_clothing_email(metadata, body_text):
                 filtered_out += 1
-
                 continue
             
             passed_filter += 1
@@ -117,10 +115,12 @@ async def extract_items_from_gmail(
     raw_items: List[Item] = []
 
     for metadata, body_text in _iter_candidate_emails(creds, since):
+        cleaned_body = clean_email_body(body_text or "")
+        
         email_obj = Email(
             id=metadata.message_id,
             subject=metadata.subject or "",
-            body=body_text or "",
+            body=cleaned_body,
             sender=metadata.sender,
             date=metadata.sent_at.isoformat() if metadata.sent_at else None,
         )
@@ -154,7 +154,7 @@ async def extract_items_from_gmail(
 async def extract_items_from_gmail_oauth(
     user: User,
     db: Session,
-    max_years: int | None = None,
+    max_years: float | None = None,
 ) -> List[Item]:
     """Connect to Gmail via OAuth, scan purchase-like clothing emails, and return items.
     
@@ -191,23 +191,26 @@ async def extract_items_from_gmail_oauth(
     # Check if user has granted Gmail access
     if not google_account.refresh_token:
         raise ValueError("User has not granted Gmail access")
-    
+
     since = _calculate_since(max_years)
     raw_items: List[Item] = []
 
-   
     # Use OAuth-based iteration (same logic as IMAP version, just different client)
     emails_processed = 0
     for metadata, body_text in _iter_candidate_emails_oauth(google_account, db, since):
         emails_processed += 1
       
+        cleaned_body = clean_email_body(body_text or "")
+        
         email_obj = Email(
             id=metadata.message_id,
             subject=metadata.subject or "",
-            body=body_text or "",
+            body=cleaned_body,
             sender=metadata.sender,
             date=metadata.sent_at.isoformat() if metadata.sent_at else None,
         )
+
+        logger.info(metadata.subject)
 
         parsed_clothing_items = parse_clothing_items_from_email(email_obj)
       

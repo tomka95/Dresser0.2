@@ -94,8 +94,6 @@ class GmailOAuthClient:
         # Could add "category:purchases" but being broad for now
         query = f"after:{since_timestamp}"
         
-        # TODO: Remove this debug logging
-        
         try:
             # List messages matching the query
             results = self.gmail.users().messages().list(
@@ -105,8 +103,7 @@ class GmailOAuthClient:
             ).execute()
             
             messages = results.get('messages', [])
-            # TODO: Remove this debug logging
-            
+
             # Fetch each message in detail
             for msg_ref in messages:
                 try:
