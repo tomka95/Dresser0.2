@@ -19,6 +19,7 @@ from .models import EmailMetadata, GmailCredentials, Item
 from .preprocessing import clean_email_body
 from app.services.email_smart_search import Email
 from app.services.clothing_receipt_parser import parse_clothing_items_from_email
+from app.services.openai_image_service import generate_white_bg_product_image_from_text
 from app.models import GoogleAccount, User
 from sqlalchemy.orm import Session
 
@@ -216,12 +217,30 @@ async def extract_items_from_gmail_oauth(
       
         for parsed in parsed_clothing_items:
             name = parsed.product_name or parsed.category or "Clothing item"
+            
+            # Generate product image from text
+            images_url = None
+            if parsed.store and name:
+                try:
+                    images_url = await generate_white_bg_product_image_from_text(
+                        brand=parsed.store,
+                        product_name=name,
+                        user_id=user.id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to generate image for {parsed.store} {name}: {e}",
+                        exc_info=True,
+                    )
+                    # Continue without image - don't fail the whole extraction
+            
             raw_items.append(
                 Item(
                     name=name,
                     store=parsed.store,
                     price=parsed.price,
                     image=parsed.image_alt,
+                    images_url=images_url,
                 )
             )
 

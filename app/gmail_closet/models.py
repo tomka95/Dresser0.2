@@ -40,6 +40,7 @@ class Item(BaseModel):
     store: Optional[str] = None  # e.g. "Zara"
     price: Optional[float] = None  # total price for this line item
     image: Optional[str] = None  # e.g. alt text or image identifier
+    images_url: Optional[str] = None  # URL to generated product image
 
 
 class ClothingPurchase(BaseModel):
