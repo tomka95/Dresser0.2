@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import Base, engine
 from app.security import hash_password, verify_password
 from app.gmail_closet import router as gmail_router
-from app.api.routes import auth_google, gmail
+from app.api.routes import auth_google, gmail, closet
 
 import os
 import tempfile
@@ -59,6 +59,9 @@ app.include_router(auth_google.router)
 
 # Gmail API endpoints (requires authentication)
 app.include_router(gmail.router)
+
+# Closet API endpoints (requires authentication)
+app.include_router(closet.router)
 
 
 @app.get("/health")

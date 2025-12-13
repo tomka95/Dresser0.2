@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { exchangeGoogleCode } from "@/lib/api/auth";
+import { exchangeGoogleCode, getCurrentUser } from "@/lib/api/auth";
 import { setAuth } from "@/lib/auth/storage";
 
 export default function GoogleCallbackPage() {
@@ -10,6 +10,7 @@ export default function GoogleCallbackPage() {
   const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const hasProcessed = useRef(false);
 
   useEffect(() => {
     const code = searchParams.get("code");
@@ -20,6 +21,12 @@ export default function GoogleCallbackPage() {
       return;
     }
 
+    // Prevent double-processing (React StrictMode or dependency changes)
+    if (hasProcessed.current) {
+      return;
+    }
+    hasProcessed.current = true;
+
     const handleGoogleAuth = async () => {
       try {
         const data = await exchangeGoogleCode(code);
@@ -27,8 +34,21 @@ export default function GoogleCallbackPage() {
         // Store authentication data
         setAuth(data);
 
-        // Redirect to Gmail sync page to extract clothing items
-        router.push("/gmail-sync");
+        // Check if user has already completed Gmail sync
+        try {
+          const userInfo = await getCurrentUser();
+          if (userInfo.gmail_sync_completed_at) {
+            // Already synced, go straight to closet
+            router.push("/closet");
+          } else {
+            // Not synced yet, go to Gmail sync
+            router.push("/gmail-sync");
+          }
+        } catch (e) {
+          // If /me fails, default to gmail-sync (safe fallback)
+          console.warn("Failed to check sync status, defaulting to gmail-sync:", e);
+          router.push("/gmail-sync");
+        }
       } catch (e: any) {
         console.error("Google authentication error:", e);
         setError(e.message || "Failed to authenticate with Google");

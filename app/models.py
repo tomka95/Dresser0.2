@@ -45,6 +45,8 @@ class User(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    gmail_sync_completed_at = Column(DateTime(timezone=True), nullable=True)
+
 
     clothing_items = relationship("ClothingItem", back_populates="user", cascade="all, delete-orphan")
 

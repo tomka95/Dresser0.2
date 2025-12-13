@@ -1,6 +1,7 @@
 """FastAPI router for Gmail API endpoints."""
 
 import logging
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 from uuid import UUID
 
@@ -200,6 +201,12 @@ async def extract_clothing_from_gmail(
         )
         
         logger.info(f"Extracted {len(items)} items from Gmail, saved {len(saved_items)} new items to database for user {current_user.id}")
+        
+        # Mark sync as completed (only set if null)
+        if current_user.gmail_sync_completed_at is None:
+            current_user.gmail_sync_completed_at = datetime.now(timezone.utc)
+            db.commit()
+            logger.info(f"Marked Gmail sync as completed for user {current_user.id}")
         
         return {
             "connected": True,
