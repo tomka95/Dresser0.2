@@ -4,7 +4,7 @@ import logging
 from typing import List
 from uuid import UUID
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import ClothingItem
 
@@ -12,18 +12,23 @@ logger = logging.getLogger(__name__)
 
 
 def list_closet_items(db: Session, user_id: UUID) -> List[ClothingItem]:
-    """List all clothing items for a user.
+    """List all clothing items for a user with images eagerly loaded.
+    
+    Uses selectinload to fetch all ItemImage relationships in a single query,
+    avoiding N+1 queries when checking for primary images.
     
     Args:
         db: Database session
         user_id: UUID of the user
         
     Returns:
-        List of ClothingItem SQLAlchemy models, ordered by created_at DESC (newest first)
+        List of ClothingItem SQLAlchemy models with images relationship loaded,
+        ordered by created_at DESC (newest first)
     """
     items = (
         db.query(ClothingItem)
         .filter(ClothingItem.user_id == user_id)
+        .options(selectinload(ClothingItem.images))  # Eagerly load all images in one query
         .order_by(ClothingItem.created_at.desc())
         .all()
     )

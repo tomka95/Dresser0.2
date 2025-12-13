@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
 
-    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint, Table
+    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint, Table, Index
 
 )
 
@@ -58,11 +58,16 @@ class User(Base):
 class ClothingItem(Base):
 
     __tablename__ = "clothing_items"
+    
+    __table_args__ = (
+        Index('idx_clothing_items_user_id', 'user_id'),
+        Index('idx_clothing_items_user_id_created_at', 'user_id', 'created_at'),
+    )
 
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
 
     name = Column(String, nullable=False)
@@ -98,11 +103,16 @@ class ClothingItem(Base):
 class ItemImage(Base):
 
     __tablename__ = "item_images"
+    
+    __table_args__ = (
+        Index('idx_item_images_clothing_item_id', 'clothing_item_id'),
+        Index('idx_item_images_clothing_item_id_is_primary', 'clothing_item_id', 'is_primary'),
+    )
 
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    clothing_item_id = Column(UUID(as_uuid=True), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False)
+    clothing_item_id = Column(UUID(as_uuid=True), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False, index=True)
 
     image_url = Column(Text, nullable=False)
 

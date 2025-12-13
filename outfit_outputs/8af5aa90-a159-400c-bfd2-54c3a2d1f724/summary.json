@@ -1,77 +1,174 @@
 [
   {
-    "item_name": "light blue and white patterned short-sleeve sweater",
-    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/light_blue_and_white_patterned_short-sleeve_sweater.png",
+    "item_name": "blue graphic t-shirt",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/blue_graphic_t-shirt.png",
     "metadata": {
-      "description": "Short-sleeve knitted polo shirt with a geometric pattern in light blue and cream.",
+      "description": "Graphic t-shirt featuring a vintage design with the word 'QUEEN' and a tour theme.",
       "brand_candidates": [
         {
-          "brand": "Les-Troubles",
-          "confidence": 0.7,
-          "notes": "Known for contemporary knitwear with unique designs."
+          "brand": "Zara",
+          "confidence": 0.6,
+          "notes": "Known for trendy graphic tees."
         },
         {
-          "brand": "COS",
-          "confidence": 0.6,
-          "notes": "Offers modern and minimalistic fashion including polo styles."
+          "brand": "H&M",
+          "confidence": 0.5,
+          "notes": "Regularly features band-themed apparel."
         },
         {
           "brand": "Uniqlo",
-          "confidence": 0.5,
-          "notes": "Features affordable basics often in knitted styles."
+          "confidence": 0.4,
+          "notes": "Offers graphic tees, including licensed merchandise."
+        },
+        {
+          "brand": "Forever 21",
+          "confidence": 0.4,
+          "notes": "Carries a wide range of graphic t-shirts."
         }
       ],
       "purchase_links": [
         {
-          "label": "Les-Troubles",
-          "url": "https://www.les-troubles.com",
-          "notes": "similar style"
+          "label": "Zara",
+          "url": "https://www.zara.com/us/",
+          "notes": "Similar style available."
         },
         {
-          "label": "COS",
-          "url": "https://www.cosstores.com",
-          "notes": "similar style"
+          "label": "H&M",
+          "url": "https://www2.hm.com/en_us/index.html",
+          "notes": "Check for band graphic tees."
         },
         {
           "label": "Uniqlo",
-          "url": "https://www.uniqlo.com",
+          "url": "https://www.uniqlo.com/us/en/",
+          "notes": "Offers licensed graphic tees."
+        }
+      ]
+    }
+  },
+  {
+    "item_name": "black shorts",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/black_shorts.png",
+    "metadata": {
+      "description": "Black athletic shorts with an elastic waistband and drawstring.",
+      "brand_candidates": [
+        {
+          "brand": "H&M",
+          "confidence": 0.7,
+          "notes": "Known for affordable and trendy athletic wear."
+        },
+        {
+          "brand": "Nike",
+          "confidence": 0.6,
+          "notes": "Offers a variety of athletic shorts and may carry similar styles."
+        },
+        {
+          "brand": "Adidas",
+          "confidence": 0.5,
+          "notes": "Sportswear brand that features shorts suitable for athletic activities."
+        },
+        {
+          "brand": "Reebok",
+          "confidence": 0.4,
+          "notes": "Sells casual and athletic shorts that resemble this style."
+        }
+      ],
+      "purchase_links": [
+        {
+          "label": "H&M",
+          "url": "https://www.hm.com/product/hm-black-athletic-shorts",
+          "notes": "similar style"
+        },
+        {
+          "label": "Nike",
+          "url": "https://www.nike.com/product/nike-black-shorts",
+          "notes": "similar style"
+        },
+        {
+          "label": "Adidas",
+          "url": "https://www.adidas.com/product/adidas-black-shorts",
           "notes": "similar style"
         }
       ]
     }
   },
   {
-    "item_name": "wine glass",
-    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/wine_glass.png",
+    "item_name": "black sandals",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/black_sandals.png",
     "metadata": {
-      "description": "Standard wine glass",
+      "description": "Black casual sandals with adjustable straps and a bow detail.",
       "brand_candidates": [
         {
-          "brand": "Riedel",
+          "brand": "Teva",
           "confidence": 0.7,
-          "notes": "Known for high-quality glassware"
+          "notes": "Known for similar styles of casual sandals."
         },
         {
-          "brand": "Schott Zwiesel",
-          "confidence": 0.6,
-          "notes": "Popular brand for durable glassware"
-        },
-        {
-          "brand": "Libbey",
+          "brand": "Havaianas",
           "confidence": 0.5,
-          "notes": "Affordable and widely available"
+          "notes": "Offers funky casual sandals, including strap designs."
+        },
+        {
+          "brand": "Urban Outfitters",
+          "confidence": 0.4,
+          "notes": "Sells a variety of casual footwear, including trendy sandals."
         }
       ],
       "purchase_links": [
         {
-          "label": "Amazon",
-          "url": "https://www.amazon.com/s?k=wine+glass",
+          "label": "Teva Official Store",
+          "url": "https://www.teva.com",
           "notes": "similar style"
         },
         {
-          "label": "Wayfair",
-          "url": "https://www.wayfair.com/decor/cat/wine-glasses-c410195.html",
-          "notes": "variety of styles available"
+          "label": "Havaianas Official Store",
+          "url": "https://www.havaianas.com",
+          "notes": "similar style"
+        },
+        {
+          "label": "Urban Outfitters",
+          "url": "https://www.urbanoutfitters.com",
+          "notes": "similar style"
+        }
+      ]
+    }
+  },
+  {
+    "item_name": "bracelet",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/bracelet.png",
+    "metadata": {
+      "description": "A simple black metal cuff bracelet",
+      "brand_candidates": [
+        {
+          "brand": "Maiden Name",
+          "confidence": 0.7,
+          "notes": "Known for minimalist jewelry styles"
+        },
+        {
+          "brand": "Gorjana",
+          "confidence": 0.6,
+          "notes": "Offers sleek and simple designs"
+        },
+        {
+          "brand": "Miansai",
+          "confidence": 0.5,
+          "notes": "Features modern and minimalistic accessories"
+        }
+      ],
+      "purchase_links": [
+        {
+          "label": "Maiden Name Store",
+          "url": "https://www.maidenname.com/collections/all/products/black-cuff-bracelet",
+          "notes": "similar style"
+        },
+        {
+          "label": "Gorjana",
+          "url": "https://www.gorjana.com/collections/bracelets/products/black-cuff-bracelet",
+          "notes": "similar style"
+        },
+        {
+          "label": "Miansai",
+          "url": "https://www.miansai.com/products/black-cuff-bracelet",
+          "notes": "similar style"
         }
       ]
     }

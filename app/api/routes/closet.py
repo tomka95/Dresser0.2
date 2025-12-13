@@ -1,6 +1,7 @@
 """FastAPI router for Closet API endpoints."""
 
 import logging
+import time
 from typing import List, Optional
 from uuid import UUID
 
@@ -63,12 +64,14 @@ class ClosetItemOut(BaseModel):
         populate_by_name = True
 
 
-def _get_image_url(db: Session, item: ClothingItem) -> Optional[str]:
+def _get_image_url(item: ClothingItem) -> Optional[str]:
     """Get image URL for item, preferring clothing_items.image_url, then primary ItemImage.
     
+    Optimized: Uses eagerly-loaded images relationship (no DB query).
+    Assumes item.images is already loaded via selectinload in service layer.
+    
     Args:
-        db: Database session
-        item: ClothingItem instance
+        item: ClothingItem instance with images relationship loaded
         
     Returns:
         Image URL string or None
@@ -77,25 +80,21 @@ def _get_image_url(db: Session, item: ClothingItem) -> Optional[str]:
     if item.image_url:
         return item.image_url
     
-    # Fallback to primary ItemImage
-    primary_image = (
-        db.query(ItemImage)
-        .filter(
-            ItemImage.clothing_item_id == item.id,
-            ItemImage.is_primary == True
-        )
-        .first()
+    # Fallback to primary ItemImage (from eagerly-loaded relationship)
+    # Find primary image in already-loaded images list (no DB query)
+    primary_image = next(
+        (img for img in item.images if img.is_primary),
+        None
     )
     
     return primary_image.image_url if primary_image else None
 
 
-def _map_clothing_item_to_out(db: Session, item: ClothingItem) -> ClosetItemOut:
+def _map_clothing_item_to_out(item: ClothingItem) -> ClosetItemOut:
     """Map SQLAlchemy ClothingItem to ClosetItemOut contract format.
     
     Args:
-        db: Database session (for querying ItemImage if needed)
-        item: ClothingItem SQLAlchemy model
+        item: ClothingItem SQLAlchemy model with images relationship loaded
         
     Returns:
         ClosetItemOut Pydantic model with camelCase fields
@@ -103,8 +102,8 @@ def _map_clothing_item_to_out(db: Session, item: ClothingItem) -> ClosetItemOut:
     # Get color: prefer color_primary, fallback to color_secondary
     color = item.color_primary or item.color_secondary or None
     
-    # Get image URL using helper
-    image_url = _get_image_url(db, item)
+    # Get image URL using helper (no DB query - uses eagerly-loaded relationship)
+    image_url = _get_image_url(item)
     
     # Handle category: contract requires enum value, but DB allows null
     # Use "other" as default if category is not set (matches contract requirement)
@@ -114,7 +113,7 @@ def _map_clothing_item_to_out(db: Session, item: ClothingItem) -> ClosetItemOut:
         id=str(item.id),
         userId=str(item.user_id),
         name=item.name,
-        category=category_value,  # Can be None if not set in DB
+        category=category_value,
         brand=item.brand,
         color=color,
         imageUrl=image_url,
@@ -133,10 +132,27 @@ async def list_closet_items_endpoint(
     Returns:
         List of ClosetItemOut objects matching the @dresser/contracts ClosetItem type
     """
-    items = list_closet_items(db, current_user.id)
+    request_start = time.time()
     
-    # Map each item to contract format
-    return [_map_clothing_item_to_out(db, item) for item in items]
+    # DB query timing
+    query_start = time.time()
+    items = list_closet_items(db, current_user.id)
+    query_time = (time.time() - query_start) * 1000  # Convert to milliseconds
+    
+    # Mapping/serialization timing
+    mapping_start = time.time()
+    result = [_map_clothing_item_to_out(item) for item in items]
+    mapping_time = (time.time() - mapping_start) * 1000  # Convert to milliseconds
+    
+    total_time = (time.time() - request_start) * 1000  # Convert to milliseconds
+    
+    logger.info(
+        f"[CLOSET_PERF] GET /closet - total={total_time:.2f}ms, "
+        f"db_query={query_time:.2f}ms, mapping={mapping_time:.2f}ms, "
+        f"items_count={len(items)}"
+    )
+    
+    return result
 
 
 @router.post("", response_model=ClosetItemOut, status_code=201)
@@ -175,7 +191,12 @@ async def create_closet_item_endpoint(
         )
         
         # Map to contract format
-        return _map_clothing_item_to_out(db, item)
+        # For POST, we need to ensure images are loaded if item.image_url is not set
+        # Since this is a single item, trigger lazy load if needed (usually image_url is set)
+        if not item.image_url:
+            # Load images relationship for this single item (lazy load - one query)
+            _ = item.images
+        return _map_clothing_item_to_out(item)
         
     except ValueError as e:
         # Pydantic validation errors (e.g., invalid category)
