@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 
 import { track } from '@/lib/analytics';
 import { useClosetStore } from '@/stores/useClosetStore';
+import { OutfitImageUpload } from '@/components/closet/OutfitImageUpload';
 
 export default function ClosetPage() {
   const items = useClosetStore((state) => state.items);
@@ -71,6 +72,10 @@ export default function ClosetPage() {
         >
           Add Sample Item
         </button>
+      </div>
+      
+      <div className="mb-8">
+        <OutfitImageUpload />
       </div>
       {isLoading && (
         <div className="py-4 text-sm text-gray-500">Loading closet…</div>

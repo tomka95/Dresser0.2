@@ -220,6 +220,8 @@ async def extract_items_from_gmail_oauth(
             
             # Generate product image from text
             images_url = None
+            #TODO
+            """
             if parsed.store and name:
                 try:
                     images_url = await generate_white_bg_product_image_from_text(
@@ -233,7 +235,7 @@ async def extract_items_from_gmail_oauth(
                         exc_info=True,
                     )
                     # Continue without image - don't fail the whole extraction
-            
+            """
             raw_items.append(
                 Item(
                     name=name,

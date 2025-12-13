@@ -17,7 +17,7 @@ from app.security import create_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/auth/google",
+    prefix="/auth",
     tags=["auth"],
 )
 
@@ -27,7 +27,7 @@ class GoogleCallbackRequest(BaseModel):
     redirect_uri: Optional[str] = None
 
 
-@router.post("/callback")
+@router.post("/google")
 async def google_callback(
     request: GoogleCallbackRequest,
     db: Session = Depends(get_db),

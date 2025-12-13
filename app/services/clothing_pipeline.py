@@ -3,11 +3,12 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 from PIL import Image
@@ -15,6 +16,8 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from app.utils.image_loader import ImageLoader
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -136,7 +139,7 @@ async def generate_item_image_with_responses(
     item_name: str,
     outfit_image_path: str,
     output_dir: str,
-) -> str:
+) -> Optional[str]:
     """
     Using the Responses API, generate a new product-style image of ONLY
     the given item from the original outfit photo.
@@ -188,35 +191,41 @@ Requirements:
 """
 
     # Build Responses API input with both text and image
-    response = await client.responses.create(
-        model="gpt-4o",  # or "gpt-4.1" depending on what is configured
-        tools=[{"type": "image_generation"}],
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": instruction},
-                    {
-                        "type": "input_image",
-                        "image_url": data_url,
-                    },
-                ],
-            }
-        ],
-    )
-
-    # Extract the image_generation_call result (base64 image)
-    image_base64 = None
-    for output in response.output:
-        if output.type == "image_generation_call":
-            # In the Responses API, the generated image data is in .result
-            image_base64 = output.result
-            break
-
-    if not image_base64:
-        raise RuntimeError(
-            f"No image_generation_call result returned for item: {item_name}"
+    try:
+        response = await client.responses.create(
+            model="gpt-4o",  # or "gpt-4.1" depending on what is configured
+            tools=[{"type": "image_generation"}],
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": instruction},
+                        {
+                            "type": "input_image",
+                            "image_url": data_url,
+                        },
+                    ],
+                }
+            ],
         )
+
+        # Extract the image_generation_call result (base64 image)
+        image_base64 = None
+        for output in response.output:
+            if output.type == "image_generation_call":
+                # In the Responses API, the generated image data is in .result
+                image_base64 = output.result
+                break
+
+        if not image_base64:
+            raise RuntimeError(
+                f"No image_generation_call result returned for item: {item_name}"
+            )
+    except (RuntimeError, Exception) as e:
+        logger.warning(
+            f"Failed to generate image for item '{item_name}': {str(e)}"
+        )
+        return None  # Return None to skip this item
 
     # Save image to disk
     safe_name = sanitize_filename(item_name)
@@ -308,14 +317,27 @@ async def process_outfit_image(
     ]
     image_paths = await asyncio.gather(*image_tasks)
 
-    # For metadata, also run in parallel
+    # Filter out None values (items that failed to generate images)
+    # and match items with their successful image paths
+    valid_items_and_paths = [
+        (item, img_path)
+        for item, img_path in zip(detected_items, image_paths)
+        if img_path is not None
+    ]
+
+    if not valid_items_and_paths:
+        logger.warning("No items successfully generated images")
+        return []
+
+    # For metadata, also run in parallel (only for successful images)
+    valid_items, valid_image_paths = zip(*valid_items_and_paths)
     metadata_tasks = [
-        get_brand_metadata_for_image(image_path=img_path) for img_path in image_paths
+        get_brand_metadata_for_image(image_path=img_path) for img_path in valid_image_paths
     ]
     metadatas = await asyncio.gather(*metadata_tasks)
 
     results: List[ItemResult] = []
-    for item, img_path, meta in zip(detected_items, image_paths, metadatas):
+    for item, img_path, meta in zip(valid_items, valid_image_paths, metadatas):
         results.append(
             ItemResult(
                 name=item,

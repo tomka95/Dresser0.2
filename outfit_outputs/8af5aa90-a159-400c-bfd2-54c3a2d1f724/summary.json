@@ -1,0 +1,79 @@
+[
+  {
+    "item_name": "light blue and white patterned short-sleeve sweater",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/light_blue_and_white_patterned_short-sleeve_sweater.png",
+    "metadata": {
+      "description": "Short-sleeve knitted polo shirt with a geometric pattern in light blue and cream.",
+      "brand_candidates": [
+        {
+          "brand": "Les-Troubles",
+          "confidence": 0.7,
+          "notes": "Known for contemporary knitwear with unique designs."
+        },
+        {
+          "brand": "COS",
+          "confidence": 0.6,
+          "notes": "Offers modern and minimalistic fashion including polo styles."
+        },
+        {
+          "brand": "Uniqlo",
+          "confidence": 0.5,
+          "notes": "Features affordable basics often in knitted styles."
+        }
+      ],
+      "purchase_links": [
+        {
+          "label": "Les-Troubles",
+          "url": "https://www.les-troubles.com",
+          "notes": "similar style"
+        },
+        {
+          "label": "COS",
+          "url": "https://www.cosstores.com",
+          "notes": "similar style"
+        },
+        {
+          "label": "Uniqlo",
+          "url": "https://www.uniqlo.com",
+          "notes": "similar style"
+        }
+      ]
+    }
+  },
+  {
+    "item_name": "wine glass",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/wine_glass.png",
+    "metadata": {
+      "description": "Standard wine glass",
+      "brand_candidates": [
+        {
+          "brand": "Riedel",
+          "confidence": 0.7,
+          "notes": "Known for high-quality glassware"
+        },
+        {
+          "brand": "Schott Zwiesel",
+          "confidence": 0.6,
+          "notes": "Popular brand for durable glassware"
+        },
+        {
+          "brand": "Libbey",
+          "confidence": 0.5,
+          "notes": "Affordable and widely available"
+        }
+      ],
+      "purchase_links": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/s?k=wine+glass",
+          "notes": "similar style"
+        },
+        {
+          "label": "Wayfair",
+          "url": "https://www.wayfair.com/decor/cat/wine-glasses-c410195.html",
+          "notes": "variety of styles available"
+        }
+      ]
+    }
+  }
+]

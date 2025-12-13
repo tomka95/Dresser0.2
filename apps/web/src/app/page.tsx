@@ -31,7 +31,7 @@ export default function HomePage() {
           <h2 className="text-3xl font-bold mb-2">Your Style, AI Powered</h2>
           <p className="text-gray-400">
             Organize your closet and discover new outfits instantly.
-          </p>
+        </p>
         </div>
       </main>
 
@@ -41,14 +41,14 @@ export default function HomePage() {
           <Link href="/signup" className="flex-1">
             <Button 
               className="w-full text-lg font-medium h-12 rounded-xl bg-white text-black hover:bg-gray-200"
-            >
+          >
               Sign Up
             </Button>
           </Link>
           <Link href="/login" className="flex-1">
             <Button 
               className="w-full text-lg font-medium h-12 rounded-xl bg-gray-800 text-white hover:bg-gray-700"
-            >
+          >
               Log In
             </Button>
           </Link>

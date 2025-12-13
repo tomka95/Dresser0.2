@@ -17,7 +17,7 @@ import os
 import tempfile
 
 from app.models import User, ClothingItem
-from app.dependencies import get_db
+from app.dependencies import get_db, get_current_user
 from app.services.outfit_db_service import save_outfit_results_to_db
 from app.utils.supabase_storage import SupabaseStorageClient
 from app.services.clothing_pipeline import process_outfit_image
@@ -136,6 +136,77 @@ def login(email: str = Form(...), password: str = Form(...), db: Session = Depen
 
     # Later we will return a JWT or session token here.
     return {"id": str(user.id), "email": user.email}
+
+
+@app.post("/outfit-image")
+async def upload_outfit_image_authenticated(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload an outfit image and process it through the clothing pipeline.
+    
+    This is a thin wrapper around the existing pipeline that uses the authenticated
+    user from JWT token instead of requiring user_id in the path.
+    
+    Returns the same response structure as POST /users/{user_id}/outfit-image.
+    """
+    # 1) Validate file
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing file")
+    
+    # Validate MIME type
+    ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed types: {', '.join(ALLOWED_MIME_TYPES)}"
+        )
+    
+    # 2) Read file content and validate size
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File size exceeds maximum allowed size of {MAX_FILE_SIZE / 1024 / 1024}MB"
+        )
+    
+    # 3) Save uploaded file to a temporary path
+    suffix = os.path.splitext(file.filename)[1] or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        temp_path = tmp.name
+
+    # 4) Define output directory & JSON summary path for pipeline
+    base_output_dir = os.path.join("outfit_outputs", str(current_user.id))
+    images_output_dir = os.path.join(base_output_dir, "items")
+    json_summary_path = os.path.join(base_output_dir, "summary.json")
+
+    # 5) Run the clothing pipeline on the outfit image
+    # We assume process_outfit_image is async and returns List[ItemResult]
+    results = await process_outfit_image(
+        outfit_image_path=temp_path,
+        images_output_dir=images_output_dir,
+        json_summary_path=json_summary_path,
+    )
+
+    # 6) Initialize Supabase storage client
+    storage_client = SupabaseStorageClient.from_env()
+
+    # 7) Save items + images + tags into DB
+    created_items = save_outfit_results_to_db(
+        db=db,
+        user_id=current_user.id,
+        results=results,
+        storage_client=storage_client,
+    )
+
+    # Return same structure as /users/{user_id}/outfit-image
+    return {
+        "user_id": str(current_user.id),
+        "items_created": created_items,
+    }
 
 
 @app.post("/users/{user_id}/outfit-image")
