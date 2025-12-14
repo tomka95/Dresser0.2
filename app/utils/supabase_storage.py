@@ -57,3 +57,39 @@ class SupabaseStorageClient:
             # Public URL style: /object/public/<bucket>/<key>
             return f"{self.public_base_url}/{self.bucket}/{key}"
         return key
+
+    def upload_bytes(
+        self,
+        image_bytes: bytes,
+        folder: Optional[str] = None,
+        content_type: Optional[str] = "image/png",
+        suffix: str = ".png",
+    ) -> str:
+        """Upload image bytes directly to Supabase storage.
+        
+        Args:
+            image_bytes: The image data as bytes
+            folder: Optional folder path (e.g., "email_items/{user_id}")
+            content_type: MIME type of the image (default: "image/png")
+            suffix: File extension with dot (e.g., ".png", ".jpg")
+            
+        Returns:
+            Public URL of the uploaded image
+        """
+        import io
+        
+        key = f"{uuid.uuid4().hex}{suffix}"
+        if folder:
+            key = f"{folder.rstrip('/')}/{key}"
+
+        extra_args = {"ContentType": content_type}
+
+        # Use upload_fileobj to upload from bytes
+        file_obj = io.BytesIO(image_bytes)
+        self.s3.upload_fileobj(file_obj, self.bucket, key, ExtraArgs=extra_args)
+
+        # If you configured a public base URL, construct a URL; otherwise return the key.
+        if self.public_base_url:
+            # Public URL style: /object/public/<bucket>/<key>
+            return f"{self.public_base_url}/{self.bucket}/{key}"
+        return key

@@ -96,6 +96,13 @@ def save_email_items_for_user(
             if not image_url:
                 image_url = None
 
+        # Extract images_url (generated product image URL)
+        images_url = item_dict.get("images_url")
+        if images_url:
+            images_url = images_url.strip()
+            if not images_url:
+                images_url = None
+
         # Extract other fields
         category = item_dict.get("category")
         if category:
@@ -151,6 +158,7 @@ def save_email_items_for_user(
             color_primary=color_primary,
             color_secondary=color_secondary,
             size=size,
+            images_url=images_url,
         )
         db.add(clothing_item)
         db.flush()  # Get the ID without committing yet

@@ -77,6 +77,7 @@ class ClothingItem(Base):
 
     size = Column(String, nullable=True)
 
+    image_url = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
