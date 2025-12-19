@@ -13,23 +13,28 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white relative overflow-hidden">
+    <div className="min-h-screen flex flex-col relative overflow-hidden" style={{ backgroundColor: '#eeede9' }}>
+      {/* Background Cloud - extends over header */}
+      <div className="absolute inset-0 w-full h-full z-0">
+        <FloatingClothes />
+      </div>
+
       {/* Header */}
-      <header className="w-full p-6 flex justify-center z-10">
-        <h1 className="text-2xl font-bold tracking-widest uppercase bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">
-          Dresser
-        </h1>
+      <header className="w-full p-6 flex justify-center items-center z-20 relative">
+        <img src="/tailor-logo.png" alt="Tailor" className="h-76 w-auto" />
       </header>
 
       {/* Main Visual */}
-      <main className="flex-1 flex flex-col items-center justify-center relative z-0">
-        <div className="w-full max-w-md">
-          <FloatingClothes />
+      <main className="flex-1 flex flex-col relative z-10" style={{ backgroundColor: 'transparent' }}>
+        <div className="flex-1 w-full max-w-md mx-auto relative">
+          {/* Spacer to keep icons centered */}
+          <div className="h-full flex items-center justify-center">
+          </div>
         </div>
         
-        <div className="text-center px-6 mt-[-20px] z-10">
-          <h2 className="text-3xl font-bold mb-2">Your Style, AI Powered</h2>
-          <p className="text-gray-400">
+        <div className="text-center px-6 mt-[-20px] z-20 relative" style={{ backgroundColor: 'transparent' }}>
+          <h2 className="text-3xl font-bold mb-2 text-gray-900">Your Style, AI Powered</h2>
+          <p className="text-gray-600">
             Organize your closet and discover new outfits instantly.
         </p>
         </div>

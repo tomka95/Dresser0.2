@@ -139,7 +139,7 @@ WHERE item_images.clothing_item_id IN (uuid1, uuid2, uuid3, ...)
 
 ```bash
 # Connect to your database and run:
-psql -d dresser -f migrations/add_closet_indexes.sql
+psql -d tailor -f migrations/add_closet_indexes.sql
 
 # Or if using a different database client:
 # Copy the UP migration SQL and execute it

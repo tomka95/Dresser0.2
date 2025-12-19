@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import type { ClosetItem } from '@dresser/contracts';
+import type { ClosetItem } from '@tailor/contracts';
 
 import {
   addClosetItem as apiAddClosetItem,

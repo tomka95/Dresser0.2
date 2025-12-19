@@ -1,4 +1,4 @@
-"""Main FastAPI application for Dresser."""
+"""Main FastAPI application for Tailor."""
 
 import logging
 from typing import Optional
@@ -28,7 +28,7 @@ from app.services.clothing_pipeline import process_outfit_image
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="Dresser AI MVP",
+    title="Tailor AI MVP",
     description="AI Closet / Stylist App",
     version="0.2.0",
 )
@@ -51,7 +51,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-# Gmail clothing extraction endpoints (for Dresser MVP)
+# Gmail clothing extraction endpoints (for Tailor MVP)
 app.include_router(gmail_router)
 
 # Authentication endpoints

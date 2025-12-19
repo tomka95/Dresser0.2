@@ -41,7 +41,7 @@ export default function ClosetPage() {
       name: `Sample Item ${items.length + 1}`,
       category: 'other' as const,
       color: 'mixed tones',
-      brand: 'Dresser Mock',
+          brand: 'Tailor Mock',
     };
 
     try {

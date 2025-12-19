@@ -1,4 +1,4 @@
-# Dresser - AI Closet / Stylist App
+# Tailor - AI Closet / Stylist App
 
 ## Setup
 
@@ -48,7 +48,7 @@ The test will:
 ## Project Structure
 
 ```
-Dresser0.2/
+Tailor0.2/
 ├── app/
 │   ├── services/
 │   │   └── clothing_pipeline.py  # Main pipeline service

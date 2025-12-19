@@ -116,7 +116,7 @@
 ## Contract Compliance
 
 ✅ **All fields are camelCase** - No snake_case fields in JSON response
-✅ **Matches ClosetItem type** - Response structure matches `@dresser/contracts/src/closet.ts`
+✅ **Matches ClosetItem type** - Response structure matches `@tailor/contracts/src/closet.ts`
 ✅ **Category enum validated** - Only accepts values from contract enum
 ✅ **Required fields present** - `id`, `userId`, `name`, `category`, `createdAt`, `updatedAt` always present
 ✅ **Optional fields nullable** - `brand`, `color`, `imageUrl` can be null

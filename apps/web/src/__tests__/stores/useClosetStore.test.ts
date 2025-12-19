@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useClosetStore } from '@/stores/useClosetStore';
-import type { ClosetItem } from '@dresser/contracts';
+import type { ClosetItem } from '@tailor/contracts';
 import * as api from '@/lib/api/closet';
 
 // Mock the API layer

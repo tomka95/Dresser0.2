@@ -1,4 +1,4 @@
-"""Central configuration settings for the Dresser application."""
+"""Central configuration settings for the Tailor application."""
 
 from typing import Optional
 from pydantic_settings import BaseSettings

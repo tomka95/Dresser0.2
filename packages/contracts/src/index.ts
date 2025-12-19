@@ -1,7 +1,7 @@
 /**
- * @dresser/contracts
+ * @tailor/contracts
  * 
- * Shared TypeScript types and Zod schemas for the Dresser app.
+ * Shared TypeScript types and Zod schemas for the Tailor app.
  * This is the single source of truth for cross-layer contracts.
  */
 

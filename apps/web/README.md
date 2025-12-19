@@ -1,6 +1,6 @@
-# Dresser Web App
+# Tailor Web App
 
-Next.js frontend application for Dresser.
+Next.js frontend application for Tailor.
 
 ## Setup
 
@@ -26,7 +26,7 @@ Next.js frontend application for Dresser.
 - **Tailwind CSS**
 - **shadcn/ui** (component library)
 - **Zustand** (state management)
-- **@dresser/contracts** (shared types and schemas)
+- **@tailor/contracts** (shared types and schemas)
 
 ## Project Structure
 

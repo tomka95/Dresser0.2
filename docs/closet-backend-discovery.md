@@ -7,7 +7,7 @@
 
 Routers are registered using `app.include_router()`:
 ```python
-# Gmail clothing extraction endpoints (for Dresser MVP)
+# Gmail clothing extraction endpoints (for Tailor MVP)
 app.include_router(gmail_router)  # prefix="/api/v1/gmail"
 
 # Authentication endpoints
@@ -437,7 +437,7 @@ export async function addClosetItem(
 - **Registration:** Add `app.include_router(closet.router)` in `main.py` after line 61
 - **Auth:** Use `current_user: User = Depends(get_current_user)` pattern
 - **DB query:** Filter by `ClothingItem.user_id == current_user.id`
-- **Response format:** Match `ClosetItem` contract from `@dresser/contracts`
+- **Response format:** Match `ClosetItem` contract from `@tailor/contracts`
 - **Frontend update:** Replace mock in `apps/web/src/lib/api/closet/index.ts` with fetch calls to `/closet`
 - **Field mapping:** Map DB snake_case to frontend camelCase, combine color fields
 

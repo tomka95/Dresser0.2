@@ -1,174 +1,36 @@
 [
   {
-    "item_name": "blue graphic t-shirt",
-    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/blue_graphic_t-shirt.png",
+    "item_name": "black hoodie",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/black_hoodie.png",
     "metadata": {
-      "description": "Graphic t-shirt featuring a vintage design with the word 'QUEEN' and a tour theme.",
+      "description": "Black hoodie with Charlotte Hornets logo and NBA branding.",
       "brand_candidates": [
         {
-          "brand": "Zara",
+          "brand": "Jordan Brand",
+          "confidence": 0.9,
+          "notes": "The design features the Jumpman logo associated with Jordan."
+        },
+        {
+          "brand": "NBA",
+          "confidence": 0.8,
+          "notes": "Official NBA merchandise typically features team logos."
+        },
+        {
+          "brand": "Mitchell & Ness",
           "confidence": 0.6,
-          "notes": "Known for trendy graphic tees."
-        },
-        {
-          "brand": "H&M",
-          "confidence": 0.5,
-          "notes": "Regularly features band-themed apparel."
-        },
-        {
-          "brand": "Uniqlo",
-          "confidence": 0.4,
-          "notes": "Offers graphic tees, including licensed merchandise."
-        },
-        {
-          "brand": "Forever 21",
-          "confidence": 0.4,
-          "notes": "Carries a wide range of graphic t-shirts."
+          "notes": "Known for retro NBA apparel and might carry similar styles."
         }
       ],
       "purchase_links": [
-        {
-          "label": "Zara",
-          "url": "https://www.zara.com/us/",
-          "notes": "Similar style available."
-        },
-        {
-          "label": "H&M",
-          "url": "https://www2.hm.com/en_us/index.html",
-          "notes": "Check for band graphic tees."
-        },
-        {
-          "label": "Uniqlo",
-          "url": "https://www.uniqlo.com/us/en/",
-          "notes": "Offers licensed graphic tees."
-        }
-      ]
-    }
-  },
-  {
-    "item_name": "black shorts",
-    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/black_shorts.png",
-    "metadata": {
-      "description": "Black athletic shorts with an elastic waistband and drawstring.",
-      "brand_candidates": [
-        {
-          "brand": "H&M",
-          "confidence": 0.7,
-          "notes": "Known for affordable and trendy athletic wear."
-        },
-        {
-          "brand": "Nike",
-          "confidence": 0.6,
-          "notes": "Offers a variety of athletic shorts and may carry similar styles."
-        },
-        {
-          "brand": "Adidas",
-          "confidence": 0.5,
-          "notes": "Sportswear brand that features shorts suitable for athletic activities."
-        },
-        {
-          "brand": "Reebok",
-          "confidence": 0.4,
-          "notes": "Sells casual and athletic shorts that resemble this style."
-        }
-      ],
-      "purchase_links": [
-        {
-          "label": "H&M",
-          "url": "https://www.hm.com/product/hm-black-athletic-shorts",
-          "notes": "similar style"
-        },
         {
           "label": "Nike",
-          "url": "https://www.nike.com/product/nike-black-shorts",
-          "notes": "similar style"
+          "url": "https://www.nike.com/t/charlotte-hornets-jumpman-nba-hoodie-QKT2JD",
+          "notes": "Exact match available on official store."
         },
         {
-          "label": "Adidas",
-          "url": "https://www.adidas.com/product/adidas-black-shorts",
-          "notes": "similar style"
-        }
-      ]
-    }
-  },
-  {
-    "item_name": "black sandals",
-    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/black_sandals.png",
-    "metadata": {
-      "description": "Black casual sandals with adjustable straps and a bow detail.",
-      "brand_candidates": [
-        {
-          "brand": "Teva",
-          "confidence": 0.7,
-          "notes": "Known for similar styles of casual sandals."
-        },
-        {
-          "brand": "Havaianas",
-          "confidence": 0.5,
-          "notes": "Offers funky casual sandals, including strap designs."
-        },
-        {
-          "brand": "Urban Outfitters",
-          "confidence": 0.4,
-          "notes": "Sells a variety of casual footwear, including trendy sandals."
-        }
-      ],
-      "purchase_links": [
-        {
-          "label": "Teva Official Store",
-          "url": "https://www.teva.com",
-          "notes": "similar style"
-        },
-        {
-          "label": "Havaianas Official Store",
-          "url": "https://www.havaianas.com",
-          "notes": "similar style"
-        },
-        {
-          "label": "Urban Outfitters",
-          "url": "https://www.urbanoutfitters.com",
-          "notes": "similar style"
-        }
-      ]
-    }
-  },
-  {
-    "item_name": "bracelet",
-    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/bracelet.png",
-    "metadata": {
-      "description": "A simple black metal cuff bracelet",
-      "brand_candidates": [
-        {
-          "brand": "Maiden Name",
-          "confidence": 0.7,
-          "notes": "Known for minimalist jewelry styles"
-        },
-        {
-          "brand": "Gorjana",
-          "confidence": 0.6,
-          "notes": "Offers sleek and simple designs"
-        },
-        {
-          "brand": "Miansai",
-          "confidence": 0.5,
-          "notes": "Features modern and minimalistic accessories"
-        }
-      ],
-      "purchase_links": [
-        {
-          "label": "Maiden Name Store",
-          "url": "https://www.maidenname.com/collections/all/products/black-cuff-bracelet",
-          "notes": "similar style"
-        },
-        {
-          "label": "Gorjana",
-          "url": "https://www.gorjana.com/collections/bracelets/products/black-cuff-bracelet",
-          "notes": "similar style"
-        },
-        {
-          "label": "Miansai",
-          "url": "https://www.miansai.com/products/black-cuff-bracelet",
-          "notes": "similar style"
+          "label": "Fanatics",
+          "url": "https://www.fanatics.com/nba/charlotte-hornets-hoodies/",
+          "notes": "Similar styles available for NBA fans."
         }
       ]
     }

@@ -1,2 +1,2 @@
-"""Dresser app package."""
+"""Tailor app package."""
 

@@ -20,7 +20,7 @@ router = APIRouter(
     tags=["closet"],
 )
 
-# Category enum matching @dresser/contracts
+# Category enum matching @tailor/contracts
 CATEGORY_ENUM = ['top', 'bottom', 'dress', 'outerwear', 'shoes', 'accessories', 'other']
 
 
@@ -43,7 +43,7 @@ class ClosetItemCreateIn(BaseModel):
 
 
 class ClosetItemOut(BaseModel):
-    """Output schema matching ClosetItem contract from @dresser/contracts.
+    """Output schema matching ClosetItem contract from @tailor/contracts.
     
     All fields are camelCase to match the frontend contract exactly.
     Note: category is required in contract but DB allows null - we'll return null if not set.
@@ -130,7 +130,7 @@ async def list_closet_items_endpoint(
     """List all clothing items for the authenticated user.
     
     Returns:
-        List of ClosetItemOut objects matching the @dresser/contracts ClosetItem type
+        List of ClosetItemOut objects matching the @tailor/contracts ClosetItem type
     """
     request_start = time.time()
     
@@ -169,7 +169,7 @@ async def create_closet_item_endpoint(
         db: Database session
         
     Returns:
-        ClosetItemOut object matching the @dresser/contracts ClosetItem type
+        ClosetItemOut object matching the @tailor/contracts ClosetItem type
         
     Raises:
         HTTPException: If validation fails

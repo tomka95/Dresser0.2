@@ -4,8 +4,8 @@ import userEvent from '@testing-library/user-event';
 import OutfitsPage from '@/app/outfits/page';
 import { useOutfitsStore } from '@/stores/useOutfitsStore';
 import { useClosetStore } from '@/stores/useClosetStore';
-import type { OutfitSuggestion } from '@dresser/contracts';
-import type { ClosetItem } from '@dresser/contracts';
+import type { OutfitSuggestion } from '@tailor/contracts';
+import type { ClosetItem } from '@tailor/contracts';
 
 // Mock the stores
 vi.mock('@/stores/useOutfitsStore', () => ({

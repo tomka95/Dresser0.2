@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 from .config import EXCLUDED_FOLDERS, IMAP_PORT, IMAP_SERVER, PURCHASE_SEARCH_TERMS
 from .models import EmailMetadata
 
-logger = logging.getLogger("dresser.gmail")
+logger = logging.getLogger("tailor.gmail")
 logger.setLevel(logging.INFO)
 
 

@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ClosetPage from '@/app/closet/page';
 import { useClosetStore } from '@/stores/useClosetStore';
-import type { ClosetItem } from '@dresser/contracts';
+import type { ClosetItem } from '@tailor/contracts';
 
 // Mock the store
 vi.mock('@/stores/useClosetStore', () => ({
@@ -162,7 +162,7 @@ describe('ClosetPage', () => {
       name: expect.stringContaining('Sample Item'),
       category: 'other',
       color: 'mixed tones',
-      brand: 'Dresser Mock',
+      brand: 'Tailor Mock',
     });
   });
 

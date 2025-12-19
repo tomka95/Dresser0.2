@@ -4,7 +4,7 @@ export default function OnboardingPage() {
   return (
     <div className="container mx-auto px-4 py-16">
       <div className="max-w-2xl mx-auto">
-        <h1 className="text-3xl font-bold mb-6">Welcome to Dresser</h1>
+        <h1 className="text-3xl font-bold mb-6">Welcome to Tailor</h1>
         <p className="text-gray-600 mb-8">
           Let's set up your closet and get started with AI-powered outfit
           suggestions.
