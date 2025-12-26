@@ -224,7 +224,7 @@ class GmailOAuthClient:
             # Use BeautifulSoup to extract text from HTML (same as IMAP version)
             combined_html = "\n".join(html_parts)
             soup = BeautifulSoup(combined_html, "html.parser")
-            return soup.get_text(separator=" ", strip=True)
+            return soupClothingItem.get_text(separator=" ", strip=True)
         
         return ""
 

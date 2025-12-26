@@ -144,7 +144,7 @@ async def list_recent_messages(
 
 @router.post("/clothing-items")
 async def extract_clothing_from_gmail(
-    max_years: float | None = None,
+    max_years: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:

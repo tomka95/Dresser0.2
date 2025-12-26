@@ -58,7 +58,6 @@ class SupabaseStorageClient:
             return f"{self.public_base_url}/{self.bucket}/{key}"
         return key
 
-
     def upload_bytes(
         self,
         image_bytes: bytes,

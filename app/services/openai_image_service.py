@@ -1,16 +1,62 @@
-import os
+import asyncio
 import logging
+from functools import partial
 from typing import Optional
 from uuid import UUID
-import httpx
-from openai import AsyncOpenAI
 
+from app.services.ai_provider import get_ai_provider
 from app.utils.supabase_storage import SupabaseStorageClient
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+async def _generate_image_from_text_prompt(prompt: str) -> bytes:
+    """
+    Generate an image from a text prompt using Gemini.
+    
+    TODO: This is a temporary implementation using text generation.
+    This should be replaced with a proper text-to-image API call once
+    the exact Gemini image-generation API is decided and available.
+    
+    Args:
+        prompt: Text description of the image to generate
+        
+    Returns:
+        Raw image bytes
+        
+    Raises:
+        ValueError: If image bytes cannot be extracted from the response
+    """
+    ai = get_ai_provider()
+    
+    # TODO: Replace this with proper Gemini text-to-image API call
+    # For now, using generate_content with text only as a placeholder
+    # This will need to be updated when Gemini's image generation API is available
+    loop = asyncio.get_running_loop()
+    resp = await loop.run_in_executor(
+        None,
+        partial(
+            ai._client.models.generate_content,
+            model="gemini-1.5-flash",
+            contents=[{"text": prompt}]
+        )
+    )
+    
+    # TODO: Extract image bytes from response
+    # The exact structure depends on Gemini's response format for image generation
+    # This is a placeholder that will need to be implemented based on
+    # the actual response structure from Gemini's text-to-image API
+    
+    # Placeholder - this will need to be updated once we know the exact response format
+    if hasattr(resp, 'candidates') and resp.candidates:
+        candidate = resp.candidates[0]
+        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+            for part in candidate.content.parts:
+                if hasattr(part, 'inline_data') and hasattr(part.inline_data, 'data'):
+                    return part.inline_data.data
+    
+    # Fallback: raise an error if we can't extract the image
+    raise ValueError("Could not extract image bytes from Gemini response")
 
 
 async def generate_white_bg_product_image_from_text(
@@ -19,8 +65,8 @@ async def generate_white_bg_product_image_from_text(
     user_id: UUID | str,
 ) -> Optional[str]:
     """
-    Uses OpenAI's image generation to produce a single e-commerce style
-    white-background product photo for the given brand + product name.
+    Uses AI provider to produce a single e-commerce style white-background
+    product photo for the given brand + product name.
     Uploads the resulting image to Supabase storage and returns the public URL.
     
     Args:
@@ -46,33 +92,20 @@ Requirements:
 - Do NOT add creative variations or new design elements.
 - Show ONLY the product itself, centered, on a pure white (#FFFFFF) background.
 - Do NOT put the product on a model or in a scene.
+- Use high-quality product photography with natural shadows and professional lighting.
 - Avoid text, logos, or watermarks on the image that are not part of the real product.
 
 If some details are unclear from the name, make the safest generic choice that would
 plausibly match the real product and avoid creative changes.
 """.strip()
 
-        # Call OpenAI Images API (DALL-E)
+        # Generate image using AI provider
         logger.info(f"Generating product image for {brand} {product_name}")
-        response = await client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            n=1,
-            size="1024x1024",
-            quality="standard",
-        )
+        image_bytes = await _generate_image_from_text_prompt(prompt)
 
-        # Get the image URL from the response
-        image_url = response.data[0].url
-        if not image_url:
-            logger.error("OpenAI returned no image URL")
+        if not image_bytes:
+            logger.error("AI provider returned no image bytes")
             return None
-
-        # Download the image
-        async with httpx.AsyncClient() as http_client:
-            image_response = await http_client.get(image_url)
-            image_response.raise_for_status()
-            image_bytes = image_response.content
 
         # Upload to Supabase storage
         storage_client = SupabaseStorageClient.from_env()
@@ -94,3 +127,7 @@ plausibly match the real product and avoid creative changes.
             exc_info=True,
         )
         return None
+
+
+
+

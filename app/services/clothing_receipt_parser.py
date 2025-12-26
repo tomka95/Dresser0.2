@@ -198,9 +198,6 @@ def extract_store_name(email: Email) -> Optional[str]:
             full_domain = domain_match.group(1)
             store = _extract_store_from_domain(full_domain)
             if store:
-                # Handle common variations
-                if store in ["Zara", "Hm", "Asos", "Nike", "Adidas"]:
-                    return store
                 return store
 
         # Try to extract from sender name: "Zara <orders@zara.com>"

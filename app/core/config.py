@@ -7,7 +7,11 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
-    OPENAI_API_KEY: str
+    # LLM Provider configuration
+    LLM_PROVIDER: str = "gemini"
+    OPENAI_API_KEY: Optional[str] = None
+    GEMINI_API_KEY: Optional[str] = None
+    
     IMAGE_API_BASE_URL: str
     IMAGE_API_MODEL: str
     IMAGE_API_TIMEOUT: float

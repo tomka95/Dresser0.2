@@ -1,7 +1,6 @@
 """Clothing pipeline service for detecting items and generating product images."""
 
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -10,19 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
-from PIL import Image
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
-
+from app.services.ai_provider import get_ai_provider
 from app.utils.image_loader import ImageLoader
-
-logger = logging.getLogger(__name__)
-
-# Load environment variables from .env file
-load_dotenv()
-
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 CLOTHING_LIST_PROMPT = """
 From the input image, you are a fashion vision assistant.
@@ -107,31 +95,9 @@ def sanitize_filename(item_name: str) -> str:
 async def detect_clothing_items(image_path: str) -> List[str]:
     """Call Vision to detect clothing items and return a list of item names."""
     image_data = await ImageLoader.load(image_path)
-
-    b64_str = base64.b64encode(image_data.data).decode("utf-8")
-    data_url = f"data:image/{image_data.format};base64,{b64_str}"
-
-    resp = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": CLOTHING_LIST_PROMPT},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
-                ],
-            }
-        ],
-    )
-
-    text = resp.choices[0].message.content.strip()
-    # Split by comma and normalize
-    items = [part.strip() for part in text.split(",") if part.strip()]
-    # Clean item names: strip quotes and whitespace
-    items = [item.strip(' "\'') for item in items]
+    ai = get_ai_provider()
+    
+    items = await ai.detect_clothing_items_from_image(image_data)
     return items
 
 
@@ -141,98 +107,30 @@ async def generate_item_image_with_responses(
     output_dir: str,
 ) -> Optional[str]:
     """
-    Using the Responses API, generate a new product-style image of ONLY
-    the given item from the original outfit photo.
+    Generate a new product-style image of ONLY the given item from the original outfit photo.
 
-    - Sends the full outfit photo as an input_image.
-    - Sends an input_text instruction referencing `item_name`.
-    - Uses the built-in image_generation tool to produce a new image.
+    - Loads the outfit image.
+    - Uses AI provider to generate a white-background product image.
     - Saves the result as PNG in output_dir and returns the file path.
     """
     os.makedirs(output_dir, exist_ok=True)
 
     # Load the original outfit image as bytes + format
     image_data = await ImageLoader.load(outfit_image_path)
-
-    # Convert raw bytes to a base64 data URL string for JSON transport
-    b64_str = base64.b64encode(image_data.data).decode("utf-8")
-
-    # Derive a MIME type from the image format
-    fmt = (image_data.format or "jpeg").lower()
-    if fmt in ("jpg", "jpeg"):
-        mime_type = "image/jpeg"
-    else:
-        mime_type = f"image/{fmt}"
-
-    data_url = f"data:{mime_type};base64,{b64_str}"
-
-    # Text instruction for this specific item
-    instruction = f"""
-You are an image editing assistant for a fashion e-commerce site.
-
-You are given a full-body outfit photo of a person. Your task is to use
-the built-in image_generation tool to generate a NEW studio-style product
-image of ONLY this item from the photo:
-
-Item: {item_name}
-
-Requirements:
-- Base the generated image on how this item actually appears in the photo:
-  color, shade, pattern, material, logos, bows, seams, and other visible
-  design details.
-- Do NOT change or idealize the design. Preserve the real-world look as
-  closely as possible.
-- Remove the person and all other clothing items.
-- Place the item on a clean white or very light neutral background.
-- Use realistic studio lighting with soft, natural shadows.
-- The item must be fully visible in frame (no edges cut off).
-- Output a single, front-facing product-style image suitable for an
-  online clothing catalog.
-"""
-
-    # Build Responses API input with both text and image
-    try:
-        response = await client.responses.create(
-            model="gpt-4o",  # or "gpt-4.1" depending on what is configured
-            tools=[{"type": "image_generation"}],
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": instruction},
-                        {
-                            "type": "input_image",
-                            "image_url": data_url,
-                        },
-                    ],
-                }
-            ],
-        )
-
-        # Extract the image_generation_call result (base64 image)
-        image_base64 = None
-        for output in response.output:
-            if output.type == "image_generation_call":
-                # In the Responses API, the generated image data is in .result
-                image_base64 = output.result
-                break
-
-        if not image_base64:
-            raise RuntimeError(
-                f"No image_generation_call result returned for item: {item_name}"
-            )
-    except (RuntimeError, Exception) as e:
-        logger.warning(
-            f"Failed to generate image for item '{item_name}': {str(e)}"
-        )
-        return None  # Return None to skip this item
+    
+    # Get AI provider and generate product image
+    ai = get_ai_provider()
+    image_bytes = await ai.generate_product_image_from_outfit(
+        item_name=item_name,
+        outfit_image=image_data
+    )
 
     # Save image to disk
     safe_name = sanitize_filename(item_name)
     final_path = Path(output_dir) / f"{safe_name}.png"
 
     with open(final_path, "wb") as f:
-        f.write(base64.b64decode(image_base64))
+        f.write(image_bytes)
 
     return str(final_path)
 
@@ -240,53 +138,14 @@ Requirements:
 async def get_brand_metadata_for_image(image_path: str) -> Dict[str, Any]:
     """Get brand/store metadata for a generated product image."""
     image_data = await ImageLoader.load(image_path)
-
-    # Encode raw bytes to base64 STRING and build a data URL
-    b64_str = base64.b64encode(image_data.data).decode("utf-8")
-    data_url = f"data:image/{image_data.format};base64,{b64_str}"
-
-    resp = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": BRAND_JSON_PROMPT},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
-                ],
-            }
-        ],
+    ai = get_ai_provider()
+    
+    metadata = await ai.get_brand_metadata_for_image(
+        product_image=image_data,
+        json_prompt=BRAND_JSON_PROMPT
     )
-    raw = resp.choices[0].message.content.strip()
-
-    # Best-effort JSON parsing
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # Attempt to extract JSON from markdown code blocks if present
-        if "```json" in raw:
-            start = raw.find("```json") + 7
-            end = raw.find("```", start)
-            if end > start:
-                raw = raw[start:end].strip()
-                data = json.loads(raw)
-            else:
-                raise
-        elif "```" in raw:
-            start = raw.find("```") + 3
-            end = raw.find("```", start)
-            if end > start:
-                raw = raw[start:end].strip()
-                data = json.loads(raw)
-            else:
-                raise
-        else:
-            raise
-
-    return data
+    
+    return metadata
 
 
 async def process_outfit_image(
@@ -306,7 +165,7 @@ async def process_outfit_image(
 
     detected_items = await detect_clothing_items(outfit_image_path)
 
-    # Generate item images using Responses API, with the original photo as input
+    # Generate item images using AI provider, with the original photo as input
     image_tasks = [
         generate_item_image_with_responses(
             item_name=item,
