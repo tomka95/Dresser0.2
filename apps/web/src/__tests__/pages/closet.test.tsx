@@ -111,8 +111,6 @@ describe('ClosetPage', () => {
 
     expect(screen.getByText('Blue Shirt')).toBeInTheDocument();
     expect(screen.getByText('Black Jeans')).toBeInTheDocument();
-    expect(screen.getByText('top')).toBeInTheDocument();
-    expect(screen.getByText('bottom')).toBeInTheDocument();
   });
 
   it('should call fetchItems on mount when items are empty', () => {

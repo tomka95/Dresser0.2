@@ -6,7 +6,7 @@ import boto3
 from botocore.exceptions import ClientError
 from sqlalchemy.orm import Session
 
-from app.models import ClothingItem, Tag
+from app.models import ClothingItem
 from app.utils.supabase_storage import SupabaseStorageClient
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ def save_outfit_results_to_db(
     """
     Takes pipeline results and persists them:
     - ClothingItem rows (with Supabase image URLs saved directly to image_url field)
-    - Tag relations (if metadata['tags'] exists)
+    - Analysis data stored in analysis_raw JSON field
 
     Returns a list of simple dicts for API responses.
     """
@@ -62,17 +62,13 @@ def save_outfit_results_to_db(
                 )
                 image_url = None  # Ensure image_url is None if upload failed
 
-        # Optional: tags
-        tags = metadata.get("tags") or []
-        for tag_name in tags:
-            # simple get-or-create for Tag
-            tag = db.query(Tag).filter(Tag.name == tag_name).first()
-            if not tag:
-                tag = Tag(name=tag_name)
-                db.add(tag)
-                db.flush()
-            # relationship uses secondary="clothing_item_tags"
-            item.tags.append(tag)
+        # Store analysis data (tags, metadata, etc.) in analysis_raw JSON field
+        # TODO: analysis_raw expected schema (paste example JSON here once provided)
+        analysis_data = {
+            "tags": metadata.get("tags") or [],
+            "metadata": metadata,  # Store full metadata for now
+        }
+        item.analysis_raw = analysis_data
 
         created_items.append(
             {

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
 
-    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint, Table, Index
+    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint, Table, Index, JSON
 
 )
 
@@ -15,13 +15,6 @@ from sqlalchemy.orm import relationship
 from .db import Base
 
 
-# Association table for many-to-many relationship between ClothingItem and Tag
-clothing_item_tags = Table(
-    'clothing_item_tags',
-    Base.metadata,
-    Column('clothing_item_id', UUID(as_uuid=True), ForeignKey('clothing_items.id', ondelete='CASCADE'), primary_key=True),
-    Column('tag_id', UUID(as_uuid=True), ForeignKey('tags.id', ondelete='CASCADE'), primary_key=True)
-)
 
 
 class User(Base):
@@ -86,6 +79,8 @@ class ClothingItem(Base):
 
     image_url = Column(Text, nullable=True)
 
+    analysis_raw = Column(JSON, nullable=True)  # JSON field for storing analysis/tags data
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -94,8 +89,6 @@ class ClothingItem(Base):
     user = relationship("User", back_populates="clothing_items")
 
     images = relationship("ItemImage", back_populates="clothing_item", cascade="all, delete-orphan")
-
-    tags = relationship("Tag", secondary="clothing_item_tags", back_populates="clothing_items")
 
 
 
@@ -127,24 +120,6 @@ class ItemImage(Base):
     clothing_item = relationship("ClothingItem", back_populates="images")
 
 
-
-
-class Tag(Base):
-
-    __tablename__ = "tags"
-
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-
-    name = Column(String, unique=True, nullable=False)
-
-    type = Column(String, nullable=True)
-
-
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-    clothing_items = relationship("ClothingItem", secondary="clothing_item_tags", back_populates="tags")
 
 
 class GoogleAccount(Base):

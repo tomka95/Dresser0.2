@@ -1,36 +1,31 @@
 [
   {
-    "item_name": "black hoodie",
-    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/black_hoodie.png",
+    "item_name": "t-shirt",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/t-shirt.png",
     "metadata": {
-      "description": "Black hoodie with Charlotte Hornets logo and NBA branding.",
+      "description": "A men's short-sleeved t-shirt in a dark red or maroon color, featuring a white Nike swoosh logo on the left chest.",
       "brand_candidates": [
         {
-          "brand": "Jordan Brand",
-          "confidence": 0.9,
-          "notes": "The design features the Jumpman logo associated with Jordan."
-        },
-        {
-          "brand": "NBA",
-          "confidence": 0.8,
-          "notes": "Official NBA merchandise typically features team logos."
-        },
-        {
-          "brand": "Mitchell & Ness",
-          "confidence": 0.6,
-          "notes": "Known for retro NBA apparel and might carry similar styles."
+          "brand": "Nike",
+          "confidence": 1.0,
+          "notes": "Clearly visible Nike swoosh logo on the chest."
         }
       ],
       "purchase_links": [
         {
-          "label": "Nike",
-          "url": "https://www.nike.com/t/charlotte-hornets-jumpman-nba-hoodie-QKT2JD",
-          "notes": "Exact match available on official store."
+          "label": "Nike Official Store",
+          "url": "https://www.nike.com/t/dri-fit-mens-fitness-t-shirt-L1b41x/DX0990-677",
+          "notes": "Exact match for Nike Men's Dri-FIT Fitness T-Shirt in similar color."
         },
         {
-          "label": "Fanatics",
-          "url": "https://www.fanatics.com/nba/charlotte-hornets-hoodies/",
-          "notes": "Similar styles available for NBA fans."
+          "label": "Zalando",
+          "url": "https://www.zalando.co.uk/nike-performance-d-fit-tee-crew-basic-t-shirt-night-maroon-ni142o0e4-g11.html",
+          "notes": "Similar Nike Dri-FIT t-shirt in 'Night Maroon'."
+        },
+        {
+          "label": "JD Sports",
+          "url": "https://www.jdsports.co.uk/product/red-nike-dri-fit-t-shirt/16206089/",
+          "notes": "Similar Nike Dri-FIT t-shirt in red/maroon."
         }
       ]
     }

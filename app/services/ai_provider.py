@@ -84,7 +84,7 @@ Examples: "t-shirt, jeans, sneakers" or "dress, sandals"
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-1.5-flash",
+                model="gemini-2.5-flash-image",
                 contents=parts
             )
         )
@@ -141,7 +141,7 @@ Examples: "t-shirt, jeans, sneakers" or "dress, sandals"
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-1.5-flash",
+                model="gemini-2.5-flash-image",
                 contents=parts
             )
         )
@@ -218,7 +218,7 @@ Requirements:
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-1.5-flash",
+                model="gemini-2.5-flash-image",
                 contents=parts
             )
         )
@@ -230,11 +230,11 @@ Requirements:
         # Expected structure might be something like:
         # resp.candidates[0].content.parts[0].inline_data.data
         # or similar, depending on the actual API response
-        
-        # Placeholder - this will need to be updated once we know the exact response format
+        #TODO: Raise value error here doesnt point to the problem, FIX IT
         if hasattr(resp, 'candidates') and resp.candidates:
             candidate = resp.candidates[0]
-            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+            if hasattr(candidate, 'content') and candidate.content is not None and hasattr(candidate.content, 'parts') and candidate.content.parts is not None:
+                print("PRINT:"+str(candidate.content.parts))
                 for part in candidate.content.parts:
                     if hasattr(part, 'inline_data') and hasattr(part.inline_data, 'data'):
                         return part.inline_data.data
