@@ -37,10 +37,15 @@ describe('ItemDetailsPage', () => {
     vi.mocked(useClosetStore).mockImplementation((selector) => {
       const state = {
         items: [],
+        isLoading: false,
         isItemLoading: { [itemId]: false },
+        hydratedItemIds: {},
+        hasFetchedItems: false,
         error: undefined,
         fetchItem: mockFetchItem,
         updateItem: mockUpdateItem,
+        fetchItems: vi.fn(),
+        addItem: vi.fn(),
       };
       return selector(state);
     });
@@ -49,10 +54,16 @@ describe('ItemDetailsPage', () => {
   it('renders loading state', () => {
     vi.mocked(useClosetStore).mockImplementation((selector) => {
       return selector({ 
+        items: [],
+        isLoading: false,
         isItemLoading: { [itemId]: true },
+        hydratedItemIds: {},
+        hasFetchedItems: false,
         error: undefined,
         fetchItem: mockFetchItem,
         updateItem: mockUpdateItem,
+        fetchItems: vi.fn(),
+        addItem: vi.fn(),
       });
     });
 

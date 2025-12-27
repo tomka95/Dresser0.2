@@ -13,6 +13,7 @@ export default function ClosetPage() {
   const items = useClosetStore((state) => state.items);
   const isLoading = useClosetStore((state) => state.isLoading);
   const error = useClosetStore((state) => state.error);
+  const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
   const fetchItems = useClosetStore((state) => state.fetchItems);
   const addItem = useClosetStore((state) => state.addItem);
 
@@ -22,10 +23,10 @@ export default function ClosetPage() {
   }, []);
 
   useEffect(() => {
-    if (items.length === 0 && !isLoading) {
+    if (items.length === 0 && !isLoading && !error && !hasFetchedItems) {
       fetchItems();
     }
-  }, [fetchItems, isLoading, items.length]);
+  }, [fetchItems, isLoading, items.length, error, hasFetchedItems]);
 
   // Track successful data load
   useEffect(() => {

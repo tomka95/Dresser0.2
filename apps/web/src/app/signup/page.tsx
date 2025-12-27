@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { signup } from '@/lib/api/auth';
+import { setAuth } from '@/lib/auth/storage';
 
 export default function SignUpPage() {
   const router = useRouter();
@@ -21,7 +22,12 @@ export default function SignUpPage() {
     try {
       const result = await signup({ email, password });
       console.log('Signup successful:', result);
-      // TODO: Store user session/token
+      // Store user session/token
+      setAuth({
+        access_token: result.access_token,
+        token_type: result.token_type,
+        user: result.user,
+      });
       // Redirect to closet or onboarding
       router.push('/closet');
     } catch (err) {

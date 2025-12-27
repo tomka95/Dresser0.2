@@ -1,0 +1,33 @@
+[
+  {
+    "item_name": "t-shirt",
+    "image_path": "outfit_outputs/357017ec-52b1-47cf-955a-19deb2259c47/items/t-shirt.png",
+    "metadata": {
+      "description": "A men's short-sleeved t-shirt in a dark red or maroon color with a small white Nike swoosh logo on the left chest.",
+      "brand_candidates": [
+        {
+          "brand": "Nike",
+          "confidence": 1.0,
+          "notes": "Clearly visible Nike swoosh logo"
+        }
+      ],
+      "purchase_links": [
+        {
+          "label": "Nike",
+          "url": "https://www.nike.com/t/dri-fit-mens-fitness-t-shirt-L6xM9q/DD6847-652",
+          "notes": "Exact match for Nike Dri-FIT Men's Fitness T-Shirt in similar color"
+        },
+        {
+          "label": "Zappos",
+          "url": "https://www.zappos.com/p/nike-dri-fit-legend-2-0-tee-dark-beetroot-white/product/9427027/color/810675",
+          "notes": "Similar Nike Dri-FIT tee available at Zappos"
+        },
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/Nike-Dri-FIT-Legend-T-Shirt-Sleeve/dp/B0B669L262",
+          "notes": "Similar Nike Dri-FIT t-shirt on Amazon"
+        }
+      ]
+    }
+  }
+]

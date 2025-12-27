@@ -25,6 +25,7 @@ describe('ClosetPage', () => {
       const state = {
         items: [] as ClosetItem[],
         isLoading: false,
+        hasFetchedItems: false,
         error: undefined as string | undefined,
         fetchItems: mockFetchItems,
         addItem: mockAddItem,
@@ -47,6 +48,7 @@ describe('ClosetPage', () => {
       const state = {
         items: [],
         isLoading: true,
+        hasFetchedItems: false,
         error: undefined,
         fetchItems: mockFetchItems,
         addItem: mockAddItem,
@@ -64,6 +66,7 @@ describe('ClosetPage', () => {
       const state = {
         items: [],
         isLoading: false,
+        hasFetchedItems: false,
         error: 'Network error',
         fetchItems: mockFetchItems,
         addItem: mockAddItem,
@@ -100,6 +103,7 @@ describe('ClosetPage', () => {
       const state = {
         items: mockItems,
         isLoading: false,
+        hasFetchedItems: true,
         error: undefined,
         fetchItems: mockFetchItems,
         addItem: mockAddItem,
@@ -135,6 +139,7 @@ describe('ClosetPage', () => {
       const state = {
         items: mockItems,
         isLoading: false,
+        hasFetchedItems: true,
         error: undefined,
         fetchItems: mockFetchItems,
         addItem: mockAddItem,
@@ -169,6 +174,7 @@ describe('ClosetPage', () => {
       const state = {
         items: [],
         isLoading: true,
+        hasFetchedItems: false,
         error: undefined,
         fetchItems: mockFetchItems,
         addItem: mockAddItem,
