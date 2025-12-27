@@ -1,22 +1,61 @@
 """AI provider abstraction layer for supporting multiple LLM providers (Gemini, OpenAI, etc.)."""
+# STATUS: implements Gemini image+metadata generation with shared JSON extraction helper.
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import logging
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from google import genai
+from google.genai import types
 
 from app.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class DetectedItem:
     """Represents a detected clothing item."""
     name: str
+
+
+def extract_json_metadata(response_text: str) -> Dict[str, Any]:
+    """
+    Extract a JSON object from a model text response.
+
+    Handles both raw JSON and ```json fenced blocks. Returns an empty dict
+    if parsing fails or the result is not a JSON object.
+    """
+    if not isinstance(response_text, str):
+        return {}
+
+    text = response_text.strip()
+
+    # Try to unwrap markdown fences if present
+    if "```" in text:
+        # Prefer ```json fences when present
+        if "```json" in text:
+            start = text.find("```json") + len("```json")
+        else:
+            start = text.find("```") + len("```")
+
+        end = text.find("```", start)
+        if end != -1:
+            text = text[start:end].strip()
+
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Failed to parse JSON metadata from model response: %s", exc)
+        return {}
 
 
 class AIProvider:
@@ -148,23 +187,7 @@ Examples: "t-shirt, jeans, sneakers" or "dress, sandals"
         
         # Extract response text and try to parse as JSON
         response_text = resp.text.strip()
-        
-        try:
-            # Try to extract JSON from the response (might be wrapped in markdown code blocks)
-            if "```json" in response_text:
-                start = response_text.find("```json") + 7
-                end = response_text.find("```", start)
-                response_text = response_text[start:end].strip()
-            elif "```" in response_text:
-                start = response_text.find("```") + 3
-                end = response_text.find("```", start)
-                response_text = response_text[start:end].strip()
-            
-            metadata = json.loads(response_text)
-            return metadata if isinstance(metadata, dict) else {}
-        except (json.JSONDecodeError, ValueError) as e:
-            # Return empty dict if JSON parsing fails
-            return {}
+        return extract_json_metadata(response_text)
     
     async def generate_product_image_from_outfit(
         self,
@@ -223,24 +246,100 @@ Requirements:
             )
         )
         
-        # TODO: Extract raw image bytes from the response
-        # The exact structure depends on Gemini's response format for image generation
-        # For now, this is a placeholder that will need to be implemented based on
-        # the actual response structure from Gemini's image generation API
-        # Expected structure might be something like:
-        # resp.candidates[0].content.parts[0].inline_data.data
-        # or similar, depending on the actual API response
-        
-        # Placeholder - this will need to be updated once we know the exact response format
-        if hasattr(resp, 'candidates') and resp.candidates:
+        if hasattr(resp, "candidates") and resp.candidates:
             candidate = resp.candidates[0]
-            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+            if hasattr(candidate, "content") and hasattr(candidate.content, "parts"):
                 for part in candidate.content.parts:
-                    if hasattr(part, 'inline_data') and hasattr(part.inline_data, 'data'):
-                        return part.inline_data.data
+                    if hasattr(part, "inline_data") and hasattr(part.inline_data, "data"):
+                        data = part.inline_data.data
+                        # The SDK may return either bytes or base64-encoded string
+                        if isinstance(data, bytes):
+                            return data
+                        if isinstance(data, str):
+                            try:
+                                return base64.b64decode(data)
+                            except (base64.binascii.Error, ValueError):
+                                logger.warning("Failed to base64-decode inline image data")
         
         # Fallback: raise an error if we can't extract the image
         raise ValueError("Could not extract image bytes from Gemini response")
+
+    async def generate_product_image_and_metadata_from_outfit(
+        self,
+        *,
+        item_name: str,
+        outfit_image,
+        json_prompt: str,
+    ) -> Tuple[bytes, Dict[str, Any]]:
+        """
+        Single-call flow that generates a product image and JSON metadata.
+
+        Uses the Gemini image model with multimodal output (TEXT + IMAGE).
+        """
+        # Determine MIME type from format or default to jpeg
+        mime_type = "image/jpeg"
+        if getattr(outfit_image, "format", None):
+            format_lower = outfit_image.format.lower()
+            if format_lower in ["png", "jpg", "jpeg"]:
+                mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
+
+        prompt = f"{json_prompt}\n\nReturn JSON ONLY in the text part. No markdown or commentary."
+
+        parts = [
+            {
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": outfit_image.data,
+                }
+            },
+            {"text": prompt},
+        ]
+
+        loop = asyncio.get_running_loop()
+        resp = await loop.run_in_executor(
+            None,
+            partial(
+                self._client.models.generate_content,
+                model="gemini-2.5-flash-image",
+                contents=parts,
+                config=types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"]
+                ),
+            ),
+        )
+
+        image_bytes: Optional[bytes] = None
+        metadata: Dict[str, Any] = {}
+
+        if hasattr(resp, "candidates") and resp.candidates:
+            candidate = resp.candidates[0]
+            if hasattr(candidate, "content") and hasattr(candidate.content, "parts"):
+                for part in candidate.content.parts:
+                    # Image bytes via inline_data
+                    if getattr(part, "inline_data", None) and getattr(
+                        part.inline_data, "data", None
+                    ) is not None:
+                        data = part.inline_data.data
+                        if isinstance(data, bytes):
+                            image_bytes = data
+                        elif isinstance(data, str):
+                            try:
+                                image_bytes = base64.b64decode(data)
+                            except (base64.binascii.Error, ValueError):
+                                logger.warning(
+                                    "Failed to base64-decode inline image data in combined call"
+                                )
+                    # JSON text metadata
+                    if getattr(part, "text", None):
+                        parsed = extract_json_metadata(part.text)
+                        if parsed:
+                            metadata = parsed
+
+        if image_bytes is None:
+            raise ValueError("Could not extract image bytes from Gemini combined response")
+
+        # On JSON failure, metadata will be {} as per extractor
+        return image_bytes, metadata
 
 
 # Module-level singleton instance

@@ -4,9 +4,9 @@ import pytest
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from app.services.openai_image_service import generate_white_bg_product_image_from_text
+from app.services.ai_image_service import generate_white_bg_product_image_from_text
 from app.gmail_closet.models import Item
-from app.services.email_clothing_service import save_email_items_for_user
+from app.gmail_closet.email_clothing_service import save_email_items_for_user
 
 
 @pytest.mark.asyncio

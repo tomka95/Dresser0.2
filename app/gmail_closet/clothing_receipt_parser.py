@@ -3,7 +3,7 @@
 import re
 from typing import List, Optional, Tuple
 
-from .email_smart_search import CLOTHING_KEYWORDS, Email, ParsedClothingItem
+from app.gmail_closet.email_smart_search import CLOTHING_KEYWORDS, Email, ParsedClothingItem
 
 # Common color names for detection
 COLOR_KEYWORDS = {
@@ -47,12 +47,12 @@ SIZE_PATTERNS = {
     "xl",
     "xxl",
     "xxxl",
-    "us",
-    "eu",
-    "uk",
+    "32", "34", "36", "38", "40", "42", "44", "46",
+    "0", "2", "4", "6", "8", "10", "12", "14", "16"
 }
 
 # Currency symbols and codes
+#TODO: add all
 CURRENCY_SYMBOLS = {"$", "€", "£", "¥", "₹", "₽", "₪"}
 CURRENCY_CODES = {"usd", "eur", "gbp", "jpy", "cad", "aud", "inr", "rub", "ils"}
 
@@ -70,7 +70,7 @@ GENERIC_EMAIL_PROVIDERS = {
     "email",
 }
 
-# Generic technical prefixes to ignore in multi-part domains
+# Generic technical prefixes to ignore in multipart domains
 GENERIC_DOMAIN_PREFIXES = {
     "e",
     "mail",
@@ -111,7 +111,7 @@ NON_CLOTHING_KEYWORDS = {
 
 
 def _extract_store_from_domain(domain: str) -> Optional[str]:
-    """Extract store name from a domain, handling multi-part domains.
+    """Extract store name from a domain, handling multipart domains.
 
     Args:
         domain: Domain string (e.g., "e.lululemon.com" or "lululemon.com").
@@ -142,7 +142,7 @@ def extract_store_name(email: Email) -> Optional[str]:
     """Extract store name from email sender, subject, or body.
 
     Handles forwarded emails by extracting the original sender from the body.
-    Handles multi-part domains by ignoring generic prefixes.
+    Handles multipart domains by ignoring generic prefixes.
 
     Args:
         email: Email object to extract store name from.

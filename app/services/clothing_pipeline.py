@@ -1,4 +1,5 @@
 """Clothing pipeline service for detecting items and generating product images."""
+# STATUS: uses one-call Gemini image+metadata flow per detected item.
 
 import asyncio
 import json
@@ -6,7 +7,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from app.services.ai_provider import get_ai_provider
 from app.utils.image_loader import ImageLoader
@@ -68,6 +69,32 @@ Rules:
 - If you are unsure, include lower confidence scores rather than omitting entries.
 """
 
+ITEM_IMAGE_AND_METADATA_PROMPT = """
+You are a fashion vision assistant. You are given an outfit photo.
+
+Task:
+1) Isolate ONLY the {item_name} from the photo and generate a white-background ecommerce product image.
+2) ALSO output ONLY valid JSON (no markdown) in the TEXT part of the response with this schema:
+
+{{
+  "name": "<descriptive product name: include primary color + brand if confident + item type. Example: 'Red Nike T-Shirt'>",
+  "item_type": "<t-shirt|jeans|blazer|sneakers|dress|...>",
+  "category": "<top|bottom|outerwear|shoes|accessory|...>",
+  "brand": "<string or null>",
+  "colors": [{{"name": "<color>", "score": 0.0-1.0, "hex": null}}],
+  "materials": [{{"name": "<material>", "score": 0.0-1.0}}],
+  "pattern": "<string or null>",
+  "attributes": ["<short attribute>", "..."],
+  "tags": [{{"text": "<tag>", "score": 0.0-1.0}}]
+}}
+
+Rules:
+- JSON must be syntactically valid
+- Use null when unknown
+- Keep "name" specific; avoid generic single-word names unless absolutely no info is available
+- Do not invent brand unless visible or very confident
+"""
+
 
 @dataclass
 class ItemResult:
@@ -104,7 +131,7 @@ async def generate_item_image_with_responses(
     item_name: str,
     outfit_image_path: str,
     output_dir: str,
-) -> str:
+) -> Tuple[str, Dict[str, Any]]:
     """
     Generate a new product-style image of ONLY the given item from the original outfit photo.
 
@@ -117,34 +144,26 @@ async def generate_item_image_with_responses(
     # Load the original outfit image as bytes + format
     image_data = await ImageLoader.load(outfit_image_path)
     
-    # Get AI provider and generate product image
+    # Get AI provider and generate product image + metadata in a single call
     ai = get_ai_provider()
-    image_bytes = await ai.generate_product_image_from_outfit(
+    image_bytes, metadata = await ai.generate_product_image_and_metadata_from_outfit(
         item_name=item_name,
-        outfit_image=image_data
+        outfit_image=image_data,
+        json_prompt=ITEM_IMAGE_AND_METADATA_PROMPT.format(item_name=item_name),
     )
 
+    # Prefer descriptive name from metadata for filename when available
+    metadata_name = metadata.get("name") if isinstance(metadata, dict) else None
+    base_name = metadata_name or item_name
+
     # Save image to disk
-    safe_name = sanitize_filename(item_name)
+    safe_name = sanitize_filename(base_name)
     final_path = Path(output_dir) / f"{safe_name}.png"
 
     with open(final_path, "wb") as f:
         f.write(image_bytes)
 
-    return str(final_path)
-
-
-async def get_brand_metadata_for_image(image_path: str) -> Dict[str, Any]:
-    """Get brand/store metadata for a generated product image."""
-    image_data = await ImageLoader.load(image_path)
-    ai = get_ai_provider()
-    
-    metadata = await ai.get_brand_metadata_for_image(
-        product_image=image_data,
-        json_prompt=BRAND_JSON_PROMPT
-    )
-    
-    return metadata
+    return str(final_path), metadata
 
 
 async def process_outfit_image(
@@ -155,8 +174,7 @@ async def process_outfit_image(
     """
     Full pipeline:
     - Detect clothing items.
-    - For each item, asynchronously generate a product image.
-    - For each generated image, get brand/store metadata.
+    - For each item, asynchronously generate a product image and metadata.
     - Save JSON summary to `json_summary_path`.
     - Return list of ItemResult.
     """
@@ -164,7 +182,7 @@ async def process_outfit_image(
 
     detected_items = await detect_clothing_items(outfit_image_path)
 
-    # Generate item images using AI provider, with the original photo as input
+    # Generate item images + metadata using AI provider, with the original photo as input
     image_tasks = [
         generate_item_image_with_responses(
             item_name=item,
@@ -173,19 +191,16 @@ async def process_outfit_image(
         )
         for item in detected_items
     ]
-    image_paths = await asyncio.gather(*image_tasks)
-
-    # For metadata, also run in parallel
-    metadata_tasks = [
-        get_brand_metadata_for_image(image_path=img_path) for img_path in image_paths
-    ]
-    metadatas = await asyncio.gather(*metadata_tasks)
+    item_results: List[Tuple[str, Dict[str, Any]]] = await asyncio.gather(*image_tasks)
 
     results: List[ItemResult] = []
-    for item, img_path, meta in zip(detected_items, image_paths, metadatas):
+    for original_item_name, (img_path, meta) in zip(detected_items, item_results):
+        item_display_name = (
+            meta.get("name") if isinstance(meta, dict) and meta.get("name") else original_item_name
+        )
         results.append(
             ItemResult(
-                name=item,
+                name=item_display_name,
                 image_path=img_path,
                 metadata=meta,
             )

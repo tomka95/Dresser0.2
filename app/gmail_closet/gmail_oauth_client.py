@@ -14,7 +14,7 @@ from googleapiclient.discovery import Resource
 from sqlalchemy.orm import Session
 
 from app.models import GoogleAccount
-from app.services.gmail_oauth_service import get_gmail_client
+from app.gmail_closet.gmail_oauth_service import get_gmail_client
 from .models import EmailMetadata
 
 logger = logging.getLogger(__name__)

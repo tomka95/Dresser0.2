@@ -16,8 +16,6 @@ class Settings(BaseSettings):
     IMAGE_API_MODEL: str
     IMAGE_API_TIMEOUT: float
 
-    GMAIL_IMAP_HOST: str
-    GMAIL_IMAP_PORT: int
     GMAIL_MAX_YEARS: float
     GMAIL_IMAP_TIMEOUT: int
 

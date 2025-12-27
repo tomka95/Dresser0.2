@@ -364,18 +364,18 @@ def dedupe_keep_max_score(items: List[Dict[str, Any]], key: str) -> List[Dict[st
     return list(seen.values())
 
 
-def normalize_gemini_analysis(analysis_json: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize Gemini analysis JSON into a consistent internal structure.
+def normalize_json_analysis(analysis_json: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize AI analysis JSON into a consistent internal structure.
     
     This function is resilient and handles:
     - Missing keys
     - Unknown shapes
-    - Different Gemini response formats
+    - Different AI response formats
     - Structured color/palette fields
     - Free-text labels
     
     Args:
-        analysis_json: Raw Gemini JSON response (can be any shape)
+        analysis_json: Raw AI JSON response (can be any shape)
         
     Returns:
         Dict with:
