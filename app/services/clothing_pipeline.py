@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Tuple
 from app.services.ai_provider import get_ai_provider
 from app.utils.image_loader import ImageLoader
 
+logger = logging.getLogger(__name__)
+
 CLOTHING_LIST_PROMPT = """
 From the input image, you are a fashion vision assistant.
 

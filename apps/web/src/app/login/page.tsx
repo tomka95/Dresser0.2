@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { login } from '@/lib/api/auth';
+import { setAuth } from '@/lib/auth/storage';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -21,7 +22,12 @@ export default function LoginPage() {
     try {
       const result = await login({ email, password });
       console.log('Login successful:', result);
-      // TODO: Store user session/token
+      // Store user session/token
+      setAuth({
+        access_token: result.access_token,
+        token_type: result.token_type,
+        user: result.user,
+      });
       // Redirect to closet
       router.push('/closet');
     } catch (err) {
