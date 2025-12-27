@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine
-from app.security import hash_password, verify_password
+from app.security import hash_password, verify_password, create_access_token
 from app.gmail_closet import router as gmail_router
 from app.api.routes import auth_google, gmail, closet
 
@@ -125,7 +125,17 @@ def signup(email: str = Form(...), password: str = Form(...), db: Session = Depe
     db.commit()
     db.refresh(user)
 
-    return {"id": str(user.id), "email": user.email}
+    # Create JWT token for the new user
+    jwt_token = create_access_token(data={"sub": str(user.id)})
+    
+    return {
+        "access_token": jwt_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+        },
+    }
 
 
 @app.post("/login")
@@ -137,8 +147,17 @@ def login(email: str = Form(...), password: str = Form(...), db: Session = Depen
     if not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Later we will return a JWT or session token here.
-    return {"id": str(user.id), "email": user.email}
+    # Create JWT token for the user
+    jwt_token = create_access_token(data={"sub": str(user.id)})
+    
+    return {
+        "access_token": jwt_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+        },
+    }
 
 
 @app.post("/outfit-image")

@@ -19,6 +19,7 @@ describe('useClosetStore', () => {
       isLoading: false,
       isItemLoading: {},
       hydratedItemIds: {},
+      hasFetchedItems: false,
       error: undefined,
     });
     vi.clearAllMocks();

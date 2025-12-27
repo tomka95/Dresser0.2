@@ -19,6 +19,7 @@ type ClosetState = {
   isLoading: boolean;
   isItemLoading: Record<string, boolean>; // Track per-item loading
   hydratedItemIds: Record<string, boolean>; // Track items that have been fetched from network (prevents refetching items with zero tags)
+  hasFetchedItems: boolean; // Track if items have been fetched at least once (prevents infinite loop when empty)
   error?: string;
   fetchItems: () => Promise<void>;
   addItem: (input: NewClosetItemInput) => Promise<void>;
@@ -31,6 +32,7 @@ export const useClosetStore = create<ClosetState>((set, get) => ({
   isLoading: false,
   isItemLoading: {},
   hydratedItemIds: {},
+  hasFetchedItems: false,
   error: undefined,
   async fetchItems() {
     // Avoid duplicate work if already loading
@@ -42,7 +44,7 @@ export const useClosetStore = create<ClosetState>((set, get) => ({
 
     try {
       const items = await apiListClosetItems();
-      set({ items, isLoading: false });
+      set({ items, isLoading: false, hasFetchedItems: true });
     } catch (error) {
       set({
         isLoading: false,
