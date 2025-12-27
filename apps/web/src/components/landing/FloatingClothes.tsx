@@ -5,9 +5,13 @@ import { Shirt, Glasses, Watch, ShoppingBag, Tag } from "lucide-react";
 
 export function FloatingClothes() {
   return (
-    <div className="relative w-full h-[400px] flex items-center justify-center overflow-hidden">
-      {/* Background Glow */}
-      <div className="absolute inset-0 bg-gradient-to-b from-blue-500/10 to-purple-500/10 blur-3xl" />
+    <div className="absolute inset-0 w-full h-full overflow-hidden" style={{ backgroundColor: 'transparent' }}>
+      {/* Background Glow - stretched to fill entire container from top to bottom, overlaying header */}
+      <div className="absolute inset-0 blur-3xl" style={{ background: 'radial-gradient(ellipse 100% 150% at 50% 50%, rgba(8, 75, 77, 0.15) 0%, rgba(8, 75, 77, 0.08) 30%, rgba(8, 75, 77, 0.03) 60%, transparent 100%)' }} />
+      
+      {/* Container for icons - positioned in center area, maintaining original layout */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="relative w-full max-w-md h-[400px]">
 
       {/* Floating Icons */}
       <motion.div
@@ -84,8 +88,11 @@ export function FloatingClothes() {
             repeat: Infinity,
             ease: "easeInOut"
          }}
-         className="w-32 h-32 rounded-full bg-gradient-to-tr from-blue-500/30 to-purple-500/30 blur-2xl"
+         className="w-32 h-32 rounded-full blur-2xl"
+         style={{ background: 'radial-gradient(circle, rgba(8, 75, 77, 0.25) 0%, rgba(8, 75, 77, 0.1) 50%, transparent 100%)' }}
       />
+        </div>
+      </div>
     </div>
   );
 }

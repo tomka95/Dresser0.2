@@ -37,7 +37,7 @@ async def _generate_image_from_text_prompt(prompt: str) -> bytes:
         None,
         partial(
             ai._client.models.generate_content,
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash-image",
             contents=[{"text": prompt}]
         )
     )

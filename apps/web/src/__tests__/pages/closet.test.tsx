@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ClosetPage from '@/app/closet/page';
 import { useClosetStore } from '@/stores/useClosetStore';
-import type { ClosetItem } from '@dresser/contracts';
+import type { ClosetItem } from '@tailor/contracts';
 
 // Mock the store
 vi.mock('@/stores/useClosetStore', () => ({
@@ -111,8 +111,6 @@ describe('ClosetPage', () => {
 
     expect(screen.getByText('Blue Shirt')).toBeInTheDocument();
     expect(screen.getByText('Black Jeans')).toBeInTheDocument();
-    expect(screen.getByText('top')).toBeInTheDocument();
-    expect(screen.getByText('bottom')).toBeInTheDocument();
   });
 
   it('should call fetchItems on mount when items are empty', () => {
@@ -162,7 +160,7 @@ describe('ClosetPage', () => {
       name: expect.stringContaining('Sample Item'),
       category: 'other',
       color: 'mixed tones',
-      brand: 'Dresser Mock',
+      brand: 'Tailor Mock',
     });
   });
 
@@ -184,6 +182,7 @@ describe('ClosetPage', () => {
     expect(addButton).toBeDisabled();
   });
 });
+
 
 
 

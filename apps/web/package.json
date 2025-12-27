@@ -1,5 +1,5 @@
 {
-  "name": "@dresser/web",
+  "name": "@tailor/web",
   "version": "0.2.0",
   "private": true,
   "scripts": {
@@ -12,7 +12,7 @@
     "test:ui": "vitest --ui"
   },
   "dependencies": {
-    "@dresser/contracts": "*",
+    "@tailor/contracts": "*",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.25",
     "lucide-react": "^0.556.0",

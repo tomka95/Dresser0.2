@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, useSpring, useTransform } from "framer-motion";
 import { extractClothingFromGmail } from "@/lib/api/gmail";
+import { getCurrentUser } from "@/lib/api/auth";
 import { Button } from "@/components/ui/button";
 
 export default function GmailSyncPage() {
@@ -24,6 +25,15 @@ export default function GmailSyncPage() {
     // Start extraction immediately on mount
     const startExtraction = async () => {
       try {
+        // First, check if sync already completed
+        const userInfo = await getCurrentUser();
+        if (userInfo.gmail_sync_completed_at) {
+          // Already synced, redirect to closet
+          router.push("/closet");
+          return;
+        }
+
+        // Not synced, proceed with extraction
         setIsExtracting(true);
         setError(null);
         setItemsFound(0);

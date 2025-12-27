@@ -1,0 +1,33 @@
+[
+  {
+    "item_name": "t-shirt",
+    "image_path": "outfit_outputs/8af5aa90-a159-400c-bfd2-54c3a2d1f724/items/t-shirt.png",
+    "metadata": {
+      "description": "A men's short-sleeved t-shirt in a dark red or maroon color, featuring a white Nike swoosh logo on the left chest.",
+      "brand_candidates": [
+        {
+          "brand": "Nike",
+          "confidence": 1.0,
+          "notes": "Clearly visible Nike swoosh logo on the chest."
+        }
+      ],
+      "purchase_links": [
+        {
+          "label": "Nike Official Store",
+          "url": "https://www.nike.com/t/dri-fit-mens-fitness-t-shirt-L1b41x/DX0990-677",
+          "notes": "Exact match for Nike Men's Dri-FIT Fitness T-Shirt in similar color."
+        },
+        {
+          "label": "Zalando",
+          "url": "https://www.zalando.co.uk/nike-performance-d-fit-tee-crew-basic-t-shirt-night-maroon-ni142o0e4-g11.html",
+          "notes": "Similar Nike Dri-FIT t-shirt in 'Night Maroon'."
+        },
+        {
+          "label": "JD Sports",
+          "url": "https://www.jdsports.co.uk/product/red-nike-dri-fit-t-shirt/16206089/",
+          "notes": "Similar Nike Dri-FIT t-shirt in red/maroon."
+        }
+      ]
+    }
+  }
+]

@@ -2,10 +2,12 @@
 
 // STATUS: closet grid backed by Zustand store + mock API abstraction
 
+import Link from 'next/link';
 import { useEffect } from 'react';
 
 import { track } from '@/lib/analytics';
 import { useClosetStore } from '@/stores/useClosetStore';
+import { OutfitImageUpload } from '@/components/closet/OutfitImageUpload';
 
 export default function ClosetPage() {
   const items = useClosetStore((state) => state.items);
@@ -40,7 +42,7 @@ export default function ClosetPage() {
       name: `Sample Item ${items.length + 1}`,
       category: 'other' as const,
       color: 'mixed tones',
-      brand: 'Dresser Mock',
+      brand: 'Tailor Mock',
     };
 
     try {
@@ -72,6 +74,10 @@ export default function ClosetPage() {
           Add Sample Item
         </button>
       </div>
+      
+      <div className="mb-8">
+        <OutfitImageUpload />
+      </div>
       {isLoading && (
         <div className="py-4 text-sm text-gray-500">Loading closet…</div>
       )}
@@ -90,9 +96,10 @@ export default function ClosetPage() {
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {items.map((item) => (
-            <div
+            <Link
               key={item.id}
-              className="border rounded-lg p-4 hover:shadow-lg transition-shadow"
+              href={`/closet/${item.id}`}
+              className="block border rounded-lg p-4 hover:shadow-lg transition-shadow"
             >
               {item.imageUrl && (
                 <img
@@ -102,12 +109,7 @@ export default function ClosetPage() {
                 />
               )}
               <h3 className="font-semibold">{item.name}</h3>
-              {item.category && (
-                <p className="text-sm text-gray-600 capitalize">
-                  {item.category}
-                </p>
-              )}
-            </div>
+            </Link>
           ))}
         </div>
       )}

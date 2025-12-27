@@ -1,10 +1,15 @@
+import logging
 from uuid import UUID
 from typing import Any, Dict, List
 
+import boto3
+from botocore.exceptions import ClientError
 from sqlalchemy.orm import Session
 
-from app.models import ClothingItem, ItemImage, Tag
+from app.models import ClothingItem
 from app.utils.supabase_storage import SupabaseStorageClient
+
+logger = logging.getLogger(__name__)
 
 
 def save_outfit_results_to_db(
@@ -15,9 +20,8 @@ def save_outfit_results_to_db(
 ) -> List[Dict[str, Any]]:
     """
     Takes pipeline results and persists them:
-    - ClothingItem rows
-    - ItemImage rows (with Supabase URLs)
-    - Tag relations (if metadata['tags'] exists)
+    - ClothingItem rows (with Supabase image URLs saved directly to image_url field)
+    - Analysis data stored in analysis_raw JSON field
 
     Returns a list of simple dicts for API responses.
     """
@@ -42,31 +46,29 @@ def save_outfit_results_to_db(
         image_path = getattr(r, "image_path", None)
         image_url = None
         if image_path:
-            image_url = storage_client.upload_file(
-                local_path=image_path,
-                folder=str(user_id),
-                content_type="image/png",  # adjust if JPEG
-            )
+            try:
+                image_url = storage_client.upload_file(
+                    local_path=image_path,
+                    folder=str(user_id),
+                    content_type="image/png",  # adjust if JPEG
+                )
 
-            image = ItemImage(
-                clothing_item_id=item.id,
-                image_url=image_url,
-                type="product",  # you can standardize this
-                is_primary=True,
-            )
-            db.add(image)
+                # Save the image URL directly to the ClothingItem
+                item.image_url = image_url
+            except (boto3.exceptions.S3UploadFailedError, ClientError) as e:
+                # Log warning but continue processing - item will be saved without image
+                logger.warning(
+                    f"Failed to upload image for item '{item.name}': {str(e)}"
+                )
+                image_url = None  # Ensure image_url is None if upload failed
 
-        # Optional: tags
-        tags = metadata.get("tags") or []
-        for tag_name in tags:
-            # simple get-or-create for Tag
-            tag = db.query(Tag).filter(Tag.name == tag_name).first()
-            if not tag:
-                tag = Tag(name=tag_name)
-                db.add(tag)
-                db.flush()
-            # relationship uses secondary="clothing_item_tags"
-            item.tags.append(tag)
+        # Store analysis data (tags, metadata, etc.) in analysis_raw JSON field
+        # TODO: analysis_raw expected schema (paste example JSON here once provided)
+        analysis_data = {
+            "tags": metadata.get("tags") or [],
+            "metadata": metadata,  # Store full metadata for now
+        }
+        item.analysis_raw = analysis_data
 
         created_items.append(
             {

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import type { OutfitSuggestion } from '@dresser/contracts';
+import type { OutfitSuggestion } from '@tailor/contracts';
 
 import { suggestOutfits as apiSuggestOutfits } from '@/lib/api/outfits';
 
@@ -53,6 +53,7 @@ export const useOutfitsStore = create<OutfitsState>((set, get) => ({
     });
   },
 }));
+
 
 
 
