@@ -1,31 +1,196 @@
 [
   {
-    "item_name": "t-shirt",
-    "image_path": "outfit_outputs/357017ec-52b1-47cf-955a-19deb2259c47/items/t-shirt.png",
+    "item_name": "Blue and White Striped Button-Down Shirt",
+    "image_path": "outfit_outputs\\357017ec-52b1-47cf-955a-19deb2259c47\\items\\Blue_and_White_Striped_Button-Down_Shirt.png",
     "metadata": {
-      "description": "A men's short-sleeved t-shirt in a dark red or maroon color with a small white Nike swoosh logo on the left chest.",
-      "brand_candidates": [
+      "name": "Blue and White Striped Button-Down Shirt",
+      "item_type": "shirt",
+      "category": "top",
+      "brand": null,
+      "colors": [
         {
-          "brand": "Nike",
-          "confidence": 1.0,
-          "notes": "Clearly visible Nike swoosh logo"
+          "name": "blue",
+          "score": 0.9,
+          "hex": null
+        },
+        {
+          "name": "white",
+          "score": 0.9,
+          "hex": null
         }
       ],
-      "purchase_links": [
+      "materials": [
         {
-          "label": "Nike",
-          "url": "https://www.nike.com/t/dri-fit-mens-fitness-t-shirt-L6xM9q/DD6847-652",
-          "notes": "Exact match for Nike Dri-FIT Men's Fitness T-Shirt in similar color"
+          "name": "cotton",
+          "score": 0.7
+        }
+      ],
+      "pattern": "striped",
+      "attributes": [
+        "button-down",
+        "long sleeve",
+        "collared",
+        "casual"
+      ],
+      "tags": [
+        {
+          "text": "striped shirt",
+          "score": 0.9
         },
         {
-          "label": "Zappos",
-          "url": "https://www.zappos.com/p/nike-dri-fit-legend-2-0-tee-dark-beetroot-white/product/9427027/color/810675",
-          "notes": "Similar Nike Dri-FIT tee available at Zappos"
+          "text": "button down",
+          "score": 0.8
         },
         {
-          "label": "Amazon",
-          "url": "https://www.amazon.com/Nike-Dri-FIT-Legend-T-Shirt-Sleeve/dp/B0B669L262",
-          "notes": "Similar Nike Dri-FIT t-shirt on Amazon"
+          "text": "blue and white",
+          "score": 0.9
+        }
+      ]
+    }
+  },
+  {
+    "item_name": "White Crop Top",
+    "image_path": "outfit_outputs\\357017ec-52b1-47cf-955a-19deb2259c47\\items\\White_Crop_Top.png",
+    "metadata": {
+      "name": "White Crop Top",
+      "item_type": "crop top",
+      "category": "top",
+      "brand": null,
+      "colors": [
+        {
+          "name": "white",
+          "score": 1.0,
+          "hex": "#FFFFFF"
+        }
+      ],
+      "materials": [
+        {
+          "name": "cotton",
+          "score": 0.8
+        }
+      ],
+      "pattern": null,
+      "attributes": [
+        "sleeveless",
+        "round neck"
+      ],
+      "tags": [
+        {
+          "text": "crop top",
+          "score": 1.0
+        },
+        {
+          "text": "white",
+          "score": 1.0
+        },
+        {
+          "text": "sleeveless",
+          "score": 0.9
+        }
+      ]
+    }
+  },
+  {
+    "item_name": "White Wide-Leg Drawstring Pants",
+    "image_path": "outfit_outputs\\357017ec-52b1-47cf-955a-19deb2259c47\\items\\White_Wide-Leg_Drawstring_Pants.png",
+    "metadata": {
+      "name": "White Wide-Leg Drawstring Pants",
+      "item_type": "pants",
+      "category": "bottom",
+      "brand": null,
+      "colors": [
+        {
+          "name": "White",
+          "score": 1.0,
+          "hex": "#FFFFFF"
+        }
+      ],
+      "materials": [
+        {
+          "name": "unknown",
+          "score": 1.0
+        }
+      ],
+      "pattern": "solid",
+      "attributes": [
+        "wide-leg",
+        "drawstring waist",
+        "relaxed fit"
+      ],
+      "tags": [
+        {
+          "text": "wide-leg pants",
+          "score": 0.9
+        },
+        {
+          "text": "drawstring pants",
+          "score": 0.8
+        },
+        {
+          "text": "white pants",
+          "score": 0.9
+        },
+        {
+          "text": "casual pants",
+          "score": 0.7
+        }
+      ]
+    }
+  },
+  {
+    "item_name": "White and Black Platform Sneakers",
+    "image_path": "outfit_outputs\\357017ec-52b1-47cf-955a-19deb2259c47\\items\\White_and_Black_Platform_Sneakers.png",
+    "metadata": {
+      "name": "White and Black Platform Sneakers",
+      "item_type": "sneakers",
+      "category": "shoes",
+      "brand": null,
+      "colors": [
+        {
+          "name": "white",
+          "score": 0.9
+        },
+        {
+          "name": "black",
+          "score": 0.7
+        }
+      ],
+      "materials": [
+        {
+          "name": "leather",
+          "score": 0.5
+        },
+        {
+          "name": "rubber",
+          "score": 0.4
+        }
+      ],
+      "pattern": null,
+      "attributes": [
+        "platform sole",
+        "lace-up closure",
+        "low top"
+      ],
+      "tags": [
+        {
+          "text": "casual",
+          "score": 0.8
+        },
+        {
+          "text": "platform",
+          "score": 0.7
+        },
+        {
+          "text": "sneakers",
+          "score": 0.9
+        },
+        {
+          "text": "monochrome",
+          "score": 0.6
+        },
+        {
+          "text": "sporty",
+          "score": 0.5
         }
       ]
     }

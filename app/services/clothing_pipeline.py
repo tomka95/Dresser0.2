@@ -8,7 +8,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.ai_provider import get_ai_provider
 from app.utils.image_loader import ImageLoader
@@ -75,9 +75,15 @@ Rules:
 ITEM_IMAGE_AND_METADATA_PROMPT = """
 You are a fashion vision assistant. You are given an outfit photo.
 
-Task:
-1) Isolate ONLY the {item_name} from the photo and generate a white-background ecommerce product image.
-2) ALSO output ONLY valid JSON (no markdown) in the TEXT part of the response with this schema:
+CRITICAL: You MUST return TWO outputs in this single response:
+(1) IMAGE: Generate a studio-quality ecommerce product photo of ONLY the {item_name}
+    - Isolate ONLY the {item_name} from the outfit photo
+    - Show it centered on a pure white (#FFFFFF) background
+    - No person, mannequin, shadows, or text overlays
+    - Professional product photography style
+    - High resolution, well-lit, clean presentation
+
+(2) TEXT: Output ONLY valid JSON (no markdown, no commentary) with this exact schema:
 
 {{
   "name": "<descriptive product name: include primary color + brand if confident + item type. Example: 'Red Nike T-Shirt'>",
@@ -91,11 +97,16 @@ Task:
   "tags": [{{"text": "<tag>", "score": 0.0-1.0}}]
 }}
 
+FAILURE CONTRACT:
+If you cannot generate the image for any reason, return ONLY this JSON in the TEXT part:
+{{"error":"no_image_generated","reason":"<short reason>"}}
+
 Rules:
 - JSON must be syntactically valid
 - Use null when unknown
 - Keep "name" specific; avoid generic single-word names unless absolutely no info is available
 - Do not invent brand unless visible or very confident
+- BOTH IMAGE and TEXT are required unless you explicitly return the error JSON above
 """
 
 
@@ -155,6 +166,10 @@ async def generate_item_image_with_responses(
         json_prompt=ITEM_IMAGE_AND_METADATA_PROMPT.format(item_name=item_name),
     )
 
+    # Handle case where image generation failed completely
+    if image_bytes is None:
+        raise ValueError(f"Image generation failed for item '{item_name}'")
+
     # Prefer descriptive name from metadata for filename when available
     metadata_name = metadata.get("name") if isinstance(metadata, dict) else None
     base_name = metadata_name or item_name
@@ -186,18 +201,28 @@ async def process_outfit_image(
     detected_items = await detect_clothing_items(outfit_image_path)
 
     # Generate item images + metadata using AI provider, with the original photo as input
-    image_tasks = [
-        generate_item_image_with_responses(
-            item_name=item,
-            outfit_image_path=outfit_image_path,
-            output_dir=images_output_dir,
-        )
-        for item in detected_items
-    ]
-    item_results: List[Tuple[str, Dict[str, Any]]] = await asyncio.gather(*image_tasks)
+    # Wrap each task to handle individual failures gracefully
+    async def generate_with_error_handling(item: str) -> Tuple[Optional[str], Dict[str, Any]]:
+        try:
+            return await generate_item_image_with_responses(
+                item_name=item,
+                outfit_image_path=outfit_image_path,
+                output_dir=images_output_dir,
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate image for item '{item}': {e}")
+            return None, {"error": str(e), "item_name": item}
+    
+    image_tasks = [generate_with_error_handling(item) for item in detected_items]
+    item_results: List[Tuple[Optional[str], Dict[str, Any]]] = await asyncio.gather(*image_tasks)
 
     results: List[ItemResult] = []
     for original_item_name, (img_path, meta) in zip(detected_items, item_results):
+        # Skip items that failed to generate (None image path)
+        if img_path is None:
+            logger.warning(f"Skipping item '{original_item_name}' due to generation failure")
+            continue
+        
         item_display_name = (
             meta.get("name") if isinstance(meta, dict) and meta.get("name") else original_item_name
         )

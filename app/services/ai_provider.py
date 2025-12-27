@@ -278,11 +278,12 @@ Requirements:
         item_name: str,
         outfit_image,
         json_prompt: str,
-    ) -> Tuple[bytes, Dict[str, Any]]:
+    ) -> Tuple[Optional[bytes], Dict[str, Any]]:
         """
         Single-call flow that generates a product image and JSON metadata.
 
         Uses the Gemini image model with multimodal output (TEXT + IMAGE).
+        Returns (image_bytes, metadata_dict). image_bytes may be None if generation failed.
         """
         # Determine MIME type from format or default to jpeg
         mime_type = "image/jpeg"
@@ -291,8 +292,10 @@ Requirements:
             if format_lower in ["png", "jpg", "jpeg"]:
                 mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
 
-        prompt = f"{json_prompt}\n\nReturn JSON ONLY in the text part. No markdown or commentary."
+        # Build prompt with explicit IMAGE + TEXT requirement
+        prompt = f"{json_prompt}\n\nCRITICAL: You must return BOTH an IMAGE part and a TEXT part (JSON only, no markdown) in this single response."
 
+        # Build contents - use dict format for parts (matches working pattern)
         parts = [
             {
                 "inline_data": {
@@ -318,33 +321,104 @@ Requirements:
 
         image_bytes: Optional[bytes] = None
         metadata: Dict[str, Any] = {}
+        json_text: Optional[str] = None
 
+        # Extract image and text from response
         if hasattr(resp, "candidates") and resp.candidates:
             candidate = resp.candidates[0]
-            if hasattr(candidate, "content") and hasattr(candidate.content, "parts"):
-                for part in candidate.content.parts:
+            if (
+                hasattr(candidate, "content")
+                and candidate.content is not None
+                and hasattr(candidate.content, "parts")
+                and candidate.content.parts is not None
+            ):
+                parts = candidate.content.parts
+                for part in parts:
                     # Image bytes via inline_data
-                    if getattr(part, "inline_data", None) and getattr(
-                        part.inline_data, "data", None
-                    ) is not None:
+                    if hasattr(part, "inline_data") and hasattr(part.inline_data, "data"):
                         data = part.inline_data.data
-                        if isinstance(data, bytes):
-                            image_bytes = data
-                        elif isinstance(data, str):
-                            try:
-                                image_bytes = base64.b64decode(data)
-                            except (base64.binascii.Error, ValueError):
-                                logger.warning(
-                                    "Failed to base64-decode inline image data in combined call"
-                                )
+                        if data is not None:
+                            if isinstance(data, bytes):
+                                image_bytes = data
+                                logger.debug(f"Found image bytes (bytes, length: {len(image_bytes)})")
+                            elif isinstance(data, str):
+                                try:
+                                    image_bytes = base64.b64decode(data)
+                                    logger.debug(f"Found image bytes (base64 string, decoded length: {len(image_bytes)})")
+                                except (base64.binascii.Error, ValueError):
+                                    logger.warning(
+                                        "Failed to base64-decode inline image data in combined call"
+                                    )
                     # JSON text metadata
-                    if getattr(part, "text", None):
-                        parsed = extract_json_metadata(part.text)
+                    if hasattr(part, "text") and part.text:
+                        json_text = part.text
+                        parsed = extract_json_metadata(json_text)
                         if parsed:
                             metadata = parsed
+                            logger.debug("Found metadata in response")
 
+        # If image_bytes is missing, check for error JSON and log structured debug info
         if image_bytes is None:
-            raise ValueError("Could not extract image bytes from Gemini combined response")
+            # Build structured debug payload
+            debug_info = {
+                "parts_count": 0,
+                "part_types": [],
+                "has_text": False,
+                "has_inline_data": False,
+                "text_preview": None,
+            }
+            
+            if hasattr(resp, "candidates") and resp.candidates:
+                candidate = resp.candidates[0]
+                if (
+                    hasattr(candidate, "content")
+                    and candidate.content is not None
+                    and hasattr(candidate.content, "parts")
+                    and candidate.content.parts is not None
+                ):
+                    parts = candidate.content.parts
+                    debug_info["parts_count"] = len(parts)
+                    debug_info["part_types"] = [type(p).__name__ for p in parts]
+                    debug_info["has_text"] = any(hasattr(p, "text") and p.text for p in parts)
+                    debug_info["has_inline_data"] = any(
+                        hasattr(p, "inline_data") and getattr(p, "inline_data", None) is not None
+                        for p in parts
+                    )
+                    # Get first text part preview
+                    for part in parts:
+                        if hasattr(part, "text") and part.text:
+                            debug_info["text_preview"] = str(part.text)[:300]
+                            break
+            
+            logger.warning(
+                "No IMAGE part returned by Gemini in combined call. "
+                f"Debug info: {debug_info}. Falling back to image-only generation."
+            )
+            
+            # Check if JSON contains error response
+            if json_text:
+                parsed_error = extract_json_metadata(json_text)
+                if isinstance(parsed_error, dict) and parsed_error.get("error") == "no_image_generated":
+                    logger.warning(
+                        f"Gemini explicitly reported image generation failure: {parsed_error.get('reason', 'unknown')}"
+                    )
+                    # Still try fallback even if error JSON is present
+                    # metadata will be the error dict
+            
+            # Fallback: use image-only generation method
+            try:
+                image_bytes = await self.generate_product_image_from_outfit(
+                    item_name=item_name,
+                    outfit_image=outfit_image
+                )
+                logger.info("Fallback image generation succeeded")
+            except Exception as e:
+                logger.error(f"Fallback image generation also failed: {e}")
+                # If we have metadata from the combined call, return it with None image
+                if metadata:
+                    return None, metadata
+                # Otherwise raise
+                raise ValueError(f"Could not generate image via combined call or fallback: {e}")
 
         # On JSON failure, metadata will be {} as per extractor
         return image_bytes, metadata
