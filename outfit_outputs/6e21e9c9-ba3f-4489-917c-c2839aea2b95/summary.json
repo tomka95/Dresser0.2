@@ -1,0 +1,73 @@
+[
+  {
+    "item_name": "Blue and White Striped Shirt",
+    "image_path": "outfit_outputs\\6e21e9c9-ba3f-4489-917c-c2839aea2b95\\items\\Blue_and_White_Striped_Shirt.png",
+    "metadata": {
+      "name": "Blue and White Striped Shirt",
+      "is_clothing": true,
+      "brand": null,
+      "category": "outerwear",
+      "sub_category": "shirt jacket",
+      "color": "blue",
+      "pattern": "striped",
+      "material": null,
+      "fit": "loose",
+      "style": "casual",
+      "season": "spring",
+      "gender": "women",
+      "tags": [
+        "oversized",
+        "button-down"
+      ],
+      "confidence": 0.9,
+      "notes": "Worn open over a crop top."
+    }
+  },
+  {
+    "item_name": "White Crop Top",
+    "image_path": "outfit_outputs\\6e21e9c9-ba3f-4489-917c-c2839aea2b95\\items\\White_Crop_Top.png",
+    "metadata": {
+      "name": "White Crop Top",
+      "is_clothing": true,
+      "brand": null,
+      "category": "tops",
+      "sub_category": "crop top",
+      "color": "white",
+      "pattern": "solid",
+      "material": null,
+      "fit": "tight",
+      "style": "casual",
+      "season": "summer",
+      "gender": "women",
+      "tags": [
+        "basic"
+      ],
+      "confidence": 0.95,
+      "notes": null
+    }
+  },
+  {
+    "item_name": "White Wide-Leg Pants",
+    "image_path": "outfit_outputs\\6e21e9c9-ba3f-4489-917c-c2839aea2b95\\items\\White_Wide-Leg_Pants.png",
+    "metadata": {
+      "name": "White Wide-Leg Pants",
+      "is_clothing": true,
+      "brand": null,
+      "category": "bottoms",
+      "sub_category": "pants",
+      "color": "white",
+      "pattern": "solid",
+      "material": null,
+      "fit": "loose",
+      "style": "casual",
+      "season": "all-season",
+      "gender": "women",
+      "tags": [
+        "linen-like",
+        "drawstring waist"
+      ],
+      "confidence": 0.92,
+      "notes": "Appears to be made of a crinkled fabric."
+    }
+  }
+]

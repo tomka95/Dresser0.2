@@ -27,6 +27,7 @@ def save_outfit_results_to_db(
     """
 
     created_items: List[Dict[str, Any]] = []
+    metadata_count = 0
 
     for r in results:
         # We assume ItemResult has: name, image_path, metadata: Dict[str, Any]
@@ -62,13 +63,14 @@ def save_outfit_results_to_db(
                 )
                 image_url = None  # Ensure image_url is None if upload failed
 
-        # Store analysis data (tags, metadata, etc.) in analysis_raw JSON field
-        # TODO: analysis_raw expected schema (paste example JSON here once provided)
-        analysis_data = {
-            "tags": metadata.get("tags") or [],
-            "metadata": metadata,  # Store full metadata for now
-        }
-        item.analysis_raw = analysis_data
+        # Store metadata dict directly in analysis_raw JSON field
+        item.analysis_raw = metadata
+        if metadata:
+            metadata_count += 1
+            metadata_keys = list(metadata.keys())
+            logger.debug(
+                f"Stored metadata for item '{item.name}' (id: {item.id}) with {len(metadata_keys)} keys: {metadata_keys}"
+            )
 
         created_items.append(
             {
@@ -82,4 +84,5 @@ def save_outfit_results_to_db(
         )
 
     db.commit()
+    logger.info(f"Saved {len(created_items)} items to DB, {metadata_count} with metadata")
     return created_items
