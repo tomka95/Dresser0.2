@@ -6,7 +6,7 @@ export default function OnboardingPage() {
       <div className="max-w-2xl mx-auto">
         <h1 className="text-3xl font-bold mb-6">Welcome to Tailor</h1>
         <p className="text-gray-600 mb-8">
-          Let's set up your closet and get started with AI-powered outfit
+          Let&apos;s set up your closet and get started with AI-powered outfit
           suggestions.
         </p>
         <div className="space-y-4">

@@ -82,7 +82,7 @@ class AIProvider:
         outfit_image,
         *,
         max_items: int = 10
-    ) -> List[str]:
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Detect clothing items from an outfit image.
         
@@ -91,12 +91,76 @@ class AIProvider:
             max_items: Maximum number of items to detect
             
         Returns:
-            List of detected clothing item names
+            Dictionary where keys are item display names (strings) and values are
+            metadata dictionaries containing fields like name, brand, category,
+            sub_category, color, pattern, material, fit, style, season, gender,
+            tags, confidence, and notes. Returns empty dict if parsing fails.
         """
-        # Build prompt for Gemini
-        prompt = f"""Look at this outfit photo and list up to {max_items} clothing items you can see.
-Return only a comma-separated list of item names, nothing else.
-Examples: "t-shirt, jeans, sneakers" or "dress, sandals"
+        # Build prompt for Gemini demanding JSON object with specific schema
+        prompt = f"""Look at this outfit photo and identify up to {max_items} clothing items you can see.
+
+STRICT REQUIREMENT: Return ONLY wearable CLOTHING garments (e.g., tops, bottoms, dresses, outerwear, and shoes/footwear (sneakers, boots, heels, sandals)).
+EXCLUDE: jewelry, watches, bags, hats, sunglasses, phones, earbuds, props, background objects, furniture.
+Shoes/footwear ARE clothing and must be included if present.
+If you are unsure whether something is clothing, you MUST omit it. Only include items that are clearly wearable garments.
+
+You MUST return a JSON object (not an array, not markdown, JSON only) where:
+- Each key is an item display name (string)
+- Each value is a metadata object (dict) containing as many of these fields as possible:
+  - name (string; should match the key closely)
+  - is_clothing (boolean; MUST always be true for all items)
+  - brand (string or null)
+  - category (string or null, e.g., "tops", "bottoms", "shoes", "outerwear")
+  - sub_category (string or null, e.g., "t-shirt", "jeans", "sneakers")
+  - color (string or null)
+  - pattern (string or null, e.g., "solid", "striped", "floral")
+  - material (string or null, e.g., "cotton", "denim", "leather")
+  - fit (string or null, e.g., "slim", "regular", "loose")
+  - style (string or null, e.g., "casual", "formal", "sporty")
+  - season (string or null, e.g., "spring", "summer", "fall", "winter", "all-season")
+  - gender (string or null, e.g., "men", "women", "unisex")
+  - tags (array of strings; can be empty)
+  - confidence (number 0-1 or null)
+  - notes (string or null)
+
+Return ONLY valid JSON, no markdown fences, no explanatory text, just the JSON object.
+Example format:
+{{
+  "Blue T-Shirt": {{
+    "name": "Blue T-Shirt",
+    "is_clothing": true,
+    "brand": null,
+    "category": "tops",
+    "sub_category": "t-shirt",
+    "color": "blue",
+    "pattern": "solid",
+    "material": "cotton",
+    "fit": "regular",
+    "style": "casual",
+    "season": "all-season",
+    "gender": "unisex",
+    "tags": ["casual", "comfortable"],
+    "confidence": 0.95,
+    "notes": null
+  }},
+  "Denim Jeans": {{
+    "name": "Denim Jeans",
+    "is_clothing": true,
+    "brand": null,
+    "category": "bottoms",
+    "sub_category": "jeans",
+    "color": "blue",
+    "pattern": "solid",
+    "material": "denim",
+    "fit": "slim",
+    "style": "casual",
+    "season": "all-season",
+    "gender": "unisex",
+    "tags": ["denim", "casual"],
+    "confidence": 0.92,
+    "notes": null
+  }}
+}}
 """
         
         # Determine MIME type from format or default to jpeg
@@ -118,12 +182,13 @@ Examples: "t-shirt, jeans, sneakers" or "dress, sandals"
         ]
         
         # Run Gemini call in thread executor
+        # Using gemini-2.5-flash-lite for text-only JSON output (cheaper than flash-image)
         loop = asyncio.get_running_loop()
         resp = await loop.run_in_executor(
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-2.5-flash-image",
+                model="gemini-2.5-flash-lite",
                 contents=parts
             )
         )
@@ -131,14 +196,32 @@ Examples: "t-shirt, jeans, sneakers" or "dress, sandals"
         # Extract and parse response
         response_text = resp.text.strip()
         
-        # Split on commas and normalize
-        items = [
-            item.strip().strip('"').strip("'")
-            for item in response_text.split(",")
-            if item.strip()
-        ]
+        # Parse JSON using the existing helper
+        parsed = extract_json_metadata(response_text)
         
-        return items[:max_items]
+        # Validate the parsed result
+        if not isinstance(parsed, dict):
+            logger.warning("Parsed result is not a dict, returning empty dict")
+            return {}
+        
+        # Ensure each value is a dict (coerce to {} if not) and add is_clothing field
+        validated: Dict[str, Dict[str, Any]] = {}
+        for key, value in parsed.items():
+            if isinstance(value, dict):
+                # Ensure is_clothing is always true for all items
+                value["is_clothing"] = True
+                validated[str(key)] = value
+            else:
+                logger.warning(f"Value for key '{key}' is not a dict, coercing to empty dict")
+                validated[str(key)] = {"is_clothing": True}
+        
+        # Limit to max_items (preserve order)
+        if len(validated) > max_items:
+            # Convert to list of items, slice, then reconstruct dict to preserve order
+            items_list = list(validated.items())[:max_items]
+            validated = dict(items_list)
+        
+        return validated
     
     async def get_brand_metadata_for_image(
         self,
@@ -278,11 +361,12 @@ Requirements:
         item_name: str,
         outfit_image,
         json_prompt: str,
-    ) -> Tuple[bytes, Dict[str, Any]]:
+    ) -> Tuple[Optional[bytes], Dict[str, Any]]:
         """
         Single-call flow that generates a product image and JSON metadata.
 
         Uses the Gemini image model with multimodal output (TEXT + IMAGE).
+        Returns (image_bytes, metadata_dict). image_bytes may be None if generation failed.
         """
         # Determine MIME type from format or default to jpeg
         mime_type = "image/jpeg"
@@ -291,8 +375,10 @@ Requirements:
             if format_lower in ["png", "jpg", "jpeg"]:
                 mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
 
-        prompt = f"{json_prompt}\n\nReturn JSON ONLY in the text part. No markdown or commentary."
+        # Build prompt with explicit IMAGE + TEXT requirement
+        prompt = f"{json_prompt}\n\nCRITICAL: You must return BOTH an IMAGE part and a TEXT part (JSON only, no markdown) in this single response."
 
+        # Build contents - use dict format for parts (matches working pattern)
         parts = [
             {
                 "inline_data": {
@@ -318,36 +404,278 @@ Requirements:
 
         image_bytes: Optional[bytes] = None
         metadata: Dict[str, Any] = {}
+        json_text: Optional[str] = None
 
+        # Extract image and text from response
         if hasattr(resp, "candidates") and resp.candidates:
             candidate = resp.candidates[0]
-            if hasattr(candidate, "content") and hasattr(candidate.content, "parts"):
-                for part in candidate.content.parts:
+            if (
+                hasattr(candidate, "content")
+                and candidate.content is not None
+                and hasattr(candidate.content, "parts")
+                and candidate.content.parts is not None
+            ):
+                parts = candidate.content.parts
+                for part in parts:
                     # Image bytes via inline_data
-                    if getattr(part, "inline_data", None) and getattr(
-                        part.inline_data, "data", None
-                    ) is not None:
+                    if hasattr(part, "inline_data") and hasattr(part.inline_data, "data"):
                         data = part.inline_data.data
-                        if isinstance(data, bytes):
-                            image_bytes = data
-                        elif isinstance(data, str):
-                            try:
-                                image_bytes = base64.b64decode(data)
-                            except (base64.binascii.Error, ValueError):
-                                logger.warning(
-                                    "Failed to base64-decode inline image data in combined call"
-                                )
+                        if data is not None:
+                            if isinstance(data, bytes):
+                                image_bytes = data
+                                logger.debug(f"Found image bytes (bytes, length: {len(image_bytes)})")
+                            elif isinstance(data, str):
+                                try:
+                                    image_bytes = base64.b64decode(data)
+                                    logger.debug(f"Found image bytes (base64 string, decoded length: {len(image_bytes)})")
+                                except (base64.binascii.Error, ValueError):
+                                    logger.warning(
+                                        "Failed to base64-decode inline image data in combined call"
+                                    )
                     # JSON text metadata
-                    if getattr(part, "text", None):
-                        parsed = extract_json_metadata(part.text)
+                    if hasattr(part, "text") and part.text:
+                        json_text = part.text
+                        parsed = extract_json_metadata(json_text)
                         if parsed:
                             metadata = parsed
+                            logger.debug("Found metadata in response")
 
+        # If image_bytes is missing, check for error JSON and log structured debug info
         if image_bytes is None:
-            raise ValueError("Could not extract image bytes from Gemini combined response")
+            # Build structured debug payload
+            debug_info = {
+                "parts_count": 0,
+                "part_types": [],
+                "has_text": False,
+                "has_inline_data": False,
+                "text_preview": None,
+            }
+            
+            if hasattr(resp, "candidates") and resp.candidates:
+                candidate = resp.candidates[0]
+                if (
+                    hasattr(candidate, "content")
+                    and candidate.content is not None
+                    and hasattr(candidate.content, "parts")
+                    and candidate.content.parts is not None
+                ):
+                    parts = candidate.content.parts
+                    debug_info["parts_count"] = len(parts)
+                    debug_info["part_types"] = [type(p).__name__ for p in parts]
+                    debug_info["has_text"] = any(hasattr(p, "text") and p.text for p in parts)
+                    debug_info["has_inline_data"] = any(
+                        hasattr(p, "inline_data") and getattr(p, "inline_data", None) is not None
+                        for p in parts
+                    )
+                    # Get first text part preview
+                    for part in parts:
+                        if hasattr(part, "text") and part.text:
+                            debug_info["text_preview"] = str(part.text)[:300]
+                            break
+            
+            logger.warning(
+                "No IMAGE part returned by Gemini in combined call. "
+                f"Debug info: {debug_info}. Falling back to image-only generation."
+            )
+            
+            # Check if JSON contains error response
+            if json_text:
+                parsed_error = extract_json_metadata(json_text)
+                if isinstance(parsed_error, dict) and parsed_error.get("error") == "no_image_generated":
+                    logger.warning(
+                        f"Gemini explicitly reported image generation failure: {parsed_error.get('reason', 'unknown')}"
+                    )
+                    # Still try fallback even if error JSON is present
+                    # metadata will be the error dict
+            
+            # Fallback: use image-only generation method
+            try:
+                image_bytes = await self.generate_product_image_from_outfit(
+                    item_name=item_name,
+                    outfit_image=outfit_image
+                )
+                logger.info("Fallback image generation succeeded")
+            except Exception as e:
+                logger.error(f"Fallback image generation also failed: {e}")
+                # If we have metadata from the combined call, return it with None image
+                if metadata:
+                    return None, metadata
+                # Otherwise raise
+                raise ValueError(f"Could not generate image via combined call or fallback: {e}")
 
         # On JSON failure, metadata will be {} as per extractor
         return image_bytes, metadata
+
+    async def generate_product_images_from_outfit_batch(
+        self,
+        outfit_image,
+        *,
+        item_names: List[str]
+    ) -> Dict[str, bytes]:
+        """
+        Generate multiple product images from an outfit photo in a single call.
+        
+        Args:
+            outfit_image: Image object with `.data` (bytes) and `.format` (str or None)
+            item_names: Ordered list of item names to generate images for
+            
+        Returns:
+            Dictionary mapping item names to image bytes. Returns empty dict if no images.
+        """
+        if not item_names:
+            return {}
+        
+        expected_count = len(item_names)
+        
+        # Create numbered list string for clarity
+        items_name_list_str = "\n".join(f"{i+1}. {name}" for i, name in enumerate(item_names))
+        
+        # Create JSON array string for the prompt
+        items_json_array_str = json.dumps(item_names, ensure_ascii=False)
+        
+        # Build prompt with explicit count and multiple format references
+        prompt = f"""Look at this outfit photo and create e-commerce product images.
+
+IMPORTANT: The list below contains ONLY clothing items. Do NOT generate images for accessories, jewelry, or objects.
+Shoes/footwear ARE clothing. If 'sneakers/boots/heels/sandals' appear in the list, generate them like any other item.
+
+TASK: Generate exactly {expected_count} separate, isolated product photos.
+
+ITEMS TO GENERATE (in this exact order):
+{items_name_list_str}
+
+JSON array format: {items_json_array_str}
+
+If any listed item is not clothing, skip it and do NOT output an image for it. Keep the JSON order only for items you will generate.
+
+For EACH item, create a professional e-commerce product image with:
+- Pure white (#FFFFFF) background
+- ONLY the single item isolated (no model/body, no other items, no scene, no text)
+- For shoes, generate the pair (if a pair is visible/expected), isolated on white.
+- Centered and well-lit
+- Professional product photography style
+
+STRICT OUTPUT REQUIREMENTS:
+
+1) FIRST OUTPUT: Return a JSON text part (JSON only, no markdown, no code fences) with this exact format:
+   {{"order": {items_json_array_str}}}
+   The "order" array must contain exactly these {expected_count} items in this exact order: {items_json_array_str}
+
+2) THEN OUTPUT: Return exactly {expected_count} IMAGE parts, one per item, in the same order as the "order" array.
+   - Image #1 = first item in "order" array
+   - Image #2 = second item in "order" array
+   - Image #3 = third item in "order" array
+   - ... and so on for all {expected_count} items
+
+CRITICAL: You must return exactly {expected_count} images, one per item listed above. Each image must contain ONLY the single item on a pure white background; no model/body, no other items, no scene, no text.
+
+Return ONLY the JSON first, then exactly {expected_count} images in order. No other text or explanation.
+"""
+        
+        # Determine MIME type from format or default to jpeg
+        mime_type = "image/jpeg"
+        if getattr(outfit_image, "format", None):
+            format_lower = outfit_image.format.lower()
+            if format_lower in ["png", "jpg", "jpeg"]:
+                mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
+        
+        # Prepare multimodal request parts
+        parts = [
+            {
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": outfit_image.data,
+                }
+            },
+            {"text": prompt},
+        ]
+        
+        # Run Gemini call in thread executor with TEXT + IMAGE modalities
+        loop = asyncio.get_running_loop()
+        resp = await loop.run_in_executor(
+            None,
+            partial(
+                self._client.models.generate_content,
+                model="gemini-2.5-flash-image",
+                contents=parts,
+                config=types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"]
+                ),
+            ),
+        )
+        
+        # Extract JSON text part and image parts
+        json_text: Optional[str] = None
+        image_parts: List[bytes] = []
+        
+        if hasattr(resp, "candidates") and resp.candidates:
+            candidate = resp.candidates[0]
+            if (
+                hasattr(candidate, "content")
+                and candidate.content is not None
+                and hasattr(candidate.content, "parts")
+                and candidate.content.parts is not None
+            ):
+                response_parts = candidate.content.parts
+                for part in response_parts:
+                    # Extract JSON text part (should be first)
+                    if hasattr(part, "text") and part.text:
+                        if json_text is None:  # Take first text part as JSON
+                            json_text = part.text
+                            logger.debug("Found JSON text part in batch response")
+                    
+                    # Extract image parts
+                    if hasattr(part, "inline_data") and hasattr(part.inline_data, "data"):
+                        data = part.inline_data.data
+                        if data is not None:
+                            if isinstance(data, bytes):
+                                image_parts.append(data)
+                                logger.debug(f"Found image bytes (bytes, length: {len(data)})")
+                            elif isinstance(data, str):
+                                try:
+                                    decoded = base64.b64decode(data)
+                                    image_parts.append(decoded)
+                                    logger.debug(f"Found image bytes (base64 string, decoded length: {len(decoded)})")
+                                except (base64.binascii.Error, ValueError):
+                                    logger.warning("Failed to base64-decode inline image data in batch call")
+        
+        # Parse JSON to get order array
+        order: List[str] = item_names  # Fallback to original order
+        if json_text:
+            parsed = extract_json_metadata(json_text)
+            if isinstance(parsed, dict) and "order" in parsed:
+                parsed_order = parsed["order"]
+                if isinstance(parsed_order, list) and len(parsed_order) == len(image_parts):
+                    # Validate that all items in order are strings
+                    if all(isinstance(item, str) for item in parsed_order):
+                        order = parsed_order
+                        logger.debug(f"Using order from JSON: {order}")
+                    else:
+                        logger.warning("Order array contains non-string values, using fallback order")
+                else:
+                    logger.warning(
+                        f"Order array length ({len(parsed_order) if isinstance(parsed_order, list) else 'N/A'}) "
+                        f"does not match image count ({len(image_parts)}), using fallback order"
+                    )
+            else:
+                logger.warning("JSON does not contain valid 'order' array, using fallback order")
+        
+        # Map images to item names by order
+        result: Dict[str, bytes] = {}
+        for i, image_bytes in enumerate(image_parts):
+            if i < len(order):
+                item_name = order[i]
+                result[item_name] = image_bytes
+                logger.debug(f"Mapped image {i+1} to item '{item_name}'")
+            else:
+                logger.warning(f"More images ({len(image_parts)}) than items ({len(order)}), skipping extra image {i+1}")
+        
+        if result:
+            logger.info(f"Generated {len(result)} product images from batch call for items: {list(result.keys())}")
+        else:
+            logger.warning("No images generated in batch call")
+        
+        return result
 
 
 # Module-level singleton instance

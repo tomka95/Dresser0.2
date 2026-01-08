@@ -9,8 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine
-from app.security import hash_password, verify_password
-from app.api.routes import auth_google
+from app.security import hash_password, verify_password, create_access_token
+from app.api.routes import auth_google, closet
 
 import os
 import tempfile
@@ -52,6 +52,9 @@ logging.basicConfig(
 
 # Authentication endpoints
 app.include_router(auth_google.router)
+
+# Closet endpoints
+app.include_router(closet.router)
 
 
 @app.get("/health")

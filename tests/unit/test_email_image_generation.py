@@ -130,7 +130,8 @@ async def test_generate_white_bg_product_image_from_text_upload_failure():
         assert result is None
 
 
-def test_save_email_items_for_user_with_images_url():
+@pytest.mark.asyncio
+async def test_save_email_items_for_user_with_images_url():
     """Test that images_url is properly saved when provided in Item."""
     from sqlalchemy.orm import Session
     from unittest.mock import MagicMock
@@ -154,8 +155,8 @@ def test_save_email_items_for_user_with_images_url():
         images_url="https://supabase.com/bucket/email_items/user/image.png",
     )
     
-    # Call save function
-    result = save_email_items_for_user(
+    # Call save function (now async)
+    result = await save_email_items_for_user(
         db=mock_db,
         user_id=user_id,
         items=[item],

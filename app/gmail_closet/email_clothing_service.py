@@ -1,5 +1,7 @@
 """Service for saving clothing items extracted from emails to the database."""
+# STATUS: implements fallback packshot generation when no image is found in email.
 
+import logging
 from typing import Iterable, List, Union
 from uuid import UUID
 
@@ -7,9 +9,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 
 from app.models import ClothingItem, ItemImage
+from app.services.product_image_fallback import generate_product_packshot
+
+logger = logging.getLogger(__name__)
 
 
-def save_email_items_for_user(
+async def save_email_items_for_user(
     db: Session,
     user_id: UUID,
     items: Iterable[Union[dict, object]],
@@ -172,6 +177,27 @@ def save_email_items_for_user(
                 is_primary=True,
             )
             db.add(item_image)
+        else:
+            # Fallback: Generate packshot if no image was found from email
+            # Only generate if we have both shop name and item name
+            if brand and name:
+                try:
+                    logger.info(f"Attempting fallback packshot generation for {brand} - {name}")
+                    fallback_image_url = await generate_product_packshot(
+                        shop_name=brand,
+                        item_name=name
+                    )
+                    if fallback_image_url:
+                        # Set the generated image URL on the clothing item
+                        clothing_item.images_url = fallback_image_url
+                        logger.info(f"Fallback packshot generated and set: {fallback_image_url}")
+                except Exception as e:
+                    # Log error but continue - don't fail the whole pipeline
+                    logger.warning(
+                        f"Failed to generate fallback packshot for {brand} - {name}: {e}",
+                        exc_info=True
+                    )
+                    # Keep images_url as None if generation fails
 
         created_items.append(clothing_item)
 
