@@ -53,11 +53,11 @@ export default function SignInPage() {
       // For email/password login, if gmail_sync_completed_at is null, assume they don't have Gmail connected yet.
       if (userInfo.gmail_sync_completed_at) {
         // Gmail already connected and synced -> go to closet
-        router.push("/closet");
+        router.push("/home");
       } else {
         // Email/password user without Gmail sync -> go to closet
         // (They can connect Gmail later if needed)
-        router.push("/closet");
+        router.push("/home");
       }
       
       // Note: Loading state will be cleared when component unmounts after redirect

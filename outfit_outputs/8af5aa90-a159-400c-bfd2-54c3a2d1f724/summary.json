@@ -5,23 +5,23 @@
     "metadata": {
       "name": "Black Hoodie",
       "is_clothing": true,
-      "brand": "Jordan",
+      "brand": null,
       "category": "outerwear",
       "sub_category": "hoodie",
       "color": "black",
       "pattern": "graphic",
       "material": null,
-      "fit": "regular",
+      "fit": null,
       "style": "casual",
       "season": "all-season",
-      "gender": "unisex",
+      "gender": "men",
       "tags": [
-        "basketball",
-        "nba",
-        "charlotte hornets"
+        "hoodie",
+        "graphic print",
+        "nba"
       ],
-      "confidence": 0.98,
-      "notes": "Features a graphic design related to the Charlotte Hornets and the Jordan brand."
+      "confidence": 0.99,
+      "notes": "Features Charlotte Hornets graphic and NBA logo."
     }
   }
 ]

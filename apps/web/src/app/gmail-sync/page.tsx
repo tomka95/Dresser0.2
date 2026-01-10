@@ -29,7 +29,7 @@ export default function GmailSyncPage() {
         const userInfo = await getCurrentUser();
         if (userInfo.gmail_sync_completed_at) {
           // Already synced, redirect to closet
-          router.push("/closet");
+          router.push("/home");
           return;
         }
 
@@ -57,7 +57,7 @@ export default function GmailSyncPage() {
 
           // Wait 1-2 seconds showing final count, then redirect
           setTimeout(() => {
-            router.push("/closet");
+            router.push("/home");
           }, 2000);
         }, 2000);
       } catch (e: any) {
@@ -91,7 +91,7 @@ export default function GmailSyncPage() {
           setIsComplete(true);
           setIsExtracting(false);
           setTimeout(() => {
-            router.push("/closet");
+            router.push("/home");
           }, 2000);
         }, 2000);
       } catch (e: any) {

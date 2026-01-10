@@ -56,7 +56,7 @@ export default function SignUpPage() {
         user: result.user,
       });
       // Redirect to closet or onboarding
-      router.push("/closet");
+      router.push("/home");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
       setLoading(false);

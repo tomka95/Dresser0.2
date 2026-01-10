@@ -39,7 +39,7 @@ function GoogleCallbackContent() {
           const userInfo = await getCurrentUser();
           if (userInfo.gmail_sync_completed_at) {
             // Already synced, go straight to closet
-            router.push("/closet");
+            router.push("/home");
           } else {
             // Not synced yet, go to Gmail sync
             router.push("/gmail-sync");
