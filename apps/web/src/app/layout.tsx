@@ -14,16 +14,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="flex justify-center min-h-screen" style={{ backgroundColor: '#eeede9' }}>
-        <div className="w-full max-w-[430px] min-h-screen relative shadow-2xl overflow-hidden" style={{ backgroundColor: '#eeede9' }}>
-          <main className="h-full overflow-y-auto scrollbar-hide">
+      <body className="flex justify-center h-screen overflow-hidden" style={{ backgroundColor: '#eeede9' }}>
+        <div className="w-full max-w-[430px] h-full relative shadow-2xl overflow-hidden bg-[#eeede9]">
+          <main className="h-full overflow-y-auto scrollbar-hide relative">
             {children}
           </main>
-          </div>
+        </div>
       </body>
     </html>
   );
 }
-
-
-

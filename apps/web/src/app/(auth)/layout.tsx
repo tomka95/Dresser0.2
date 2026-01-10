@@ -14,9 +14,13 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
             }}
         />
 
-        {/* Layer B: Overlay - "black blur" */}
-        {/* Matches "black blur" layer: dark overlay with blur effect */}
-        <div className="absolute inset-0 z-0 bg-black/60 backdrop-blur-[10px]" />
+        {/* Layer B: Overlay - "black blur" (darkening gradient, NO blur) */}
+        <div 
+            className="absolute inset-0 z-0" 
+            style={{
+                background: 'linear-gradient(180deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.6) 50%, rgba(0,0,0,0.9) 100%)'
+            }}
+        />
         
         {/* Logo - centered horizontally, positioned at Y: 32 */}
         <img 

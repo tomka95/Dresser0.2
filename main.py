@@ -105,7 +105,7 @@ def create_clothing_item(
 
 
 @app.post("/signup")
-def signup(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+def signup(email: str = Form(...), password: str = Form(...), full_name: Optional[str] = Form(None), db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
@@ -113,6 +113,7 @@ def signup(email: str = Form(...), password: str = Form(...), db: Session = Depe
     user = User(
         email=email,
         hashed_password=hash_password(password),
+        display_name=full_name if full_name else None,
     )
     db.add(user)
     db.commit()

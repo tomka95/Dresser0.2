@@ -48,7 +48,7 @@ export default function SignUpPage() {
 
     try {
       // Proceed with email/password signup
-      const result = await signup({ email, password });
+      const result = await signup({ email, password, fullName });
       // Store auth data
       setAuth({
         access_token: result.access_token,
