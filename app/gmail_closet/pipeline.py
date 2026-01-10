@@ -17,7 +17,6 @@ from .models import EmailMetadata, GmailCredentials, Item
 from .preprocessing import clean_email_body
 from app.gmail_closet.email_smart_search import Email
 from app.gmail_closet.clothing_receipt_parser import parse_clothing_items_from_email
-from app.services.ai_image_service import generate_white_bg_product_image_from_text
 from app.models import GoogleAccount, User
 from sqlalchemy.orm import Session
 

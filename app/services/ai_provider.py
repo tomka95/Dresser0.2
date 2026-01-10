@@ -97,9 +97,9 @@ class AIProvider:
             tags, confidence, and notes. Returns empty dict if parsing fails.
         """
         # Build prompt for Gemini demanding JSON object with specific schema
-        prompt = f"""Look at this outfit photo and identify up to {max_items} clothing items you can see.
+        prompt = f"""Look at this outfit photo and identify up to {max_items} clothing items you can see and only from the main person in the image.
 
-STRICT REQUIREMENT: Return ONLY wearable CLOTHING garments (e.g., tops, bottoms, dresses, outerwear, and shoes/footwear (sneakers, boots, heels, sandals)).
+STRICT REQUIREMENT: Return ONLY wearable CLOTHING garments (e.g., tops, bottoms, dresses, outerwear, and shoes/footwear (sneakers, boots, heels, sandals)) worn by the main person in the image.
 EXCLUDE: jewelry, watches, bags, hats, sunglasses, phones, earbuds, props, background objects, furniture.
 Shoes/footwear ARE clothing and must be included if present.
 If you are unsure whether something is clothing, you MUST omit it. Only include items that are clearly wearable garments.
@@ -223,54 +223,6 @@ Example format:
         
         return validated
     
-    async def get_brand_metadata_for_image(
-        self,
-        product_image,
-        *,
-        json_prompt: str
-    ) -> Dict[str, Any]:
-        """
-        Extract brand metadata from a product image using a JSON prompt.
-        
-        Args:
-            product_image: Image object with `.data` (bytes) and `.format` (str or None)
-            json_prompt: Prompt instructing the model to return JSON metadata
-            
-        Returns:
-            Dictionary containing extracted metadata, or empty dict if parsing fails
-        """
-        # Determine MIME type from format or default to jpeg
-        mime_type = "image/jpeg"
-        if product_image.format:
-            format_lower = product_image.format.lower()
-            if format_lower in ["png", "jpg", "jpeg"]:
-                mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
-        
-        # Prepare multimodal request parts
-        parts = [
-            {
-                "inline_data": {
-                    "mime_type": mime_type,
-                    "data": product_image.data
-                }
-            },
-            {"text": json_prompt}
-        ]
-        
-        # Run Gemini call in thread executor
-        loop = asyncio.get_running_loop()
-        resp = await loop.run_in_executor(
-            None,
-            partial(
-                self._client.models.generate_content,
-                model="gemini-2.5-flash-image",
-                contents=parts
-            )
-        )
-        
-        # Extract response text and try to parse as JSON
-        response_text = resp.text.strip()
-        return extract_json_metadata(response_text)
     
     async def generate_product_image_from_outfit(
         self,
@@ -529,12 +481,12 @@ Requirements:
         
         # Create numbered list string for clarity
         items_name_list_str = "\n".join(f"{i+1}. {name}" for i, name in enumerate(item_names))
-        
+        logger.info(f"Items name list string: {items_name_list_str}")
         # Create JSON array string for the prompt
         items_json_array_str = json.dumps(item_names, ensure_ascii=False)
-        
+        logger.info(f"Items JSON array string: {items_json_array_str}")
         # Build prompt with explicit count and multiple format references
-        prompt = f"""Look at this outfit photo and create e-commerce product images.
+        prompt = f"""Look at this outfit photo and create e-commerce product images. 
 
 IMPORTANT: The list below contains ONLY clothing items. Do NOT generate images for accessories, jewelry, or objects.
 Shoes/footwear ARE clothing. If 'sneakers/boots/heels/sandals' appear in the list, generate them like any other item.
@@ -567,7 +519,7 @@ STRICT OUTPUT REQUIREMENTS:
    - Image #3 = third item in "order" array
    - ... and so on for all {expected_count} items
 
-CRITICAL: You must return exactly {expected_count} images, one per item listed above. Each image must contain ONLY the single item on a pure white background; no model/body, no other items, no scene, no text.
+CRITICAL: You must return exactly {expected_count} images, one per item listed above. Each image must contain ONLY the single item unfolded on a pure white background; no model/body, no other items, no scene, no text.
 
 Return ONLY the JSON first, then exactly {expected_count} images in order. No other text or explanation.
 """

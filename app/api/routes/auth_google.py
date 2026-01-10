@@ -19,7 +19,7 @@ from app.security import create_access_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/gmail",
+    prefix="/auth",
     tags=["gmail"],
 )
 
