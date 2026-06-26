@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import uuid
 from dotenv import load_dotenv
-from sqlalchemy import CHAR, create_engine, text, TypeDecorator
+from sqlalchemy import CHAR, MetaData, create_engine, text, TypeDecorator
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -54,8 +55,70 @@ _LOCAL_POSTGRES_URL = "postgresql+psycopg2://postgres:postgres@localhost:5432/ta
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
+_LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "::1"}
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in _TRUTHY
+
+
+def _under_pytest() -> bool:
+    """True when running inside a pytest process.
+
+    `pytest` is imported into sys.modules before any test/conftest collection, so
+    this is reliable even at import time of this module.
+    """
+    return "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST") is not None
+
+
+def _is_remote_url(url: str) -> bool:
+    """True if the URL points at a non-local Postgres host.
+
+    sqlite and localhost/127.0.0.1 are considered local (safe for tests).
+    """
+    if url.startswith("sqlite"):
+        return False
+    try:
+        host = (make_url(url).host or "").lower()
+    except Exception:
+        # If we can't parse the host, treat it as remote -- fail safe.
+        return True
+    return host not in _LOCAL_HOSTS
+
+
+def _guard_test_engine(url: str) -> None:
+    """Structurally prevent the test suite from touching a remote database.
+
+    The closet test fixtures call Base.metadata.create_all()/drop_all() on the
+    engine built here. If that engine ever pointed at Supabase/another remote host,
+    a stray DATABASE_URL could let pytest DROP production schema. We make that
+    impossible at the engine layer: under pytest, building an engine for a non-local
+    host raises unless the developer sets ALLOW_REMOTE_TEST_DB=1 on purpose.
+    """
+    if not _under_pytest():
+        return
+    if not _is_remote_url(url):
+        return
+    if _truthy(os.getenv("ALLOW_REMOTE_TEST_DB")):
+        logger.warning(
+            "ALLOW_REMOTE_TEST_DB is set: permitting the test suite to use a "
+            "REMOTE database (%s). create_all()/drop_all() can mutate it.",
+            _redact(url),
+        )
+        return
+    raise DatabaseConfigError(
+        "Refusing to build a database engine for a REMOTE host while running under "
+        f"pytest (target: {_redact(url)}). The test suite calls create_all()/drop_all() "
+        "and must never touch a Supabase/production database. "
+        "Use a local database (LOCAL_DB=sqlite, or LOCAL_DB=postgres), or -- only if you "
+        "truly mean to test against a remote DB -- set ALLOW_REMOTE_TEST_DB=1."
+    )
+
 
 def _make_engine(url: str):
+    # Hard guard before any engine is created (covers the shared engine that test
+    # fixtures bind create_all()/drop_all() to).
+    _guard_test_engine(url)
     if url.startswith("sqlite"):
         return create_engine(url, echo=False, connect_args={"check_same_thread": False})
     return create_engine(
@@ -157,7 +220,19 @@ SessionLocal = sessionmaker(
 )
 
 
-Base = declarative_base()
+# Naming convention so ORM-generated constraint/index names match the live
+# Postgres names (foreign keys as <table>_<col>_fkey, primary keys as <table>_pkey,
+# etc.). This keeps `alembic revision --autogenerate` from proposing spurious
+# renames -- a prerequisite for the baseline being a verifiable no-op.
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "%(table_name)s_%(column_0_name)s_key",
+    "ck": "%(table_name)s_%(constraint_name)s_check",
+    "fk": "%(table_name)s_%(column_0_name)s_fkey",
+    "pk": "%(table_name)s_pkey",
+}
+
+Base = declarative_base(metadata=MetaData(naming_convention=NAMING_CONVENTION))
 
 
 def check_database_connection() -> None:

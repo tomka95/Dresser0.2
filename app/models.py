@@ -4,10 +4,16 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, DateTime, Boolean, ForeignKey, Text, Integer, BigInteger,
-    Float, UniqueConstraint, CheckConstraint, Table, Index, JSON,
+    Float, Double, REAL, UniqueConstraint, CheckConstraint, Table, Index, JSON, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY as PG_ARRAY
 from sqlalchemy.orm import relationship
+
+
+# Timestamp helper: the live DB uses `timestamp with time zone` for nearly every
+# timestamp column. Use this so ORM metadata matches and autogenerate stays clean.
+def _tstz(**kw):
+    return DateTime(timezone=True)
 
 from .db import Base, GUID
 
@@ -34,22 +40,30 @@ class User(Base):
 
     __tablename__ = "users"
 
+    # Live uses UNIQUE constraints (users_email_key / users_google_sub_key), not
+    # the auto-named ix_* indexes that Column(unique=True, index=True) would create.
+    __table_args__ = (
+        UniqueConstraint("email", name="users_email_key"),
+        UniqueConstraint("google_sub", name="users_google_sub_key"),
+    )
+
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
-    email = Column(String, unique=True, index=True, nullable=False)
+    # Live: email is `character varying`; the rest are `text`.
+    email = Column(String, nullable=False)
 
-    hashed_password = Column(String, nullable=False)
+    hashed_password = Column(Text, nullable=False)
 
-    display_name = Column(String, nullable=True)
+    display_name = Column(Text, nullable=True)
 
-    google_sub = Column(String, unique=True, index=True, nullable=True)
+    google_sub = Column(Text, nullable=True)
 
-    full_name = Column(String, nullable=True)
+    full_name = Column(Text, nullable=True)
 
-    avatar_url = Column(String, nullable=True)
+    avatar_url = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(_tstz(), default=datetime.utcnow)
 
     gmail_sync_completed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -64,53 +78,66 @@ class User(Base):
 class ClothingItem(Base):
 
     __tablename__ = "clothing_items"
-    
+
     __table_args__ = (
         Index('idx_clothing_items_user_id', 'user_id'),
         Index('idx_clothing_items_user_id_created_at', 'user_id', 'created_at'),
+        # GIN indexes present live. postgresql_using='gin' is honored on Postgres
+        # and ignored on SQLite (create_all emits a plain index there).
+        Index('clothing_items_tags_gin', 'tags', postgresql_using='gin'),
+        Index('clothing_items_colors_gin', 'colors', postgresql_using='gin'),
+        Index('idx_clothing_items_colors_gin', 'colors', postgresql_using='gin'),
+        Index('clothing_items_analysis_raw_gin', 'analysis_raw', postgresql_using='gin'),
+        Index('idx_clothing_items_style_tags_gin', 'style_tags', postgresql_using='gin'),
+        Index('idx_clothing_items_attributes_json_gin', 'attributes_json', postgresql_using='gin'),
     )
 
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
-    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
 
-    name = Column(String, nullable=False)
+    # Live: all of these are `text`.
+    name = Column(Text, nullable=False)
 
-    category = Column(String, nullable=True)
+    category = Column(Text, nullable=True)
 
-    sub_category = Column(String, nullable=True)
+    sub_category = Column(Text, nullable=True)
 
-    color_primary = Column(String, nullable=True)
+    color_primary = Column(Text, nullable=True)
 
-    color_secondary = Column(String, nullable=True)
+    color_secondary = Column(Text, nullable=True)
 
-    brand = Column(String, nullable=True)
+    brand = Column(Text, nullable=True)
 
-    size = Column(String, nullable=True)
+    size = Column(Text, nullable=True)
 
     image_url = Column(Text, nullable=True)
 
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 
     # Tagging / scoring columns that exist live in Supabase. Arrays default to []
-    # and attributes_json to {} (server defaults owned by the migration).
+    # and attributes_json to {} (server defaults owned by the migration). Comments
+    # mirror the live column comments so autogenerate sees no difference.
     tags = Column(_text_array(), nullable=False, default=list)
 
-    colors = Column(_text_array(), nullable=False, default=list)
+    colors = Column(_text_array(), nullable=False, default=list,
+                    comment='Array of color tags for filtering (e.g., ["black", "navy"])')
 
-    style_tags = Column(_text_array(), nullable=False, default=list)
+    style_tags = Column(_text_array(), nullable=False, default=list,
+                        comment='Array of style tags for filtering (e.g., ["formal", "professional"])')
 
     tag_scores = Column(_jsonb(), nullable=True)
 
     color_scores = Column(_jsonb(), nullable=True)
 
-    attributes_json = Column(_jsonb(), nullable=False, default=dict)
+    attributes_json = Column(_jsonb(), nullable=False, default=dict,
+                             comment='JSONB object for future attributes (warmth, formality, modesty, fabric, etc.)')
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(_tstz(), default=datetime.utcnow)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
     user = relationship("User", back_populates="clothing_items")
@@ -123,16 +150,19 @@ class ClothingItem(Base):
 class ItemImage(Base):
 
     __tablename__ = "item_images"
-    
+
     __table_args__ = (
         Index('idx_item_images_clothing_item_id', 'clothing_item_id'),
-        Index('idx_item_images_clothing_item_id_is_primary', 'clothing_item_id', 'is_primary'),
+        # Partial index live: WHERE (is_primary = true). postgresql_where keeps the
+        # ORM metadata identical to the DB.
+        Index('idx_item_images_clothing_item_id_is_primary', 'clothing_item_id', 'is_primary',
+              postgresql_where=text('is_primary = true')),
     )
 
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
-    clothing_item_id = Column(GUID(), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    clothing_item_id = Column(GUID(), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False)
 
     image_url = Column(Text, nullable=False)
 
@@ -141,6 +171,7 @@ class ItemImage(Base):
     is_primary = Column(Boolean, default=False)
 
 
+    # Live column is `timestamp WITHOUT time zone` (the one timestamp that is naive).
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -153,25 +184,33 @@ class GoogleAccount(Base):
 
     __tablename__ = "google_accounts"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    __table_args__ = (
+        UniqueConstraint("user_id", name="google_accounts_user_id_key"),
+        Index("idx_google_accounts_email", "email"),
+        Index("idx_google_accounts_google_sub", "google_sub"),
+    )
 
-    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    # Live column is bigint (bigserial).
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
 
-    google_sub = Column(String, index=True, nullable=False)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
-    email = Column(String, index=True, nullable=False)
+    # Live: all of these are `text`.
+    google_sub = Column(Text, nullable=False)
 
-    access_token = Column(String, nullable=False)
+    email = Column(Text, nullable=False)
 
-    refresh_token = Column(String, nullable=True)
+    access_token = Column(Text, nullable=False)
 
-    scope = Column(String, nullable=True)
+    refresh_token = Column(Text, nullable=True)
 
-    token_expiry = Column(DateTime, nullable=True)
+    scope = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    token_expiry = Column(_tstz(), nullable=True)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(_tstz(), default=datetime.utcnow)
+
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="google_account")
 
@@ -189,8 +228,8 @@ class UserPreference(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "key", name="user_preferences_user_id_key_unique"),
-        CheckConstraint("confidence >= 0 AND confidence <= 1", name="user_preferences_confidence_check"),
-        CheckConstraint("source IN ('chat', 'manual', 'inferred')", name="user_preferences_source_check"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence"),
+        CheckConstraint("source IN ('chat', 'manual', 'inferred')", name="source"),
         Index("idx_user_preferences_user_id", "user_id"),
         Index("idx_user_preferences_user_id_key", "user_id", "key"),
     )
@@ -204,7 +243,7 @@ class UserPreference(Base):
 
     value = Column(Text, nullable=False)
 
-    confidence = Column(Float, nullable=False, default=0.6)
+    confidence = Column(REAL, nullable=False, default=0.6)
 
     source = Column(Text, nullable=False, default="chat")
 
@@ -224,8 +263,8 @@ class UserPreferenceEvent(Base):
     __tablename__ = "user_preference_events"
 
     __table_args__ = (
-        CheckConstraint("confidence >= 0 AND confidence <= 1", name="user_preference_events_confidence_check"),
-        CheckConstraint("source IN ('chat', 'manual', 'inferred')", name="user_preference_events_source_check"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence"),
+        CheckConstraint("source IN ('chat', 'manual', 'inferred')", name="source"),
         Index("idx_user_preference_events_user_key_time", "user_id", "key", "created_at"),
     )
 
@@ -237,7 +276,7 @@ class UserPreferenceEvent(Base):
 
     value = Column(Text, nullable=False)
 
-    confidence = Column(Float, nullable=False)
+    confidence = Column(REAL, nullable=False)
 
     source = Column(Text, nullable=False)
 
@@ -257,15 +296,17 @@ class WeatherCache(Base):
     __table_args__ = (
         Index("idx_weather_cache_expires", "expires_at"),
         Index("idx_weather_cache_lookup", "provider", "lat", "lon", "timezone", "start_at", "end_at"),
+        {"comment": "Cache for weather API responses to reduce external API calls"},
     )
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
-    provider = Column(Text, nullable=False)
+    provider = Column(Text, nullable=False, comment="Weather provider name (e.g., open_meteo)")
 
-    lat = Column(Float, nullable=False)
+    # Live: double precision (float8).
+    lat = Column(Double, nullable=False)
 
-    lon = Column(Float, nullable=False)
+    lon = Column(Double, nullable=False)
 
     timezone = Column(Text, nullable=False)
 
@@ -273,11 +314,12 @@ class WeatherCache(Base):
 
     end_at = Column(DateTime(timezone=True), nullable=False)
 
-    payload = Column(_jsonb(), nullable=False)
+    payload = Column(_jsonb(), nullable=False, comment="Cached WeatherForecast JSON payload")
 
     fetched_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
-    expires_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False,
+                        comment="When this cache entry expires (UTC)")
 
 
 
@@ -287,13 +329,15 @@ class Waitlist(Base):
     __tablename__ = "waitlist"
 
     __table_args__ = (
+        UniqueConstraint("email", name="waitlist_email_key"),
         Index("idx_waitlist_email", "email"),
         Index("idx_waitlist_created_at", "created_at"),
+        {"comment": "Stores email addresses of users who joined the waitlist"},
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    email = Column(String, unique=True, nullable=False)
+    email = Column(String, nullable=False)
 
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 

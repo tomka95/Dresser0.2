@@ -56,6 +56,21 @@ the baseline **once** without running DDL:
 alembic stamp 0001_baseline
 ```
 
+### Verifying the baseline is a true no-op (zero drift)
+
+After stamping, prove the ORM models and the live database agree:
+```bash
+alembic revision --autogenerate -m "drift check"
+```
+The generated migration's `upgrade()` **and** `downgrade()` must be empty (`pass`).
+If anything is emitted, the ORM has drifted from the database — investigate and fix
+the model (or the baseline) before relying on it; then delete the throwaway file.
+
+> Note: the live schema has two redundant GIN indexes on `clothing_items.colors`
+> (`clothing_items_colors_gin` and `idx_clothing_items_colors_gin`). Both are kept
+> in the baseline/ORM so autogenerate stays empty; de-duplicating one is a separate,
+> deliberate migration (not part of this baseline).
+
 ### Database configuration & connection behavior
 
 Connection config comes from environment variables / `.env` only:
@@ -78,6 +93,14 @@ The Alembic baseline is Postgres-specific (jsonb, text[], GIN indexes). For loca
 schema in `LOCAL_DB=postgres`, run `alembic upgrade head`. The `LOCAL_DB=sqlite`
 mode is intended for app-boot / non-Postgres-specific development; the test suite
 uses it and builds its schema from the ORM models directly.
+
+### Tests can never touch a remote database
+
+The test fixtures call `create_all()`/`drop_all()`. To make it structurally
+impossible for that to hit Supabase, `app/db.py` refuses to build an engine for a
+non-local host (anything other than sqlite / localhost / 127.0.0.1) **while running
+under pytest** — even if a stray `DATABASE_URL` is set. The only escape hatch is the
+deliberate `ALLOW_REMOTE_TEST_DB=1`, which you should essentially never set.
 
 ## Running the Integration Test
 

@@ -25,6 +25,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+# Autogenerate comparison settings. compare_type catches column type drift
+# (e.g. timestamptz vs timestamp, text vs varchar). compare_server_default is left
+# OFF: server-side defaults live in the DB/migrations, not the ORM, and enabling it
+# produces noisy false positives for now()/gen_random_uuid()/CURRENT_TIMESTAMP.
+_COMPARE = dict(compare_type=True, compare_server_default=False)
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (emit SQL without a live connection)."""
     context.configure(
@@ -32,7 +39,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
+        **_COMPARE,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -44,7 +51,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            compare_type=True,
+            **_COMPARE,
         )
         with context.begin_transaction():
             context.run_migrations()
