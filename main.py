@@ -15,7 +15,7 @@ from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from app.db import Base, engine
+from app.db import check_database_connection
 from app.security import hash_password, verify_password, create_access_token
 from app.api.routes import auth_google, closet
 
@@ -28,16 +28,15 @@ from app.services.outfit_db_service import save_outfit_results_to_db
 from app.utils.supabase_storage import SupabaseStorageClient
 from app.services.clothing_pipeline import process_outfit_image
 
-# This project does not currently use Alembic for migrations.
-
-# Try to create tables, but don't fail if database is unavailable
-try:
-    Base.metadata.create_all(bind=engine)
-except Exception as e:
-    logging.warning(f"Could not connect to database at startup: {e}. Tables will be created on first connection.")
+# Database schema is owned exclusively by versioned Alembic migrations (see alembic/).
+# The application never creates or mutates schema at startup. It only verifies that the
+# configured database is reachable and fails loudly otherwise (no silent local fallback).
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast with a clear, actionable error if the configured DB is unreachable
+    # or misconfigured, rather than silently degrading to a local/empty database.
+    check_database_connection()
     logging.getLogger("uvicorn.error").info("Backend running at http://localhost:8000")
     yield
 

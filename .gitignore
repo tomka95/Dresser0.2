@@ -32,6 +32,11 @@ wheels/
 *.swp
 *.swo
 *~
+.cursor/
+
+# OS junk
+.DS_Store
+**/.DS_Store
 
 # Test outputs
 .pytest_cache/

@@ -19,11 +19,16 @@ class Settings(BaseSettings):
     GMAIL_MAX_YEARS: float = 1.0
     GMAIL_IMAP_TIMEOUT: int = 30
 
-    DB_USER: str = "postgres"
-    DB_PASSWORD: str = "postgres"
-    DB_HOST: str = "localhost"
-    DB_PORT: int = 5432
-    DB_NAME: str = "tailor"
+    # Database configuration.
+    # No localhost/postgres defaults on purpose: a missing value must surface as a
+    # clear configuration error rather than silently pointing the app at a local DB.
+    # The connection URL is assembled in app/db.py, which is the single place that
+    # decides between the configured remote DB and an explicit local-dev opt-in.
+    DB_USER: Optional[str] = None
+    DB_PASSWORD: Optional[str] = None
+    DB_HOST: Optional[str] = None
+    DB_PORT: Optional[int] = None
+    DB_NAME: Optional[str] = None
 
     SUPABASE_S3_ENDPOINT: Optional[str] = None
     SUPABASE_S3_ACCESS_KEY: Optional[str] = None
