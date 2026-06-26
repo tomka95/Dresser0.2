@@ -55,3 +55,7 @@ dist/
 *.tsbuildinfo
 .env*.local
 
+
+.venv/
+tailor.db
+outfit_outputs/

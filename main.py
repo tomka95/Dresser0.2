@@ -1,6 +1,13 @@
 """Main FastAPI application for Tailor."""
 
 import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+from contextlib import asynccontextmanager
 from typing import Optional
 from uuid import UUID
 
@@ -23,12 +30,23 @@ from app.services.clothing_pipeline import process_outfit_image
 
 # This project does not currently use Alembic for migrations.
 
-Base.metadata.create_all(bind=engine)
+# Try to create tables, but don't fail if database is unavailable
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    logging.warning(f"Could not connect to database at startup: {e}. Tables will be created on first connection.")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logging.getLogger("uvicorn.error").info("Backend running at http://localhost:8000")
+    yield
+
 
 app = FastAPI(
     title="Tailor AI MVP",
     description="AI Closet / Stylist App",
     version="0.2.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS to allow frontend requests
@@ -42,13 +60,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Enable INFO-level logging globally
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-
 
 # Authentication endpoints
 app.include_router(auth_google.router)

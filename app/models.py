@@ -3,16 +3,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-
-    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint, Table, Index, JSON
-
+    Column, String, DateTime, Boolean, ForeignKey, Text, Integer, UniqueConstraint, Table, Index, JSON,
 )
-
-from sqlalchemy.dialects.postgresql import UUID
-
 from sqlalchemy.orm import relationship
 
-from .db import Base
+from .db import Base, GUID
 
 
 
@@ -22,7 +17,7 @@ class User(Base):
     __tablename__ = "users"
 
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
     email = Column(String, unique=True, index=True, nullable=False)
 
@@ -58,9 +53,9 @@ class ClothingItem(Base):
     )
 
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
 
     name = Column(String, nullable=False)
@@ -103,9 +98,9 @@ class ItemImage(Base):
     )
 
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
-    clothing_item_id = Column(UUID(as_uuid=True), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    clothing_item_id = Column(GUID(), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False, index=True)
 
     image_url = Column(Text, nullable=False)
 
@@ -128,7 +123,7 @@ class GoogleAccount(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
 
     google_sub = Column(String, index=True, nullable=False)
 
