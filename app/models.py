@@ -48,6 +48,15 @@ class User(Base):
     )
 
 
+    # Supabase Auth transition: public.users is a PROFILE table whose id equals the
+    # corresponding auth.users id. The FK users.id -> auth.users(id) is added by
+    # Alembic revision 0002 and is owned exclusively by that migration -- it is NOT
+    # declared here, because auth.users is a Supabase/Postgres-only table that must
+    # not be a mapped model (modeling it would break create_all() under the SQLite
+    # dev/test mode). alembic/env.py::_include_object excludes this FK from
+    # autogenerate so the ORM<->live parity stays clean. The uuid4 default remains
+    # for the legacy custom-JWT signup path; Supabase-provisioned profiles set id
+    # explicitly to the token's `sub`.
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
 
     # Live: email is `character varying`; the rest are `text`.

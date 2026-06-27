@@ -41,10 +41,58 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_REDIRECT_URI: Optional[str] = None
 
-    # JWT configuration
+    # JWT configuration (legacy custom-JWT path, signed with JWT_SECRET_KEY).
+    # Kept live during the Supabase Auth transition (dual-accept). Rotate before
+    # production.
     JWT_SECRET_KEY: str = "change-this-secret-key-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    # --- Supabase Auth (identity) ------------------------------------------
+    # Supabase Auth (auth.users) is being introduced as the identity source.
+    # NONE of these are secrets: the project ref and the JWKS endpoint are public
+    # (they appear in every client URL), and verification uses the project's
+    # PUBLIC asymmetric signing keys fetched from JWKS. The legacy shared JWT
+    # secret is deliberately NOT used for Supabase verification.
+    #
+    # Only SUPABASE_PROJECT_REF (or an explicit URL/JWKS override) is required to
+    # turn on Supabase-token acceptance; the issuer/JWKS URL are derived from it.
+    SUPABASE_PROJECT_REF: Optional[str] = None
+    SUPABASE_URL: Optional[str] = None            # e.g. https://<ref>.supabase.co
+    SUPABASE_JWKS_URL: Optional[str] = None        # explicit override; else derived
+    SUPABASE_JWT_ISSUER: Optional[str] = None      # explicit override; else derived
+    SUPABASE_JWT_AUDIENCE: str = "authenticated"   # Supabase access-token aud claim
+    SUPABASE_JWKS_CACHE_TTL_SECONDS: int = 3600
+
+    @property
+    def supabase_base_url(self) -> Optional[str]:
+        """Base project URL, from SUPABASE_URL or derived from the project ref."""
+        if self.SUPABASE_URL:
+            return self.SUPABASE_URL.rstrip("/")
+        if self.SUPABASE_PROJECT_REF:
+            return f"https://{self.SUPABASE_PROJECT_REF}.supabase.co"
+        return None
+
+    @property
+    def supabase_jwks_url(self) -> Optional[str]:
+        """JWKS endpoint for the project's public signing keys."""
+        if self.SUPABASE_JWKS_URL:
+            return self.SUPABASE_JWKS_URL
+        base = self.supabase_base_url
+        return f"{base}/auth/v1/.well-known/jwks.json" if base else None
+
+    @property
+    def supabase_jwt_issuer(self) -> Optional[str]:
+        """Expected `iss` claim on Supabase-issued tokens."""
+        if self.SUPABASE_JWT_ISSUER:
+            return self.SUPABASE_JWT_ISSUER
+        base = self.supabase_base_url
+        return f"{base}/auth/v1" if base else None
+
+    @property
+    def supabase_auth_enabled(self) -> bool:
+        """True when enough config is present to verify Supabase tokens."""
+        return bool(self.supabase_jwks_url and self.supabase_jwt_issuer)
 
     class Config:
         env_file = ".env"
