@@ -9,8 +9,23 @@ import type { ClosetItem } from '@tailor/contracts';
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: vi.fn(),
+    replace: vi.fn(),
   }),
 }));
+
+// Render as authenticated; the three-state guard is covered by useRequireAuth.test.
+// Return a STABLE object (created once in the factory) so `session`'s identity is
+// constant across renders — the page's seed effect depends on `session`, and a
+// fresh object each render would re-run it and clobber typed input. This mirrors
+// how the real hook keeps the session reference stable between renders.
+vi.mock('@/lib/auth/useRequireAuth', () => {
+  const authState = {
+    session: { user: { id: 'u1' } },
+    status: 'authenticated' as const,
+    loading: false,
+  };
+  return { useRequireAuth: () => authState };
+});
 
 // Mock the store
 vi.mock('@/stores/useClosetStore', () => ({
