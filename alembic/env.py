@@ -25,11 +25,36 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _include_object(object, name, type_, reflected, compare_to):
+    """Keep autogenerate clean for migration-owned, ORM-inexpressible objects.
+
+    The users.id -> auth.users(id) FK (added in revision 0002) lives only in the
+    Alembic migration: it cannot be expressed in the cross-dialect ORM because
+    auth.users is a Supabase/Postgres-only table that is not (and should not be) a
+    mapped model -- modeling it would break create_all() under the SQLite dev/test
+    mode. Without this exclusion, `alembic revision --autogenerate` would reflect
+    the live FK, find no counterpart in the ORM metadata, and propose dropping it.
+    The migration is the schema authority for this constraint, so we skip it here.
+    """
+    if type_ == "foreign_key_constraint":
+        if name == "users_id_fkey":
+            return False
+        for element in getattr(object, "elements", []):
+            target = getattr(element, "target_fullname", "") or ""
+            if target.startswith("auth."):
+                return False
+    return True
+
+
 # Autogenerate comparison settings. compare_type catches column type drift
 # (e.g. timestamptz vs timestamp, text vs varchar). compare_server_default is left
 # OFF: server-side defaults live in the DB/migrations, not the ORM, and enabling it
 # produces noisy false positives for now()/gen_random_uuid()/CURRENT_TIMESTAMP.
-_COMPARE = dict(compare_type=True, compare_server_default=False)
+_COMPARE = dict(
+    compare_type=True,
+    compare_server_default=False,
+    include_object=_include_object,
+)
 
 
 def run_migrations_offline() -> None:
