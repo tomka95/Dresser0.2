@@ -210,7 +210,22 @@ export function OutfitImageUpload() {
   return (
     <div className="border rounded-lg p-6 bg-white">
       <h2 className="text-xl font-semibold mb-4">Upload Outfit Photo</h2>
-      
+
+      {/* Errors/warnings render in both the empty and file-selected states so
+          validation feedback (invalid type/size) is visible immediately, before
+          a file is accepted. */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-800 rounded-lg p-3 text-sm mb-4">
+          {error}
+        </div>
+      )}
+
+      {warning && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-sm mb-4">
+          {warning}
+        </div>
+      )}
+
       {!selectedFile ? (
         <div
           onDrop={handleDrop}
@@ -268,19 +283,7 @@ export function OutfitImageUpload() {
               ✓ Successfully processed! Items added to your closet.
             </div>
           )}
-          
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-800 rounded-lg p-3 text-sm">
-              {error}
-            </div>
-          )}
-          
-          {warning && (
-            <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-sm">
-              {warning}
-            </div>
-          )}
-          
+
           <div className="flex gap-2">
             {uploadState === 'idle' && (
               <>

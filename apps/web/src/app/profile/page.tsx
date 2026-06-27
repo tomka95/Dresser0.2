@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { isAuthenticated, clearAuth } from '@/lib/auth/storage';
+import { isAuthenticated, signOut } from '@/lib/auth';
 import { getCurrentUser, type CurrentUserResponse } from '@/lib/api/auth';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
@@ -28,8 +28,8 @@ export default function ProfilePage() {
 
   useEffect(() => {
     const checkAuth = async () => {
-      if (!isAuthenticated()) {
-        router.push('/sign-up');
+      if (!(await isAuthenticated())) {
+        router.push('/sign-in');
         return;
       }
 
@@ -53,9 +53,9 @@ export default function ProfilePage() {
     checkAuth();
   }, [router, hasFetchedItems, fetchItems]);
 
-  const handleLogout = () => {
-    clearAuth();
-    router.push('/sign-in'); // or /login, keeping consistent with sign-up redirect
+  const handleLogout = async () => {
+    await signOut();
+    router.push('/sign-in');
   };
 
   // Use real count if available, otherwise mock for initial design fidelity if store is empty/loading
