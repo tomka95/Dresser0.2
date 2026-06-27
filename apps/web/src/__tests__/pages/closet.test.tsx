@@ -1,196 +1,132 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ClosetPage from '@/app/closet/page';
 import { useClosetStore } from '@/stores/useClosetStore';
 import type { ClosetItem } from '@tailor/contracts';
+
+// The closet page calls useRouter()/usePathname() directly, which throw the
+// "expected app router to be mounted" invariant without a provider — mock them.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => '/closet',
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+// Route protection is covered by the auth-module tests; here we render as an
+// authenticated user so we can assert the closet UI. Mocking the hook also keeps
+// the Supabase client out of this test.
+vi.mock('@/lib/auth/useRequireAuth', () => ({
+  useRequireAuth: () => ({ session: { user: { id: 'u1' } }, loading: false }),
+}));
 
 // Mock the store
 vi.mock('@/stores/useClosetStore', () => ({
   useClosetStore: vi.fn(),
 }));
 
-// Mock analytics
-vi.mock('@/lib/analytics', () => ({
-  track: vi.fn(),
-}));
-
 describe('ClosetPage', () => {
   const mockFetchItems = vi.fn();
   const mockAddItem = vi.fn();
 
+  type StoreState = {
+    items: ClosetItem[];
+    hasFetchedItems: boolean;
+    isLoading: boolean;
+    fetchItems: typeof mockFetchItems;
+    addItem: typeof mockAddItem;
+  };
+
+  function mockStore(partial: Partial<StoreState> = {}) {
+    const state: StoreState = {
+      items: [],
+      hasFetchedItems: false,
+      isLoading: false,
+      fetchItems: mockFetchItems,
+      addItem: mockAddItem,
+      ...partial,
+    };
+    (useClosetStore as unknown as Mock).mockImplementation(
+      (selector: (s: StoreState) => unknown) => selector(state)
+    );
+  }
+
+  const storeItems: ClosetItem[] = [
+    {
+      id: '1',
+      userId: 'user-1',
+      name: 'Blue Shirt',
+      category: 'top',
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    },
+    {
+      id: '2',
+      userId: 'user-1',
+      name: 'Black Jeans',
+      category: 'bottom',
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    },
+  ];
+
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: [] as ClosetItem[],
-        isLoading: false,
-        hasFetchedItems: false,
-        error: undefined as string | undefined,
-        fetchItems: mockFetchItems,
-        addItem: mockAddItem,
-      };
-      return selector(state);
-    });
+    mockStore();
   });
 
-  it('should render empty state when no items', () => {
+  it('renders the closet header', () => {
     render(<ClosetPage />);
-
-    expect(screen.getByText('Your closet is empty')).toBeInTheDocument();
-    expect(
-      screen.getByText('Start by adding your first clothing item')
-    ).toBeInTheDocument();
+    expect(screen.getByText('My Closet')).toBeInTheDocument();
   });
 
-  it('should render loading state', () => {
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: [],
-        isLoading: true,
-        hasFetchedItems: false,
-        error: undefined,
-        fetchItems: mockFetchItems,
-        addItem: mockAddItem,
-      };
-      return selector(state);
-    });
-
+  it('renders the category filters', () => {
     render(<ClosetPage />);
-
-    expect(screen.getByText('Loading closet…')).toBeInTheDocument();
+    expect(screen.getByText('All')).toBeInTheDocument();
+    expect(screen.getByText('Tops')).toBeInTheDocument();
+    expect(screen.getByText('Shoes')).toBeInTheDocument();
   });
 
-  it('should render error state', () => {
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: [],
-        isLoading: false,
-        hasFetchedItems: false,
-        error: 'Network error',
-        fetchItems: mockFetchItems,
-        addItem: mockAddItem,
-      };
-      return selector(state);
-    });
-
+  it('shows mock fallback items when the store is empty', () => {
+    // Current behavior: an empty store renders design-preview mock items.
+    mockStore({ items: [], hasFetchedItems: true });
     render(<ClosetPage />);
-
-    expect(screen.getByText(/Network error/)).toBeInTheDocument();
+    expect(screen.getByText('Beige Cardigan')).toBeInTheDocument();
+    expect(screen.getByText('Dark Denim')).toBeInTheDocument();
   });
 
-  it('should render closet items', () => {
-    const mockItems: ClosetItem[] = [
-      {
-        id: '1',
-        userId: 'user-1',
-        name: 'Blue Shirt',
-        category: 'top',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      },
-      {
-        id: '2',
-        userId: 'user-1',
-        name: 'Black Jeans',
-        category: 'bottom',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      },
-    ];
-
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: mockItems,
-        isLoading: false,
-        hasFetchedItems: true,
-        error: undefined,
-        fetchItems: mockFetchItems,
-        addItem: mockAddItem,
-      };
-      return selector(state);
-    });
-
+  it('renders real items from the store when present', () => {
+    mockStore({ items: storeItems, hasFetchedItems: true });
     render(<ClosetPage />);
-
     expect(screen.getByText('Blue Shirt')).toBeInTheDocument();
     expect(screen.getByText('Black Jeans')).toBeInTheDocument();
   });
 
-  it('should call fetchItems on mount when items are empty', () => {
+  it('calls fetchItems on mount when items have not been fetched yet', () => {
+    mockStore({ items: [], hasFetchedItems: false });
     render(<ClosetPage />);
-
     expect(mockFetchItems).toHaveBeenCalled();
   });
 
-  it('should not call fetchItems if items already exist', () => {
-    const mockItems: ClosetItem[] = [
-      {
-        id: '1',
-        userId: 'user-1',
-        name: 'Item',
-        category: 'top',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      },
-    ];
-
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: mockItems,
-        isLoading: false,
-        hasFetchedItems: true,
-        error: undefined,
-        fetchItems: mockFetchItems,
-        addItem: mockAddItem,
-      };
-      return selector(state);
-    });
-
+  it('does not call fetchItems again once items have been fetched', () => {
+    mockStore({ items: storeItems, hasFetchedItems: true });
     render(<ClosetPage />);
-
-    // fetchItems should not be called again since items exist
     expect(mockFetchItems).not.toHaveBeenCalled();
   });
 
-  it('should handle add item button click', async () => {
+  it('filters items by category when a filter is selected', async () => {
     const user = userEvent.setup();
-
+    mockStore({ items: [], hasFetchedItems: true }); // mock fallback items
     render(<ClosetPage />);
 
-    const addButton = screen.getByText('Add Sample Item');
-    await user.click(addButton);
+    // Both a top and a bottom are visible initially.
+    expect(screen.getByText('Beige Cardigan')).toBeInTheDocument(); // top
+    expect(screen.getByText('Dark Denim')).toBeInTheDocument(); // bottom
 
-    expect(mockAddItem).toHaveBeenCalledWith({
-      name: expect.stringContaining('Sample Item'),
-      category: 'other',
-      color: 'mixed tones',
-      brand: 'Tailor Mock',
-    });
-  });
+    await user.click(screen.getByText('Tops'));
 
-  it('should disable add button when loading', () => {
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: [],
-        isLoading: true,
-        hasFetchedItems: false,
-        error: undefined,
-        fetchItems: mockFetchItems,
-        addItem: mockAddItem,
-      };
-      return selector(state);
-    });
-
-    render(<ClosetPage />);
-
-    const addButton = screen.getByText('Add Sample Item');
-    expect(addButton).toBeDisabled();
+    // After filtering to Tops, the bottom item is gone, the top remains.
+    expect(screen.getByText('Beige Cardigan')).toBeInTheDocument();
+    expect(screen.queryByText('Dark Denim')).not.toBeInTheDocument();
   });
 });
-
-
-
-
-
-

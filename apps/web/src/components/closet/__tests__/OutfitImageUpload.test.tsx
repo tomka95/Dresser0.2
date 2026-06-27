@@ -2,27 +2,32 @@
  * Basic test for OutfitImageUpload component state transitions.
  */
 
+import { describe, it, expect, beforeEach, vi, type Mock, type MockedFunction } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { OutfitImageUpload } from '../OutfitImageUpload';
 import { uploadOutfitImage } from '@/lib/api/outfit';
 import { useClosetStore } from '@/stores/useClosetStore';
 
 // Mock dependencies
-jest.mock('@/lib/api/outfit');
-jest.mock('@/stores/useClosetStore');
-jest.mock('@/lib/auth/storage', () => ({
-  getAccessToken: () => 'mock-token',
+vi.mock('@/lib/api/outfit');
+vi.mock('@/stores/useClosetStore');
+// Auth now lives in '@/lib/auth'; getAccessToken is async (Supabase session).
+vi.mock('@/lib/auth', () => ({
+  getAccessToken: async () => 'mock-token',
 }));
 
-const mockUploadOutfitImage = uploadOutfitImage as jest.MockedFunction<typeof uploadOutfitImage>;
-const mockFetchItems = jest.fn();
+const mockUploadOutfitImage = uploadOutfitImage as MockedFunction<typeof uploadOutfitImage>;
+const mockFetchItems = vi.fn();
 
 describe('OutfitImageUpload', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
-    (useClosetStore as unknown as jest.Mock).mockReturnValue({
-      fetchItems: mockFetchItems,
-    });
+    vi.clearAllMocks();
+    // The component reads the store via a selector: useClosetStore((s) => s.fetchItems).
+    // Mock with the selector applied so `fetchItems` is the function, not the object.
+    (useClosetStore as unknown as Mock).mockImplementation(
+      (selector: (state: { fetchItems: typeof mockFetchItems }) => unknown) =>
+        selector({ fetchItems: mockFetchItems })
+    );
   });
 
   it('renders upload area when no file is selected', () => {

@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { isAuthenticated, clearAuth } from '@/lib/auth/storage';
+import { signOut } from '@/lib/auth';
+import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { getCurrentUser, type CurrentUserResponse } from '@/lib/api/auth';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
@@ -18,6 +19,8 @@ const MOCK_OUTFITS_COUNT = 653;
 
 export default function ProfilePage() {
   const router = useRouter();
+  // Gate on the Supabase session (three-state: never redirects while loading).
+  const { session, loading: authLoading } = useRequireAuth();
   const [user, setUser] = useState<CurrentUserResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -27,35 +30,53 @@ export default function ProfilePage() {
   const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      if (!isAuthenticated()) {
-        router.push('/sign-up');
-        return;
-      }
+    // Wait for the auth state to resolve; the guard handles the unauthenticated
+    // redirect, so only load profile data once we have a session.
+    if (authLoading || !session) return;
 
+    let active = true;
+    const loadProfile = async () => {
       try {
         const userData = await getCurrentUser();
-        setUser(userData);
-        
+        if (active) setUser(userData);
+
         // Fetch items if not already fetched to get the count
         if (!hasFetchedItems) {
           fetchItems();
         }
       } catch (error) {
-        console.error('Failed to load profile:', error);
-        // If auth fails (e.g. token expired), redirect
-        router.push('/login'); 
+        // A backend authorization/data failure is NOT a session failure. The
+        // Supabase guard (useRequireAuth) owns redirects; here we keep the user on
+        // the page and fall back to their Supabase session profile.
+        console.error('Failed to load profile from backend; using session fallback:', error);
+        if (active && session?.user) {
+          const meta = (session.user.user_metadata ?? {}) as {
+            full_name?: string;
+            avatar_url?: string;
+          };
+          setUser({
+            id: session.user.id,
+            email: session.user.email ?? '',
+            full_name: meta.full_name,
+            display_name: meta.full_name,
+            avatar_url: meta.avatar_url,
+            gmail_sync_completed_at: null,
+          });
+        }
       } finally {
-        setIsLoading(false);
+        if (active) setIsLoading(false);
       }
     };
 
-    checkAuth();
-  }, [router, hasFetchedItems, fetchItems]);
+    loadProfile();
+    return () => {
+      active = false;
+    };
+  }, [authLoading, session, hasFetchedItems, fetchItems]);
 
-  const handleLogout = () => {
-    clearAuth();
-    router.push('/sign-in'); // or /login, keeping consistent with sign-up redirect
+  const handleLogout = async () => {
+    await signOut();
+    router.push('/sign-in');
   };
 
   // Use real count if available, otherwise mock for initial design fidelity if store is empty/loading

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import { useClosetStore } from '@/stores/useClosetStore';
+import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -17,7 +18,14 @@ interface ItemDetailsPageProps {
 export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   const router = useRouter();
   const { id } = params;
-  
+
+  // Gate on the Supabase session (three-state: never redirects while loading).
+  // Use the stable `status` boolean (not the `session` object) for effect deps so
+  // a background token refresh — which yields a new session reference but keeps
+  // status 'authenticated' — does not re-run the seed effect and clobber edits.
+  const { status } = useRequireAuth();
+  const isAuthed = status === 'authenticated';
+
   const fetchItem = useClosetStore((state) => state.fetchItem);
   const updateItem = useClosetStore((state) => state.updateItem);
   const isItemLoading = useClosetStore((state) => state.isItemLoading[id]);
@@ -29,15 +37,17 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
   
-  // Initial data load
+  // Initial data load — only once authenticated. Depends on the stable `isAuthed`
+  // boolean so it seeds once and is not re-run by token refreshes.
   useEffect(() => {
+    if (!isAuthed) return;
     fetchItem(id).then((item) => {
       setName(item.name);
       setItemImageUrl(item.imageUrl);
     }).catch(() => {
       // Error handled by store, component will show error view
     });
-  }, [id, fetchItem]);
+  }, [id, fetchItem, isAuthed]);
 
   // Handle saving changes
   const handleSave = async () => {
@@ -64,6 +74,13 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
       setIsSaving(false);
     }
   };
+
+  // While the session is resolving (status 'loading') render nothing, and render
+  // nothing while unauthenticated — the guard performs the redirect; we never
+  // redirect here.
+  if (!isAuthed) {
+    return null;
+  }
 
   if (isItemLoading) {
     return (

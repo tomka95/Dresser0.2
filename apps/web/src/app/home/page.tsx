@@ -2,9 +2,8 @@
 
 // STATUS: Home screen with greeting, weather/calendar, AI suggestions, and clothing grid
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { isAuthenticated } from '@/lib/auth/storage';
+import { useEffect } from 'react';
+import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { HomeHeader } from '@/components/home/HomeHeader';
 import { WeatherCalendarCard } from '@/components/home/WeatherCalendarCard';
 import { AISuggestionCard } from '@/components/home/AISuggestionCard';
@@ -58,38 +57,23 @@ const MOCK_ITEMS: ClosetItem[] = [
 ];
 
 export default function HomePage() {
-  const router = useRouter();
-  const [isAuth, setIsAuth] = useState(false);
-  const [checkingAuth, setCheckingAuth] = useState(true);
-  
+  // Gate on the Supabase session; redirects to /sign-in when absent.
+  const { session, loading } = useRequireAuth();
+  const isAuth = !!session;
+
   const items = useClosetStore((state) => state.items);
   const fetchItems = useClosetStore((state) => state.fetchItems);
   const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
 
   useEffect(() => {
-    // Check auth on mount
-    const auth = isAuthenticated();
-    if (!auth) {
-      router.push('/sign-up');
-    } else {
-      setIsAuth(true);
-    }
-    setCheckingAuth(false);
-  }, [router]);
-
-  useEffect(() => {
-    // Fetch items if authenticated and not yet fetched
+    // Fetch items once authenticated and not yet fetched
     if (isAuth && !hasFetchedItems) {
       fetchItems();
     }
   }, [isAuth, hasFetchedItems, fetchItems]);
 
-  if (checkingAuth) {
+  if (loading || !isAuth) {
     return null; // Or a loading spinner
-  }
-
-  if (!isAuth) {
-    return null;
   }
 
   // Use real items if available, otherwise fallback to mock for design preview

@@ -4,7 +4,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { isAuthenticated } from '@/lib/auth/storage';
+import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { ClosetHeader } from '@/components/closet/ClosetHeader';
@@ -62,8 +62,9 @@ const MOCK_ITEMS: ClosetItem[] = [
 export default function ClosetPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const [isAuth, setIsAuth] = useState(false);
-  const [checkingAuth, setCheckingAuth] = useState(true);
+  // Gate on the Supabase session; redirects to /sign-in when absent.
+  const { session, loading: checkingAuth } = useRequireAuth();
+  const isAuth = !!session;
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   
@@ -73,17 +74,6 @@ export default function ClosetPage() {
   const items = useClosetStore((state) => state.items);
   const fetchItems = useClosetStore((state) => state.fetchItems);
   const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
-
-  useEffect(() => {
-    // Check auth on mount
-    const auth = isAuthenticated();
-    if (!auth) {
-      router.push('/sign-up');
-    } else {
-      setIsAuth(true);
-    }
-    setCheckingAuth(false);
-  }, [router]);
 
   useEffect(() => {
     // Fetch items if authenticated and not yet fetched

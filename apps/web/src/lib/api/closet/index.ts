@@ -1,0 +1,207 @@
+/**
+ * Closet API abstraction layer.
+ *
+ * Connects to FastAPI backend endpoints at /closet.
+ */
+import type { ClosetItem, ClosetItemUpdate } from '@tailor/contracts';
+import { getAccessToken } from '@/lib/auth';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+export async function listClosetItems(options?: { includeTags?: boolean }): Promise<ClosetItem[]> {
+  const token = await getAccessToken();
+  
+  if (!token) {
+    throw new Error('Not authenticated. Please sign in first.');
+  }
+
+  // Construct URL (includeTags ignored for backward compatibility)
+  const url = new URL(`${API_BASE_URL}/closet`);
+
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    
+    // Handle FastAPI validation errors (422)
+    if (Array.isArray(error.detail)) {
+      const messages = error.detail.map((err: any) => err.msg).join(', ');
+      throw new Error(messages);
+    }
+    
+    // Handle specific error cases
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Not authenticated. Please sign in first.');
+    }
+    
+    if (response.status === 500) {
+      throw new Error('Something went wrong. Please try again.');
+    }
+    
+    throw new Error(
+      typeof error.detail === 'string' 
+        ? error.detail 
+        : 'Failed to load closet items'
+    );
+  }
+
+  return response.json();
+}
+
+export async function getClosetItem(id: string): Promise<ClosetItem> {
+  const token = await getAccessToken();
+  
+  if (!token) {
+    throw new Error('Not authenticated. Please sign in first.');
+  }
+
+  const response = await fetch(`${API_BASE_URL}/closet/${id}`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    
+    // Handle 404 Not Found
+    if (response.status === 404) {
+      throw new Error(`Closet item not found: ${id}`);
+    }
+    
+    // Handle FastAPI validation errors (422)
+    if (Array.isArray(error.detail)) {
+      const messages = error.detail.map((err: any) => err.msg).join(', ');
+      throw new Error(messages);
+    }
+    
+    // Handle specific error cases
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Not authenticated. Please sign in first.');
+    }
+    
+    if (response.status === 500) {
+      throw new Error('Something went wrong. Please try again.');
+    }
+    
+    throw new Error(
+      typeof error.detail === 'string' 
+        ? error.detail 
+        : 'Failed to get closet item'
+    );
+  }
+
+  return response.json();
+}
+
+export async function patchClosetItem(
+  id: string,
+  updates: ClosetItemUpdate
+): Promise<ClosetItem> {
+  const token = await getAccessToken();
+  
+  if (!token) {
+    throw new Error('Not authenticated. Please sign in first.');
+  }
+
+  const response = await fetch(`${API_BASE_URL}/closet/${id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(updates),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    
+    // Handle 404 Not Found
+    if (response.status === 404) {
+      throw new Error(`Closet item not found: ${id}`);
+    }
+    
+    // Handle FastAPI validation errors (422)
+    if (Array.isArray(error.detail)) {
+      const messages = error.detail.map((err: any) => err.msg).join(', ');
+      throw new Error(messages);
+    }
+    
+    // Handle specific error cases
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Not authenticated. Please sign in first.');
+    }
+    
+    if (response.status === 500) {
+      throw new Error('Something went wrong. Please try again.');
+    }
+    
+    throw new Error(
+      typeof error.detail === 'string' 
+        ? error.detail 
+        : 'Failed to update closet item'
+    );
+  }
+
+  return response.json();
+}
+
+export async function addClosetItem(
+  input: Omit<ClosetItem, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'analysisRaw'>
+): Promise<ClosetItem> {
+  const token = await getAccessToken();
+  
+  if (!token) {
+    throw new Error('Not authenticated. Please sign in first.');
+  }
+
+  const response = await fetch(`${API_BASE_URL}/closet`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    
+    // Handle FastAPI validation errors (422)
+    if (Array.isArray(error.detail)) {
+      const messages = error.detail.map((err: any) => err.msg).join(', ');
+      throw new Error(messages);
+    }
+    
+    // Handle specific error cases
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Not authenticated. Please sign in first.');
+    }
+    
+    if (response.status === 500) {
+      throw new Error('Something went wrong. Please try again.');
+    }
+    
+    throw new Error(
+      typeof error.detail === 'string' 
+        ? error.detail 
+        : 'Failed to add closet item'
+    );
+  }
+
+  return response.json();
+}
+
+
+
+
+
+
+
+

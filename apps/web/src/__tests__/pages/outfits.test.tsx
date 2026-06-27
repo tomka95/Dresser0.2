@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import OutfitsPage from '@/app/outfits/page';
@@ -6,6 +6,15 @@ import { useOutfitsStore } from '@/stores/useOutfitsStore';
 import { useClosetStore } from '@/stores/useClosetStore';
 import type { OutfitSuggestion } from '@tailor/contracts';
 import type { ClosetItem } from '@tailor/contracts';
+
+// The OutfitsPage only reads items/isLoading/fetchItems from the closet store, so
+// we mock just that slice (cast to Mock so the partial selector input is allowed,
+// mirroring closet.test.tsx) rather than constructing the full ClosetState.
+type ClosetStoreSlice = {
+  items: ClosetItem[];
+  isLoading: boolean;
+  fetchItems: () => void;
+};
 
 // Mock the stores
 vi.mock('@/stores/useOutfitsStore', () => ({
@@ -39,14 +48,10 @@ describe('OutfitsPage', () => {
       };
       return selector(state);
     });
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: [] as ClosetItem[],
-        isLoading: false,
-        fetchItems: mockFetchClosetItems,
-      };
-      return selector(state);
-    });
+    (useClosetStore as unknown as Mock).mockImplementation(
+      (selector: (s: ClosetStoreSlice) => unknown) =>
+        selector({ items: [], isLoading: false, fetchItems: mockFetchClosetItems })
+    );
   });
 
   it('should render empty state when no outfits', () => {
@@ -128,14 +133,10 @@ describe('OutfitsPage', () => {
       return selector(state);
     });
 
-    vi.mocked(useClosetStore).mockImplementation((selector) => {
-      const state = {
-        items: mockClosetItems,
-        isLoading: false,
-        fetchItems: mockFetchClosetItems,
-      };
-      return selector(state);
-    });
+    (useClosetStore as unknown as Mock).mockImplementation(
+      (selector: (s: ClosetStoreSlice) => unknown) =>
+        selector({ items: mockClosetItems, isLoading: false, fetchItems: mockFetchClosetItems })
+    );
 
     render(<OutfitsPage />);
 
@@ -251,7 +252,9 @@ describe('OutfitsPage', () => {
 
     expect(screen.getByText('Recommended additions')).toBeInTheDocument();
     expect(screen.getByText('Recommended Shoe')).toBeInTheDocument();
-    expect(screen.getByText('Completes the look')).toBeInTheDocument();
+    // The reason renders inside a <span> as "– {reason}" (prefix + text node),
+    // so the text is split. Match with a regex rather than an exact string.
+    expect(screen.getByText(/Completes the look/)).toBeInTheDocument();
   });
 });
 

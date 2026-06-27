@@ -1,19 +1,31 @@
 import { useEffect, useState } from 'react';
 import { getCurrentUser } from '@/lib/api/auth';
+import { getSessionUser } from '@/lib/auth';
 
 export function HomeHeader() {
-  const [userName, setUserName] = useState("Tom"); // Default fallback
+  const [userName, setUserName] = useState("there"); // neutral default
 
   useEffect(() => {
     async function fetchUserDisplayName() {
       try {
         const user = await getCurrentUser();
-        // Use display_name from database, fallback to full_name, then to "Tom"
-        const name = user.display_name || user.full_name?.split(' ')[0] || "Tom";
+        const name = user.display_name || user.full_name?.split(' ')[0] || "there";
         setUserName(name);
       } catch (error) {
-        // If API call fails, keep default "Tom"
-        console.error('Failed to fetch user display name:', error);
+        // A backend failure is NOT an auth failure — fall back to the Supabase
+        // session user (never redirect/sign out here; the route guard owns that).
+        console.error('Failed to fetch user display name from backend:', error);
+        try {
+          const sessionUser = await getSessionUser();
+          const meta = (sessionUser?.user_metadata ?? {}) as { full_name?: string };
+          setUserName(
+            meta.full_name?.split(' ')[0] ||
+              sessionUser?.email?.split('@')[0] ||
+              "there"
+          );
+        } catch {
+          setUserName("there");
+        }
       }
     }
 
