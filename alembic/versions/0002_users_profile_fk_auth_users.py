@@ -12,28 +12,20 @@ corresponding auth.users id. This migration adds the foreign key
 
 so a profile row is keyed to (and cleaned up with) its Supabase identity.
 
-Deliberately conservative for a live, in-transition database:
+User reconciliation is complete: the legacy test profiles were dropped and
+public.users is EMPTY (the backend auto-provisions a profile with id = the
+Supabase user id / token `sub` on the first authenticated request). Because there
+are no existing rows to validate, the FK is added as a single, fully VALID
+constraint -- the earlier NOT VALID + deferred VALIDATE split is no longer needed.
 
-  * NO data is mutated. Only the constraint is added.
-  * The constraint is added **NOT VALID**: Postgres does not scan/lock-validate
-    the existing rows, so adding it to the populated live table is fast and does
-    not block. (Validating historical rows is deferred to a later, coordinated
-    step once legacy/orphan profiles are reconciled.)
-  * It is GUARDED two ways so it is a safe no-op where it cannot apply:
-      - skipped entirely if the `auth` schema / `auth.users` table is absent
-        (e.g. a plain local Postgres without Supabase's auth stack), and
-      - skipped if the constraint already exists (idempotent re-run).
-  * Existing columns (incl. hashed_password) are intentionally KEPT — the legacy
-    custom-JWT path is still live during dual-accept.
+It is GUARDED two ways so it is a safe no-op where it cannot apply:
+  * skipped entirely if the `auth` schema / `auth.users` table is absent (e.g. a
+    plain local Postgres without Supabase's auth stack), and
+  * skipped if the constraint already exists (idempotent re-run).
 
-REVIEW NOTE — interaction with the legacy /signup path:
-  NOT VALID skips validation of *existing* rows but Postgres still enforces the FK
-  on *new* INSERTs/UPDATEs. The legacy POST /signup creates users with a random
-  uuid4 id that does NOT exist in auth.users, so once this FK is live on Postgres
-  those inserts will be rejected. New Supabase-provisioned profiles use the
-  auth.users id (the token `sub`) and satisfy the FK. Apply this FK to the live
-  database only after legacy /signup is cut over to Supabase (or retired). See the
-  phase-1 report's "deferred" section.
+Existing columns (incl. hashed_password) are intentionally KEPT -- the legacy
+custom-JWT path is still live during dual-accept. New Supabase-provisioned
+profiles use the auth.users id (the token `sub`) and satisfy the FK.
 
 This is Postgres-specific by design (auth.users is a Supabase/Postgres construct).
 The optional LOCAL_DB=sqlite dev/test mode never runs Alembic migrations.
@@ -54,7 +46,8 @@ _FK_NAME = "users_id_fkey"
 UPGRADE_SQL = f"""
 DO $$
 BEGIN
-    -- Only meaningful where Supabase's auth schema exists.
+    -- Only meaningful where Supabase's auth schema exists, and idempotent: skip
+    -- if the constraint is already present.
     IF EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'auth' AND table_name = 'users'
@@ -65,11 +58,12 @@ BEGIN
           AND conrelid = 'public.users'::regclass
     )
     THEN
+        -- public.users is empty, so this VALID constraint adds cleanly with no
+        -- historical-row scan to defer.
         ALTER TABLE public.users
             ADD CONSTRAINT {_FK_NAME}
             FOREIGN KEY (id) REFERENCES auth.users (id)
-            ON DELETE CASCADE
-            NOT VALID;
+            ON DELETE CASCADE;
     END IF;
 END $$;
 """
