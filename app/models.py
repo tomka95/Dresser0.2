@@ -63,7 +63,7 @@ class User(Base):
 
     avatar_url = Column(Text, nullable=True)
 
-    created_at = Column(_tstz(), default=datetime.utcnow)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
     gmail_sync_completed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -135,9 +135,9 @@ class ClothingItem(Base):
     attributes_json = Column(_jsonb(), nullable=False, default=dict,
                              comment='JSONB object for future attributes (warmth, formality, modesty, fabric, etc.)')
 
-    created_at = Column(_tstz(), default=datetime.utcnow)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
-    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
     user = relationship("User", back_populates="clothing_items")
@@ -208,9 +208,9 @@ class GoogleAccount(Base):
 
     token_expiry = Column(_tstz(), nullable=True)
 
-    created_at = Column(_tstz(), default=datetime.utcnow)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
-    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="google_account")
 
@@ -249,11 +249,11 @@ class UserPreference(Base):
 
     evidence_text = Column(Text, nullable=True)
 
-    last_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    last_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 
@@ -284,7 +284,7 @@ class UserPreferenceEvent(Base):
 
     message_id = Column(Text, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
 
 
@@ -316,7 +316,7 @@ class WeatherCache(Base):
 
     payload = Column(_jsonb(), nullable=False, comment="Cached WeatherForecast JSON payload")
 
-    fetched_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    fetched_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
     expires_at = Column(DateTime(timezone=True), nullable=False,
                         comment="When this cache entry expires (UTC)")
