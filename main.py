@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.db import check_database_connection
 from app.security import hash_password, verify_password, create_access_token
-from app.api.routes import auth_google, closet
+from app.api.routes import auth_google, closet, gmail_oauth
 
 import os
 import tempfile
@@ -62,6 +62,9 @@ app.add_middleware(
 
 # Authentication endpoints
 app.include_router(auth_google.router)
+
+# Gmail-connect OAuth (gmail.readonly token plumbing; no ingestion)
+app.include_router(gmail_oauth.router)
 
 # Closet endpoints
 app.include_router(closet.router)

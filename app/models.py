@@ -205,10 +205,16 @@ class GoogleAccount(Base):
     user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
     # Live: all of these are `text`.
-    google_sub = Column(Text, nullable=False)
+    # google_sub / email are nullable as of migration 0005: the dedicated Gmail
+    # ingest client requests gmail.readonly ONLY (no identity scopes), so the
+    # connect flow has no Google subject id or email to record. Identity lives in
+    # Supabase Auth; this table is purely the per-user Gmail token store.
+    google_sub = Column(Text, nullable=True)
 
-    email = Column(Text, nullable=False)
+    email = Column(Text, nullable=True)
 
+    # Stored ENCRYPTED at rest (AES-256-GCM, see app/core/token_crypto). Column
+    # type is unchanged (text); only the contents are ciphertext now.
     access_token = Column(Text, nullable=False)
 
     refresh_token = Column(Text, nullable=True)
