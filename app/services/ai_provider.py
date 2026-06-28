@@ -76,7 +76,56 @@ class AIProvider:
                 self._client = genai.Client()
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
-    
+
+    def generate_structured(
+        self,
+        *,
+        model: str,
+        system_instruction: str,
+        user_text: str,
+        response_schema: Any,
+        image_parts: Optional[List[Dict[str, Any]]] = None,
+        temperature: float = 0.0,
+        media_resolution: Optional[Any] = None,
+    ):
+        """Synchronous structured-output generation (the phase-3c receipt extractor).
+
+        Forces valid typed JSON via responseMimeType=application/json + responseSchema,
+        so the caller NEVER regexes the model output. Returns the raw
+        GenerateContentResponse so the caller can read `.parsed` / `.text` and
+        `.usage_metadata` (for cost instrumentation).
+
+        Kept synchronous on purpose: the extraction pass mirrors the 3b fetch
+        service (sync, ThreadPoolExecutor), so a blocking SDK call inside a worker
+        thread is the right shape. This reuses the single Gemini SDK path; it does
+        NOT add a new provider integration.
+
+        `system_instruction` and `user_text` are kept separate so untrusted email
+        content (user_text) can never be confused with the extraction rules
+        (system_instruction) — the prompt-injection boundary.
+        """
+        contents_parts: List[Any] = []
+        if image_parts:
+            contents_parts.extend(image_parts)
+        contents_parts.append({"text": user_text})
+
+        config_kwargs: Dict[str, Any] = dict(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            response_schema=response_schema,
+            temperature=temperature,
+        )
+        # media_resolution=LOW lets the vision-verify pass pay for color+garment
+        # recognition without OCR-grade token cost. Optional / additive.
+        if media_resolution is not None:
+            config_kwargs["media_resolution"] = media_resolution
+        config = types.GenerateContentConfig(**config_kwargs)
+        return self._client.models.generate_content(
+            model=model,
+            contents=contents_parts,
+            config=config,
+        )
+
     async def detect_clothing_items_from_image(
         self,
         outfit_image,

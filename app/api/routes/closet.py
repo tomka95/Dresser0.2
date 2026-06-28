@@ -49,23 +49,28 @@ class ClosetItemCreateIn(BaseModel):
 
 class ClosetItemOut(BaseModel):
     """Output schema matching ClosetItem contract from @tailor/contracts.
-    
+
     All fields are camelCase to match the frontend contract exactly.
     Note: category is required in contract but DB allows null - we'll return "other" if not set.
     """
-    
+
     id: str
     userId: str
     name: str
     category: str  # Contract requires enum value (default to "other" if DB has null)
     brand: Optional[str] = None
     color: Optional[str] = None
+    size: Optional[str] = None
+    quantity: int = 1
+    unitPrice: Optional[float] = None
+    currency: Optional[str] = None
+    orderDate: Optional[str] = None
+    isReturn: bool = False
+    merchant: Optional[str] = None
     imageUrl: Optional[str] = None
-    # TODO: define expected analysis_raw JSON shape (user will provide example)
-    # analysisRaw: Optional[Dict[str, Any]] = None  # Uncomment once schema is defined
     createdAt: str
     updatedAt: str
-    
+
     class Config:
         # Ensure camelCase field names in JSON output
         populate_by_name = True
@@ -105,24 +110,17 @@ def _map_clothing_item_to_out(
     include_tags: bool = True,  # Ignored for backward compatibility, no longer used
 ) -> ClosetItemOut:
     """Map SQLAlchemy ClothingItem to ClosetItemOut contract format.
-    
-    Args:
-        item: ClothingItem SQLAlchemy model with images relationship loaded
-        include_tags: Ignored (kept for backward compatibility)
-        
-    Returns:
-        ClosetItemOut Pydantic model with camelCase fields
+
+    merchant is read directly from the persisted clothing_items.merchant column
+    (Wave 2a); there is no longer a display-time join against ingest_candidates.
     """
-    # Get color: prefer color_primary, fallback to color_secondary
     color = item.color_primary or item.color_secondary or None
-    
-    # Get image URL using helper (no DB query - uses eagerly-loaded relationship)
     image_url = _get_image_url(item)
-    
-    # Handle category: contract requires enum value, but DB allows null
-    # Use "other" as default if category is not set (matches contract requirement)
     category_value = item.category if item.category else "other"
-    
+
+    unit_price = float(item.unit_price) if item.unit_price is not None else None
+    order_date = item.order_date.isoformat() if item.order_date else None
+
     return ClosetItemOut(
         id=str(item.id),
         userId=str(item.user_id),
@@ -130,6 +128,13 @@ def _map_clothing_item_to_out(
         category=category_value,
         brand=item.brand,
         color=color,
+        size=item.size,
+        quantity=item.quantity if item.quantity is not None else 1,
+        unitPrice=unit_price,
+        currency=item.currency,
+        orderDate=order_date,
+        isReturn=bool(item.is_return),
+        merchant=item.merchant,
         imageUrl=image_url,
         createdAt=item.created_at.isoformat() if item.created_at else "",
         updatedAt=item.updated_at.isoformat() if item.updated_at else "",
@@ -158,10 +163,14 @@ async def list_closet_items_endpoint(
     query_start = time.time()
     items = list_closet_items(db, current_user.id, include_tags=include_tags)
     query_time = (time.time() - query_start) * 1000  # Convert to milliseconds
-    
-    # Mapping/serialization timing
+
+    # Mapping/serialization timing. merchant now lives on clothing_items (Wave 2a) —
+    # no per-request join against ingest_candidates.
     mapping_start = time.time()
-    result = [_map_clothing_item_to_out(item, include_tags=include_tags) for item in items]
+    result = [
+        _map_clothing_item_to_out(item, include_tags=include_tags)
+        for item in items
+    ]
     mapping_time = (time.time() - mapping_start) * 1000  # Convert to milliseconds
     
     total_time = (time.time() - request_start) * 1000  # Convert to milliseconds
@@ -228,19 +237,19 @@ async def create_closet_item_endpoint(
 
 class ClosetItemUpdateIn(BaseModel):
     """Input schema for updating a closet item (partial updates)."""
-    
+
     name: Optional[str] = Field(None, min_length=1, description="Item name")
     category: Optional[str] = Field(None, description="Item category")
     brand: Optional[str] = Field(None, description="Item brand")
     color: Optional[str] = Field(None, description="Item color")
+    size: Optional[str] = Field(None, description="Item size")
+    unitPrice: Optional[float] = Field(None, description="Unit price")
+    currency: Optional[str] = Field(None, description="3-char ISO-4217 currency code")
     imageUrl: Optional[str] = Field(None, description="Image URL")
-    # TODO: define expected analysis_raw JSON shape (user will provide example)
-    # analysisRaw: Optional[Dict[str, Any]] = None  # Uncomment once schema is defined
-    
+
     @field_validator('category')
     @classmethod
     def validate_category(cls, v: Optional[str]) -> Optional[str]:
-        """Validate category matches contract enum."""
         if v is not None and v not in CATEGORY_ENUM:
             raise ValueError(f"Category must be one of: {', '.join(CATEGORY_ENUM)}")
         return v
@@ -267,13 +276,13 @@ async def get_closet_item_endpoint(
         HTTPException: 404 if item not found or doesn't belong to user
     """
     item = get_closet_item_by_id(db, current_user.id, item_id)
-    
+
     if not item:
         raise HTTPException(
             status_code=404,
             detail=f"Clothing item {item_id} not found or access denied"
         )
-    
+
     return _map_clothing_item_to_out(item)
 
 
@@ -315,6 +324,12 @@ async def update_closet_item_endpoint(
             update_kwargs['brand'] = input_data.brand
         if input_data.color is not None:
             update_kwargs['color'] = input_data.color
+        if input_data.size is not None:
+            update_kwargs['size'] = input_data.size
+        if input_data.unitPrice is not None:
+            update_kwargs['unit_price'] = input_data.unitPrice
+        if input_data.currency is not None:
+            update_kwargs['currency'] = input_data.currency
         if input_data.imageUrl is not None:
             update_kwargs['image_url'] = input_data.imageUrl
         
@@ -348,6 +363,12 @@ async def update_closet_item_endpoint(
                 item.brand = update_kwargs['brand']
             if 'color' in update_kwargs:
                 item.color_primary = update_kwargs['color']
+            if 'size' in update_kwargs:
+                item.size = update_kwargs['size']
+            if 'unit_price' in update_kwargs:
+                item.unit_price = update_kwargs['unit_price']
+            if 'currency' in update_kwargs:
+                item.currency = update_kwargs['currency']
             if 'image_url' in update_kwargs:
                 item.image_url = update_kwargs['image_url']
         
@@ -357,7 +378,7 @@ async def update_closet_item_endpoint(
         
         # Eagerly load relationships for response
         _ = item.images  # Trigger lazy load if not already loaded
-        
+
         return _map_clothing_item_to_out(item)
         
     except ValueError as e:

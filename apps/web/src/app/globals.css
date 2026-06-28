@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -8,52 +10,103 @@
     --background: 0 0% 96%;
     /* Foreground - #1F2020 */
     --foreground: 0 0% 12%;
-    
+
     /* Card - White or Background */
     --card: 0 0% 100%;
     --card-foreground: 0 0% 12%;
-    
+
     /* Popover */
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 12%;
-    
+
     /* Primary - #084B4D */
     --primary: 180 85% 16%;
     --primary-foreground: 0 0% 100%;
-    
+
     /* Secondary - #EEEDEA */
     --secondary: 40 10% 93%;
-    /* Secondary Foreground - #1F2020 */
     --secondary-foreground: 0 0% 12%;
-    
+
     /* Muted - #F4F4F4 */
     --muted: 0 0% 96%;
-    /* Muted Foreground - #7F7F7F */
     --muted-foreground: 0 0% 50%;
-    
+
     /* Accent - same as secondary for now */
     --accent: 40 10% 93%;
     --accent-foreground: 0 0% 12%;
-    
-    /* Destructive - kept standard */
+
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    
-    /* Border - #BABABA */
+
     --border: 0 0% 73%;
-    /* Input - #BABABA */
     --input: 0 0% 73%;
-    
-    /* Ring - Primary */
     --ring: 180 85% 16%;
-    
-    /* Radius - 10px for buttons/inputs */
+
     --radius: 0.625rem;
-    /* Badge radius - 30px */
     --radius-badge: 1.875rem;
+
+    /* ============================================================
+       Tailor design-system tokens (mirrors design/tokens/*.css).
+       Raw color/gradient values used directly in inline styles and
+       utility classes for the dark glassmorphic app shell. They do
+       NOT reuse the shadcn HSL-triplet vars above (which are bare
+       "h s% l%" components, not full colors).
+       ============================================================ */
+
+    /* Brand / base */
+    --brand-teal: #084b4d;
+    --pure-white: #ffffff;
+    --pure-black: #000000;
+
+    /* Teal ramp */
+    --teal-900: #0a3633;
+    --teal-700: #0a6266;
+    --teal-600: #147f74;
+    --teal-500: #1e8878;
+    --mint: #4be2d6;
+    --mint-soft: #46ecd5;
+
+    /* Translucency (app glass) */
+    --tr-10: rgba(255, 255, 255, 0.1);
+    --tr-12: rgba(255, 255, 255, 0.12);
+    --tr-20: rgba(255, 255, 255, 0.2);
+    --scrim: rgba(0, 0, 0, 0.22);
+
+    /* Semantic */
+    --danger: #fb2c36;
+    --success: #0acf83;
+    --amber: #f0a23b;
+
+    /* Light surfaces (modals / drawers) */
+    --surface-card: #ffffff;
+    --surface-sunken: #eeedea;
+    --grey: #bababa;
+    --text-strong: #1f2020;
+    --text-body: #424343;
+    --text-muted: #7f7f7f;
+
+    /* App dark context */
+    --app-bg: #1e1e1e;
+
+    /* Gradients */
+    --grad-teal: linear-gradient(180deg, #0a3633 0%, #0a6266 100%);
+    --grad-ai: linear-gradient(90deg, rgba(0, 186, 166, 0.4) 0%, rgba(8, 74, 77, 0.4) 100%);
+    --grad-glass: linear-gradient(180deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.05) 100%);
+    --grad-scrim: linear-gradient(180deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.6) 50%, rgba(0, 0, 0, 0.9) 100%);
+    --grad-photo-fade: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.2) 50%, transparent 100%);
+
+    /* Shadows */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12);
+    --shadow-lg: 0 25px 25px rgba(0, 0, 0, 0.25);
+    --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.15);
+
+    /* Type */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-accent: 'DM Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   }
 
-  /* Single theme - Dark mode uses SAME values per request */
+  /* Single theme - dark mode uses SAME values per request */
   .dark {
     --background: 0 0% 96%;
     --foreground: 0 0% 12%;
@@ -85,15 +138,25 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
   }
 }
 
 @layer utilities {
   .scrollbar-hide::-webkit-scrollbar {
-      display: none;
+    display: none;
   }
   .scrollbar-hide {
-      -ms-overflow-style: none;
-      scrollbar-width: none;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .font-accent {
+    font-family: var(--font-accent);
+  }
+}
+
+@keyframes tailor-spin {
+  to {
+    transform: rotate(360deg);
   }
 }

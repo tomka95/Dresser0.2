@@ -108,6 +108,34 @@ export async function signOut(): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+/** Where the password-reset email link returns to. */
+function resetPasswordUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return `${window.location.origin}/reset-password`;
+}
+
+/**
+ * Send a password-reset email. Supabase emails a magic link that lands on
+ * /reset-password with a recovery session, where updatePassword() finishes it.
+ * Always resolves (we do not reveal whether the email exists) unless Supabase
+ * itself errors.
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  const { error } = await getSupabaseClient().auth.resetPasswordForEmail(email, {
+    redirectTo: resetPasswordUrl(),
+  });
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Set a new password for the current (recovery) session. Reached from the email
+ * link, where supabase-js has already exchanged the recovery token into a session.
+ */
+export async function updatePassword(newPassword: string): Promise<void> {
+  const { error } = await getSupabaseClient().auth.updateUser({ password: newPassword });
+  if (error) throw new Error(error.message);
+}
+
 /** Subscribe to auth state changes. Returns the supabase Subscription. */
 export function onAuthStateChange(
   callback: (event: AuthChangeEvent, session: Session | null) => void

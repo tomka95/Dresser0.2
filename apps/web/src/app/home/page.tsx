@@ -1,120 +1,143 @@
 'use client';
 
-// STATUS: Home screen with greeting, weather/calendar, AI suggestions, and clothing grid
+import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Cloud } from 'lucide-react';
 
-import { useEffect } from 'react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
-import { HomeHeader } from '@/components/home/HomeHeader';
-import { WeatherCalendarCard } from '@/components/home/WeatherCalendarCard';
-import { AISuggestionCard } from '@/components/home/AISuggestionCard';
-import { ClothingGrid } from '@/components/home/ClothingGrid';
-import { BottomNavBar } from '@/components/layout/BottomNavBar';
+import { getCurrentUser } from '@/lib/api/auth';
 import { useClosetStore } from '@/stores/useClosetStore';
-import type { ClosetItem } from '@tailor/contracts';
-
-// Mock items for empty state/preview
-const MOCK_ITEMS: ClosetItem[] = [
-  {
-    id: 'mock-1',
-    userId: 'mock-user',
-    name: 'Black Jeans',
-    category: 'bottom',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?q=80&w=300&auto=format&fit=crop',
-    brand: "Levi's"
-  },
-  {
-    id: 'mock-2',
-    userId: 'mock-user',
-    name: 'White T-Shirt',
-    category: 'top',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?q=80&w=300&auto=format&fit=crop',
-    brand: 'Uniqlo'
-  },
-  {
-    id: 'mock-3',
-    userId: 'mock-user',
-    name: 'Leather Jacket',
-    category: 'outerwear',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1551028919-ac66e6a39b51?q=80&w=300&auto=format&fit=crop',
-    brand: 'AllSaints'
-  },
-  {
-    id: 'mock-4',
-    userId: 'mock-user',
-    name: 'Chelsea Boots',
-    category: 'shoes',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1638247025967-b4e38f787b76?q=80&w=300&auto=format&fit=crop',
-    brand: 'Common Projects'
-  }
-];
+import { AppShell } from '@/components/layout/AppShell';
+import { BottomNavBar } from '@/components/layout/BottomNavBar';
+import { GlassCard } from '@/components/ui/GlassCard';
+import { Spark } from '@/components/ui/Spark';
+import { SectionHeader } from '@/components/ui/SectionHeader';
+import { ItemTile } from '@/components/closet/ItemTile';
 
 export default function HomePage() {
-  // Gate on the Supabase session; redirects to /sign-in when absent.
-  const { session, loading } = useRequireAuth();
-  const isAuth = !!session;
+  const router = useRouter();
+  const { session, status } = useRequireAuth();
+  const isAuth = status === 'authenticated';
 
-  const items = useClosetStore((state) => state.items);
-  const fetchItems = useClosetStore((state) => state.fetchItems);
-  const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
+  const [firstName, setFirstName] = useState('there');
+
+  const items = useClosetStore((s) => s.items);
+  const isLoading = useClosetStore((s) => s.isLoading);
+  const fetchItems = useClosetStore((s) => s.fetchItems);
+  const hasFetchedItems = useClosetStore((s) => s.hasFetchedItems);
 
   useEffect(() => {
-    // Fetch items once authenticated and not yet fetched
-    if (isAuth && !hasFetchedItems) {
-      fetchItems();
-    }
+    if (!isAuth) return;
+    if (!hasFetchedItems) fetchItems();
+
+    let active = true;
+    getCurrentUser()
+      .then((u) => {
+        if (!active) return;
+        const name = u.display_name || u.full_name || '';
+        const first = name.trim().split(/\s+/)[0];
+        if (first) setFirstName(first);
+      })
+      .catch(() => {
+        // Fall back to "there"; non-fatal.
+      });
+    return () => {
+      active = false;
+    };
   }, [isAuth, hasFetchedItems, fetchItems]);
 
-  if (loading || !isAuth) {
-    return null; // Or a loading spinner
+  if (status === 'loading' || !isAuth) {
+    return (
+      <AppShell contentClassName="px-6 pt-12">
+        <div className="h-10 w-40 rounded-xl bg-white/5 animate-pulse" />
+      </AppShell>
+    );
   }
 
-  // Use real items if available, otherwise fallback to mock for design preview
-  const displayItems = items.length > 0 ? items : MOCK_ITEMS;
+  const firstFour = items.slice(0, 4);
+  const showSkeletons = isLoading && items.length === 0;
 
   return (
-    <div className="min-h-full bg-[#1E1E1E] relative pb-24">
-      {/* Background Layers */}
-      <div className="fixed top-0 bottom-0 left-0 right-0 z-0 w-full max-w-[430px] mx-auto pointer-events-none">
-        {/* Layer 1: Image */}
-        <div 
-          className="absolute inset-0"
-          style={{
-            backgroundImage: "url('/images/closet-background-blur.jpg')",
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-          }}
-        />
+    <AppShell contentClassName="px-6 pt-12 pb-[120px]">
+      {/* Greeting */}
+      <h1
+        className="text-white m-0"
+        style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-0.5px' }}
+      >
+        Hey, {firstName}!
+      </h1>
+      <p className="m-0 mt-1.5 mb-[26px]" style={{ color: 'rgba(255,255,255,0.8)', fontSize: 17, fontWeight: 300 }}>
+        Want to find your outfit for today?
+      </p>
 
-        {/* Layer 2: Dark Gradient Overlay */}
-        <div 
-          className="absolute inset-0"
-          style={{
-            background: 'linear-gradient(180deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.6) 50%, rgba(0,0,0,0.9) 100%)'
-          }}
-        />
+      {/* Weather + calendar / AI suggest cards */}
+      <div className="flex flex-col gap-[14px] mb-[26px]">
+        {/* TODO: not backed by API — weather + calendar are static placeholders */}
+        <GlassCard tint="frost" padding={18}>
+          <div className="flex items-center gap-4" style={{ minHeight: 84 }}>
+            <div className="flex items-center gap-1.5">
+              <Cloud size={26} className="text-white/90" />
+              <span className="text-white font-bold leading-none" style={{ fontSize: 36 }}>
+                21
+              </span>
+              <span className="text-white/80" style={{ fontSize: 16 }}>
+                °C
+              </span>
+            </div>
+            <div style={{ width: 1, alignSelf: 'stretch', background: 'var(--tr-20)' }} />
+            <div className="min-w-0">
+              <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>10:00</div>
+              <div className="text-white font-bold truncate" style={{ fontSize: 17 }}>
+                Meeting with Guy
+              </div>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* TODO: not backed by API — AI suggestion is a static placeholder */}
+        <GlassCard tint="ai" padding={18}>
+          <div className="flex items-center gap-[14px]">
+            <Spark size={40} />
+            <div className="min-w-0">
+              <div style={{ color: 'rgba(255,255,255,0.9)', fontSize: 13 }}>AI Suggests</div>
+              <div className="text-white font-bold" style={{ fontSize: 18 }}>
+                Layered look + boots
+              </div>
+            </div>
+          </div>
+        </GlassCard>
       </div>
 
-      {/* Main Content */}
-      <div className="relative z-10 px-6 pt-12">
-        <HomeHeader />
-        
-        <div className="flex flex-col gap-4 mb-8">
-          <WeatherCalendarCard />
-          <AISuggestionCard />
-        </div>
+      <SectionHeader title="Your closet" action="See all" onAction={() => router.push('/closet')} />
 
-        <ClothingGrid items={displayItems} />
+      <div className="grid grid-cols-2 gap-[14px] mt-3.5">
+        {showSkeletons &&
+          Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="aspect-[3/4] rounded-2xl bg-white/5 animate-pulse" />
+          ))}
+
+        {!showSkeletons &&
+          firstFour.map((item) => (
+            <ItemTile
+              key={item.id}
+              item={{ id: item.id, name: item.name, brand: item.brand, imageUrl: item.imageUrl }}
+              onClick={(id) => router.push(`/closet/${id}`)}
+            />
+          ))}
       </div>
 
-      <BottomNavBar activeRoute="/home" />
-    </div>
+      {!showSkeletons && items.length === 0 && (
+        <button
+          type="button"
+          onClick={() => router.push('/closet')}
+          className="mt-2 text-left"
+          style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}
+        >
+          Your closet is empty — add your first piece.
+        </button>
+      )}
+
+      <BottomNavBar active="home" />
+    </AppShell>
   );
 }

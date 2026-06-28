@@ -54,6 +54,10 @@ def test_user_with_items(db: Session, test_user: User):
             category="top" if i % 2 == 0 else "bottom",
             brand=f"Brand {i % 5}",
         )
+        # Persist EVERY item: the even-index branch below only set image_url and never
+        # added the item, so only the 10 odd-index items were committed while the test
+        # asserts 20. Add unconditionally so all 20 persist.
+        db.add(item)
         # Set image_url for half the items
         if i % 2 == 0:
             item.image_url = f"https://example.com/image_{i}.jpg"

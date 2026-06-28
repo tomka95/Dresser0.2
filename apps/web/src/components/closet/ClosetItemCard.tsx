@@ -31,7 +31,7 @@ export function ClosetItemCard({ item }: ClosetItemCardProps) {
             {item.name}
           </h3>
           <p className="text-white/60 text-xs font-medium uppercase tracking-wide">
-            {item.category}
+            {item.brand ? `${item.brand} · ` : ''}{item.category}
           </p>
         </div>
       </div>

@@ -5,7 +5,7 @@ Provides the same interface as GmailClient but uses OAuth tokens.
 
 import base64
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.header import decode_header
 from typing import Iterable, Optional, Tuple
 
@@ -13,11 +13,31 @@ from bs4 import BeautifulSoup
 from googleapiclient.discovery import Resource
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models import GoogleAccount
 from app.gmail_closet.gmail_oauth_service import get_gmail_client
 from .models import EmailMetadata
 
 logger = logging.getLogger(__name__)
+
+
+def default_since(max_years: Optional[float] = None) -> datetime:
+    """Lower bound (UTC) for the Gmail receipt scan window.
+
+    Reads settings.GMAIL_MAX_YEARS (env-overridable) when no explicit value is
+    given. Replaces the deleted pipeline._calculate_since, which read an unset env
+    var (MAX_YEARS_TO_SCAN) and raised a TypeError when years was None/<= 0.
+
+    Args:
+        max_years: Optional override for how far back to scan, in years.
+
+    Returns:
+        ``datetime.utcnow() - max_years`` as a naive UTC datetime.
+    """
+    years = max_years if max_years is not None else settings.GMAIL_MAX_YEARS
+    if not years or years <= 0:
+        years = settings.GMAIL_MAX_YEARS or 1.0
+    return datetime.utcnow() - timedelta(days=int(round(365 * years)))
 
 
 def decode_mime_words(s: str) -> str:
@@ -224,7 +244,7 @@ class GmailOAuthClient:
             # Use BeautifulSoup to extract text from HTML (same as IMAP version)
             combined_html = "\n".join(html_parts)
             soup = BeautifulSoup(combined_html, "html.parser")
-            return soupClothingItem.get_text(separator=" ", strip=True)
+            return soup.get_text(separator=" ", strip=True)
         
         return ""
 

@@ -1,173 +1,180 @@
 'use client';
 
-// STATUS: implements Closet screen matching Figma node 26-1122
+import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Plus, Shirt } from 'lucide-react';
 
-import { useEffect, useState, useMemo } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
-import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { useClosetStore } from '@/stores/useClosetStore';
-import { ClosetHeader } from '@/components/closet/ClosetHeader';
-import { ClosetSearchBar } from '@/components/closet/ClosetSearchBar';
-import { CategoryFilters } from '@/components/closet/CategoryFilters';
-import { ClosetGrid } from '@/components/closet/ClosetGrid';
+import { AppShell } from '@/components/layout/AppShell';
+import { BottomNavBar } from '@/components/layout/BottomNavBar';
+import { SearchBarDark } from '@/components/ui/SearchBarDark';
+import { CategoryChips } from '@/components/ui/CategoryChips';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { ItemTile } from '@/components/closet/ItemTile';
 import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
-import { Plus } from 'lucide-react';
-import type { ClosetItem } from '@tailor/contracts';
+import { ConnectGmailModal, type ConnectGmailStatus } from '@/components/auth/ConnectGmailModal';
+import { startGmailConnect } from '@/lib/api/gmail';
 
-// Mock items for empty state/preview
-const MOCK_ITEMS: ClosetItem[] = [
-  {
-    id: 'mock-1',
-    userId: 'mock-user',
-    name: 'Beige Cardigan',
-    category: 'top',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?q=80&w=300&auto=format&fit=crop',
-    brand: 'Uniqlo'
-  },
-  {
-    id: 'mock-2',
-    userId: 'mock-user',
-    name: 'Dark Denim',
-    category: 'bottom',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?q=80&w=300&auto=format&fit=crop',
-    brand: "Levi's"
-  },
-  {
-    id: 'mock-3',
-    userId: 'mock-user',
-    name: 'White Sneakers',
-    category: 'shoes',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1638247025967-b4e38f787b76?q=80&w=300&auto=format&fit=crop',
-    brand: 'Common Projects'
-  },
-  {
-    id: 'mock-4',
-    userId: 'mock-user',
-    name: 'Winter Coat',
-    category: 'outerwear',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1551028919-ac66e6a39b51?q=80&w=300&auto=format&fit=crop',
-    brand: 'AllSaints'
-  }
+const CATEGORIES = [
+  { id: 'all', label: 'All' },
+  { id: 'top', label: 'Tops' },
+  { id: 'bottom', label: 'Bottoms' },
+  { id: 'outerwear', label: 'Outerwear' },
+  { id: 'shoes', label: 'Shoes' },
 ];
 
 export default function ClosetPage() {
   const router = useRouter();
-  const pathname = usePathname();
-  // Gate on the Supabase session; redirects to /sign-in when absent.
-  const { session, loading: checkingAuth } = useRequireAuth();
-  const isAuth = !!session;
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('all');
-  
-  // Drawer state
+  const { status } = useRequireAuth();
+  const isAuth = status === 'authenticated';
+
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('all');
   const [drawerOpen, setDrawerOpen] = useState(false);
-  
-  const items = useClosetStore((state) => state.items);
-  const fetchItems = useClosetStore((state) => state.fetchItems);
-  const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
+  const [gmailOpen, setGmailOpen] = useState(false);
+  const [gmailStatus, setGmailStatus] = useState<ConnectGmailStatus>('disconnected');
+  // Favourites are client-only — not persisted to the backend.
+  const [faved, setFaved] = useState<Set<string>>(new Set());
+
+  const items = useClosetStore((s) => s.items);
+  const isLoading = useClosetStore((s) => s.isLoading);
+  const fetchItems = useClosetStore((s) => s.fetchItems);
+  const hasFetchedItems = useClosetStore((s) => s.hasFetchedItems);
+  const error = useClosetStore((s) => s.error);
 
   useEffect(() => {
-    // Fetch items if authenticated and not yet fetched
-    if (isAuth && !hasFetchedItems) {
-      fetchItems();
-    }
+    if (isAuth && !hasFetchedItems) fetchItems();
   }, [isAuth, hasFetchedItems, fetchItems]);
 
-  // Filter items by category and search
-  const filteredItems = useMemo(() => {
-    let filtered = items.length > 0 ? items : MOCK_ITEMS;
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((item) => {
+      const matchesCategory = category === 'all' || item.category === category;
+      const matchesQuery =
+        !q ||
+        item.name.toLowerCase().includes(q) ||
+        (item.brand?.toLowerCase().includes(q) ?? false);
+      return matchesCategory && matchesQuery;
+    });
+  }, [items, category, query]);
 
-    // Filter by category
-    if (selectedCategory !== 'all') {
-      filtered = filtered.filter((item) => item.category === selectedCategory);
+  const toggleFav = (id: string) => {
+    setFaved((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleGmailConnect = async () => {
+    setGmailStatus('connecting');
+    try {
+      await startGmailConnect();
+    } catch {
+      setGmailStatus('error');
     }
+  };
 
-    // Filter by search query
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (item) =>
-          item.name.toLowerCase().includes(query) ||
-          item.brand?.toLowerCase().includes(query) ||
-          item.category.toLowerCase().includes(query)
-      );
-    }
-
-    return filtered;
-  }, [items, selectedCategory, searchQuery]);
-
-  if (checkingAuth) {
-    return null; // Or a loading spinner
+  if (status === 'loading' || !isAuth) {
+    return (
+      <AppShell contentClassName="px-6 pt-12">
+        <div className="h-10 w-40 rounded-xl bg-white/5 animate-pulse" />
+      </AppShell>
+    );
   }
 
-  if (!isAuth) {
-    return null;
-  }
+  const isEmpty = hasFetchedItems && !isLoading && items.length === 0;
 
   return (
-    <div className="min-h-full bg-[#1E1E1E] relative pb-24">
-      {/* Background Layers */}
-      <div className="fixed top-0 bottom-0 left-0 right-0 z-0 w-full max-w-[430px] mx-auto pointer-events-none">
-        {/* Layer 1: Image */}
-        <div 
-          className="absolute inset-0"
-          style={{
-            backgroundImage: "url('/images/closet-background-blur.jpg')",
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-          }}
-        />
+    <AppShell contentClassName="px-6 pt-12 pb-[120px]">
+      <h1 className="text-white m-0 mb-4" style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-0.5px' }}>
+        My Closet
+      </h1>
 
-        {/* Layer 2: Dark Gradient Overlay */}
-        <div 
-          className="absolute inset-0"
-          style={{
-            background: 'linear-gradient(180deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.6) 50%, rgba(0,0,0,0.9) 100%)'
-          }}
-        />
+      <SearchBarDark value={query} onChange={setQuery} placeholder="Search your closet" />
+
+      <div className="mt-3 mb-4">
+        <CategoryChips items={CATEGORIES} value={category} onChange={setCategory} />
       </div>
 
-      {/* Main Content */}
-      <div className="relative z-10 px-6 pt-12">
-        <ClosetHeader />
-        <ClosetSearchBar value={searchQuery} onChange={setSearchQuery} />
-        <CategoryFilters 
-          selectedCategory={selectedCategory} 
-          onSelectCategory={setSelectedCategory} 
-        />
-        <ClosetGrid items={filteredItems} />
-      </div>
+      {error && !isLoading ? (
+        <div className="mt-14">
+          <EmptyState
+            icon={<Shirt size={40} />}
+            title="Couldn’t load your closet"
+            body={`Something went wrong talking to the server (${error}). Check you’re signed in and the backend is running, then retry.`}
+            ctaLabel="Retry"
+            onCta={() => fetchItems()}
+          />
+        </div>
+      ) : isEmpty ? (
+        <div className="mt-14">
+          <EmptyState
+            icon={<Shirt size={40} />}
+            title="Your closet is empty"
+            body="Add your first piece and Tailor starts building looks for you."
+            ctaLabel="Add an item"
+            ctaIcon={<Plus size={18} />}
+            onCta={() => setDrawerOpen(true)}
+          />
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-[14px]">
+          {isLoading && items.length === 0
+            ? Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="aspect-[3/4] rounded-2xl bg-white/5 animate-pulse" />
+              ))
+            : filtered.map((item) => (
+                <ItemTile
+                  key={item.id}
+                  item={{ id: item.id, name: item.name, brand: item.brand, imageUrl: item.imageUrl }}
+                  faved={faved.has(item.id)}
+                  onFav={toggleFav}
+                  onClick={(id) => router.push(`/closet/${id}`)}
+                />
+              ))}
+        </div>
+      )}
 
-      {/* Floating Action Button */}
-      <div className="fixed bottom-20 left-0 right-0 z-40 max-w-[430px] mx-auto px-6 pointer-events-none flex justify-end">
+      {/* FAB — pinned to the 430px app column (not the viewport edge) */}
+      <div className="fixed bottom-[104px] left-1/2 -translate-x-1/2 w-full max-w-[430px] z-[60] pointer-events-none">
         <button
+          type="button"
           onClick={() => setDrawerOpen(true)}
-          className="w-14 h-14 rounded-full bg-white flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95 pointer-events-auto"
+          aria-label="Add item"
+          className="absolute right-6 flex items-center justify-center shadow-lg transition-transform active:scale-95 pointer-events-auto"
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: '50%',
+            background: 'var(--grad-teal)',
+          }}
         >
-          <Plus className="w-7 h-7 text-[rgb(10,54,51)]" strokeWidth={3} />
+          <Plus size={26} className="text-white" />
         </button>
       </div>
 
-      {/* Add Item Drawer (Bottom Sheet) */}
-      <AddItemDrawer 
-        open={drawerOpen} 
+      <AddItemDrawer
+        open={drawerOpen}
         onOpenChange={setDrawerOpen}
         onGmailClick={() => {
-          setDrawerOpen(false);
-          router.push('/gmail-sync');
+          setGmailStatus('disconnected');
+          setGmailOpen(true);
         }}
       />
 
-      <BottomNavBar activeRoute={pathname} />
-    </div>
+      <ConnectGmailModal
+        open={gmailOpen}
+        status={gmailStatus}
+        onClose={() => setGmailOpen(false)}
+        onConnect={handleGmailConnect}
+        onRetry={handleGmailConnect}
+        onMaybeLater={() => setGmailOpen(false)}
+      />
+
+      <BottomNavBar active="closet" />
+    </AppShell>
   );
 }
