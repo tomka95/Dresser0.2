@@ -118,6 +118,11 @@ class ClothingItem(Base):
             "image_status IS NULL OR image_status IN "
             "('resolved','placeholder','pending','user_uploaded')",
             name='image_status'),
+        # Ingestion source provenance (Wave 1 photo ingest). 'gmail' (default, the
+        # receipt pipeline) or 'photo' (a garment detected from a user-uploaded
+        # photo). Named CHECK (not diffed by autogenerate); server default 'gmail'
+        # owned by migration 0014 backfills every legacy row.
+        CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
     )
 
 
@@ -180,6 +185,11 @@ class ClothingItem(Base):
     image_status = Column(Text, nullable=True)
     # The product_image_cache.cache_key this item maps to (shared-cache linkage).
     image_cache_key = Column(Text, nullable=True)
+
+    # Ingestion source: 'gmail' (receipts) | 'photo' (user-uploaded photo). NOT NULL;
+    # server default 'gmail' (migration 0014) backfills legacy rows. Confirm copies the
+    # candidate's source_type forward so the closet records how each item arrived.
+    source_type = Column(Text, nullable=False, default="gmail")
 
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 
@@ -350,6 +360,9 @@ class IngestCandidate(Base):
             "image_status IS NULL OR image_status IN "
             "('resolved','placeholder','pending','user_uploaded')",
             name='image_status'),
+        # Ingestion source (Wave 1). Mirrors clothing_items.source_type; confirm copies
+        # it onto the closet row. Default 'gmail'; the photo pipeline stages 'photo'.
+        CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
         # Content-key staging dedup (phase 3c): the same owned item appearing in
         # multiple emails collapses to ONE candidate via ON CONFLICT DO UPDATE.
         UniqueConstraint("user_id", "source_line_key",
@@ -418,7 +431,59 @@ class IngestCandidate(Base):
 
     status = Column(Text, nullable=False, default="pending")
 
+    # Ingestion source: 'gmail' | 'photo'. Default 'gmail' so the existing extraction
+    # pipeline needs no change; the photo pipeline sets 'photo' at stage time.
+    source_type = Column(Text, nullable=False, default="gmail")
+
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+
+class ProcessedUpload(Base):
+    """Per-(user, image) idempotency ledger for the photo-ingest pipeline (Wave 1).
+
+    The Gmail analogue is processed_messages (keyed on the Gmail message id). Photos
+    have no message id, so this table keys on the sha256 of the uploaded bytes: a
+    re-upload of the EXACT same file is short-circuited (reprocess nothing). ``phash``
+    holds a perceptual hash so a NEAR-duplicate shot (re-compressed / trivially
+    cropped) can also be skipped without a second full detect+crop+stage pass.
+
+    Per-user RLS (auth.uid() = user_id), applied in migration 0014, matches the other
+    ingestion tables. user_id is server-pinned from the JWT, never the request body.
+    """
+
+    __tablename__ = "processed_uploads"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "image_sha256",
+                         name="processed_uploads_user_id_image_sha256_key"),
+        CheckConstraint(
+            "status IN ('processed','held_multi_person','error')", name="status"),
+        Index("idx_processed_uploads_user_id", "user_id"),
+        # Near-dup lookups scan a user's recent phashes — index the (user, phash) pair.
+        Index("idx_processed_uploads_user_phash", "user_id", "phash"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # The photo-ingest run (ingest_runs.sync_id) this upload was processed under.
+    sync_id = Column(GUID(), nullable=True)
+
+    # sha256 hex of the ORIGINAL uploaded bytes — the exact-dup idempotency key.
+    image_sha256 = Column(Text, nullable=False)
+
+    # 16-hex-char 64-bit perceptual dHash for near-duplicate detection (NULL if a held
+    # upload never got far enough to hash the decoded image).
+    phash = Column(Text, nullable=True)
+
+    # processed | held_multi_person (>1 person detected; skipped, not guessed) | error.
+    status = Column(Text, nullable=False, default="processed")
+
+    # How many garment candidates this upload staged (0 for held/error).
+    item_count = Column(Integer, nullable=False, default=0)
+
+    processed_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 
 class ImageBlob(Base):
@@ -513,6 +578,8 @@ class IngestRun(Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('running','completed','error')", name="status"),
+        # Which ingestion source this run belongs to: 'gmail' | 'photo' (Wave 1).
+        CheckConstraint("source_type IN ('gmail','photo')", name="source_type"),
         Index("idx_ingest_runs_user_id", "user_id"),
     )
 
@@ -521,6 +588,10 @@ class IngestRun(Base):
     user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
     status = Column(Text, nullable=False, default="running")
+
+    # Ingestion source for this run: 'gmail' (default) | 'photo'. The photo route sets
+    # 'photo' so /status and per-source reporting can disambiguate runs.
+    source_type = Column(Text, nullable=False, default="gmail")
 
     fetched_count = Column(Integer, nullable=False, default=0)
 
