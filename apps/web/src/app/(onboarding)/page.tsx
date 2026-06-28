@@ -1,7 +1,4 @@
-// STATUS: placeholder onboarding screen.
-// Redesign deferred (3-step flow: Add clothes -> Set preferences -> Get first
-// suggestions). Moved off "/" to its own segment so it no longer conflicts with
-// app/page.tsx (which owns "/" and redirects to /sign-up).
+// STATUS: placeholder onboarding screen
 
 export default function OnboardingPage() {
   return (
@@ -36,3 +33,9 @@ export default function OnboardingPage() {
     </div>
   );
 }
+
+
+
+
+
+

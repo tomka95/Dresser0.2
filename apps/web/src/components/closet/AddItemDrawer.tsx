@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
-import { Camera, ChevronRight, Image as ImageIcon } from 'lucide-react';
-import * as Dialog from '@radix-ui/react-dialog';
+import { Camera, Image, Mail, X } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Dialog, DialogContent, DialogTrigger, DialogClose } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { uploadOutfitImage } from '@/lib/api/outfit';
 import { useClosetStore } from '@/stores/useClosetStore';
 
@@ -15,202 +17,208 @@ interface AddItemDrawerProps {
 const ACCEPTED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
-/** Gmail glyph (envelope). */
-function GmailGlyph() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M2 6.5A1.5 1.5 0 0 1 3.5 5h17A1.5 1.5 0 0 1 22 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-17A1.5 1.5 0 0 1 2 17.5z"
-        fill="#fff"
-      />
-      <path d="M3 6.5l9 6 9-6" stroke="#ea4335" strokeWidth="1.8" fill="none" />
-      <path d="M22 6.7V17.5a1.5 1.5 0 0 1-1.5 1.5H18V9.2l4-2.5z" fill="#34a853" />
-      <path d="M2 6.7V17.5A1.5 1.5 0 0 0 3.5 19H6V9.2L2 6.7z" fill="#4285f4" />
-    </svg>
-  );
-}
-
-interface OptionRowProps {
-  icon: React.ReactNode;
-  chipBg: string;
-  title: string;
-  sub: string;
-  onClick: () => void;
-  disabled?: boolean;
-}
-
-function OptionRow({ icon, chipBg, title, sub, onClick, disabled }: OptionRowProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="flex items-center gap-3.5 w-full text-left active:scale-[0.99] transition-transform disabled:opacity-50"
-      style={{ background: 'var(--surface-sunken)', borderRadius: 14, padding: 12 }}
-    >
-      <span
-        className="flex items-center justify-center shrink-0"
-        style={{ width: 46, height: 46, borderRadius: 14, background: chipBg }}
-      >
-        {icon}
-      </span>
-      <span className="flex-1 min-w-0">
-        <span className="block" style={{ color: 'var(--text-strong)', fontSize: 15.5, fontWeight: 600 }}>
-          {title}
-        </span>
-        <span className="block" style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-          {sub}
-        </span>
-      </span>
-      <ChevronRight size={20} style={{ color: 'var(--text-muted)' }} className="shrink-0" />
-    </button>
-  );
-}
-
-/** Light bottom sheet for adding a closet item (camera, upload, or Gmail import). */
-export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawerProps) {
+export function AddItemDrawer({ 
+  open, 
+  onOpenChange, 
+  onGmailClick 
+}: AddItemDrawerProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const fetchItems = useClosetStore((state) => state.fetchItems);
 
   const validateFile = (file: File): string | null => {
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      return 'Please choose a JPEG, PNG, or WebP image.';
+      return 'Please select a valid image file (JPEG, PNG, or WebP)';
     }
     if (file.size > MAX_FILE_SIZE) {
-      return 'Image must be 10MB or smaller.';
+      return `File size must be less than ${MAX_FILE_SIZE / 1024 / 1024}MB`;
     }
     return null;
   };
 
-  const handleFile = async (file: File) => {
+  const handleFileSelect = async (file: File) => {
     const validationError = validateFile(file);
     if (validationError) {
       setError(validationError);
       return;
     }
+
     setError(null);
     setUploading(true);
+
     try {
       await uploadOutfitImage(file);
-      await useClosetStore.getState().fetchItems();
+      // Refresh closet items
+      await fetchItems();
+      // Close drawer on success
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed. Please try again.');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to upload image';
+      setError(errorMessage);
     } finally {
       setUploading(false);
-      if (uploadInputRef.current) uploadInputRef.current.value = '';
-      if (cameraInputRef.current) cameraInputRef.current.value = '';
+      // Clear input values
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      if (cameraInputRef.current) {
+        cameraInputRef.current.value = '';
+      }
     }
   };
 
-  const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handleFile(file);
+  const handleUploadClick = () => {
+    if (fileInputRef.current && !uploading) {
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleCameraClick = () => {
+    if (cameraInputRef.current && !uploading) {
+      cameraInputRef.current.click();
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+    handleFileSelect(files[0]);
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[90]" style={{ background: 'rgba(0,0,0,0.5)' }} />
-        <Dialog.Content
-          className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-[95] outline-none"
-          onInteractOutside={(e) => uploading && e.preventDefault()}
-          aria-describedby={undefined}
-        >
-          <div
-            style={{
-              background: 'var(--surface-card)',
-              borderTopLeftRadius: 30,
-              borderTopRightRadius: 30,
-              padding: '20px 24px 34px',
-            }}
-          >
-            {/* drag handle */}
-            <div
-              className="mx-auto mb-4"
-              style={{ width: 40, height: 4, borderRadius: 999, background: 'var(--grey)' }}
-            />
-
-            <Dialog.Title className="m-0" style={{ color: 'var(--text-strong)', fontSize: 21, fontWeight: 700 }}>
-              Add to closet
-            </Dialog.Title>
-            <p className="m-0 mt-1 mb-5" style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-              Tailor reads your clothes automatically.
-            </p>
-
-            {/* hidden inputs */}
-            <input
-              ref={cameraInputRef}
-              type="file"
-              accept={ACCEPTED_TYPES.join(',')}
-              capture="environment"
-              onChange={onInputChange}
-              className="hidden"
-            />
-            <input
-              ref={uploadInputRef}
-              type="file"
-              accept={ACCEPTED_TYPES.join(',')}
-              onChange={onInputChange}
-              className="hidden"
-            />
-
-            {error && (
-              <div className="mb-3 text-center" style={{ color: 'var(--danger)', fontSize: 13.5, fontWeight: 500 }}>
-                {error}
-              </div>
-            )}
-
-            {uploading && (
-              <div className="mb-3 flex items-center justify-center gap-2" style={{ color: 'var(--text-body)' }}>
-                <span
-                  style={{
-                    width: 18,
-                    height: 18,
-                    borderRadius: '50%',
-                    border: '2px solid var(--surface-sunken)',
-                    borderTop: '2px solid var(--brand-teal)',
-                    animation: 'tailor-spin 0.9s linear infinite',
-                  }}
-                />
-                <span style={{ fontSize: 14 }}>Reading your item…</span>
-              </div>
-            )}
-
-            <div className="flex flex-col gap-3">
-              <OptionRow
-                icon={<Camera size={22} color="#fff" />}
-                chipBg="var(--brand-teal)"
-                title="Take photo"
-                sub="Snap an item or your outfit"
-                onClick={() => !uploading && cameraInputRef.current?.click()}
-                disabled={uploading}
-              />
-              <OptionRow
-                icon={<ImageIcon size={22} color="#fff" />}
-                chipBg="var(--teal-600)"
-                title="Upload photo"
-                sub="Choose from your library"
-                onClick={() => !uploading && uploadInputRef.current?.click()}
-                disabled={uploading}
-              />
-              <OptionRow
-                icon={<GmailGlyph />}
-                chipBg="var(--teal-500)"
-                title="Import from Gmail"
-                sub="Pull items from email receipts"
-                onClick={() => {
-                  onGmailClick();
-                  onOpenChange(false);
-                }}
-                disabled={uploading}
-              />
-            </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent 
+        className={cn(
+          "fixed bottom-0 left-0 right-0 p-0 border-0 rounded-t-[30px] gap-0 max-w-[430px] mx-auto shadow-lg",
+          "!translate-y-0 !top-auto",
+          "data-[state=open]:slide-in-from-bottom data-[state=closed]:slide-out-to-bottom duration-300"
+        )}
+        style={{
+          background: 'linear-gradient(180deg, rgb(10, 54, 51) 0%, rgb(10, 99, 102) 100%)',
+        }}
+        onInteractOutside={(e) => e.preventDefault()}
+      >
+        <div className="flex flex-col px-[24px] pt-[32px] pb-[32px]">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-[35px]">
+            <h2 
+              className="text-[36px] font-bold leading-[46px] text-white"
+              style={{ fontFamily: 'Inter, sans-serif' }}
+            >
+              Add New Items
+            </h2>
+            <DialogClose 
+              className="p-2 rounded-full hover:bg-white/10 text-white/80 hover:text-white transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-6 h-6" />
+            </DialogClose>
           </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+
+          {/* Hidden file inputs */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_TYPES.join(',')}
+            onChange={handleFileInputChange}
+            disabled={uploading}
+            className="hidden"
+          />
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept={ACCEPTED_TYPES.join(',')}
+            capture="environment"
+            onChange={handleFileInputChange}
+            disabled={uploading}
+            className="hidden"
+          />
+
+          {/* Error message */}
+          {error && (
+            <div 
+              className="mb-4 p-3 rounded-[10px] bg-white/10 backdrop-blur-md border border-white/20 text-white text-[14px] text-center"
+              style={{ fontFamily: 'Inter, sans-serif' }}
+            >
+              {error}
+            </div>
+          )}
+
+          {/* Uploading indicator */}
+          {uploading && (
+            <div 
+              className="mb-4 p-3 rounded-[10px] bg-white/10 backdrop-blur-md border border-white/20 text-white text-[14px] text-center"
+              style={{ fontFamily: 'Inter, sans-serif' }}
+            >
+              <div className="flex items-center justify-center gap-2">
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>Uploading and processing...</span>
+              </div>
+            </div>
+          )}
+
+          {/* Options Grid */}
+          <div className="grid grid-cols-2 gap-4 mb-[35px]">
+            {/* Camera Option */}
+            <button
+              onClick={handleCameraClick}
+              disabled={uploading}
+              className={cn(
+                "flex flex-col items-center justify-center gap-3 bg-white/10 backdrop-blur-md hover:bg-white/20 active:scale-95 transition-all rounded-[10px] p-6 h-32 border border-white/20",
+                "disabled:opacity-50 disabled:cursor-not-allowed"
+              )}
+              style={{ fontFamily: 'Inter, sans-serif' }}
+            >
+              <div className="w-12 h-12 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                <Camera className="w-6 h-6 text-white" />
+              </div>
+              <span className="text-[14px] font-medium text-white">Take Photo</span>
+            </button>
+
+            {/* Gallery Option */}
+            <button
+              onClick={handleUploadClick}
+              disabled={uploading}
+              className={cn(
+                "flex flex-col items-center justify-center gap-3 bg-white/10 backdrop-blur-md hover:bg-white/20 active:scale-95 transition-all rounded-[10px] p-6 h-32 border border-white/20",
+                "disabled:opacity-50 disabled:cursor-not-allowed"
+              )}
+              style={{ fontFamily: 'Inter, sans-serif' }}
+            >
+              <div className="w-12 h-12 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                <Image className="w-6 h-6 text-white" />
+              </div>
+              <span className="text-[14px] font-medium text-white">Upload Photo</span>
+            </button>
+          </div>
+
+          {/* Gmail Option */}
+          <button
+            onClick={() => {
+              onGmailClick();
+              onOpenChange(false);
+            }}
+            disabled={uploading}
+            className={cn(
+              "flex items-center gap-4 bg-white/10 backdrop-blur-md hover:bg-white/20 active:scale-95 transition-all rounded-[10px] p-4 border border-white/20",
+              "disabled:opacity-50 disabled:cursor-not-allowed"
+            )}
+            style={{ fontFamily: 'Inter, sans-serif' }}
+          >
+            <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0">
+              <Mail className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex flex-col items-start">
+              <span className="text-[14px] font-medium text-white">Import from Gmail</span>
+              <span className="text-[12px] text-white/70">Scan receipts for clothing items</span>
+            </div>
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

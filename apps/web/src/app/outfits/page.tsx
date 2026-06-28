@@ -1,187 +1,194 @@
 'use client';
 
-// TODO: outfits are mock — useOutfitsStore has no backend; like state is local
+// STATUS: outfits page backed by Zustand store + mock API abstraction
 
 import { useEffect, useMemo } from 'react';
-import { Heart, RotateCw } from 'lucide-react';
 
-import { useRequireAuth } from '@/lib/auth/useRequireAuth';
+import { track } from '@/lib/analytics';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useOutfitsStore } from '@/stores/useOutfitsStore';
-import { AppShell } from '@/components/layout/AppShell';
-import { GlassCard } from '@/components/ui/GlassCard';
-import { EmptyState } from '@/components/ui/EmptyState';
-
-const FALLBACK_IMG =
-  'data:image/svg+xml;utf8,' +
-  encodeURIComponent(
-    "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='400'><rect width='100%' height='100%' fill='%23333'/></svg>"
-  );
 
 export default function OutfitsPage() {
-  const { status } = useRequireAuth();
-  const isAuth = status === 'authenticated';
+  const outfits = useOutfitsStore((state) => state.outfits);
+  const likedOutfits = useOutfitsStore((state) => state.likedOutfits);
+  const isLoading = useOutfitsStore((state) => state.isLoading);
+  const error = useOutfitsStore((state) => state.error);
+  const fetchOutfits = useOutfitsStore((state) => state.fetchOutfits);
+  const toggleLike = useOutfitsStore((state) => state.toggleLike);
 
-  const outfits = useOutfitsStore((s) => s.outfits);
-  const likedOutfits = useOutfitsStore((s) => s.likedOutfits);
-  const isLoading = useOutfitsStore((s) => s.isLoading);
-  const error = useOutfitsStore((s) => s.error);
-  const fetchOutfits = useOutfitsStore((s) => s.fetchOutfits);
-  const toggleLike = useOutfitsStore((s) => s.toggleLike);
-
-  const closetItems = useClosetStore((s) => s.items);
-  const fetchItems = useClosetStore((s) => s.fetchItems);
+  const closetItems = useClosetStore((state) => state.items);
+  const closetLoading = useClosetStore((state) => state.isLoading);
+  const fetchClosetItems = useClosetStore((state) => state.fetchItems);
 
   useEffect(() => {
-    if (!isAuth) return;
-    fetchOutfits();
-    fetchItems();
-  }, [isAuth, fetchOutfits, fetchItems]);
+    // Track page view when component mounts
+    track('outfit_suggestions_viewed', {
+      outfit_count: outfits.length,
+      has_recommended_items: outfits.some(
+        (o) => o.recommendedItems && o.recommendedItems.length > 0
+      ),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (outfits.length === 0 && !isLoading) {
+      fetchOutfits({ limit: 3 });
+    }
+  }, [fetchOutfits, isLoading, outfits.length]);
+
+  useEffect(() => {
+    if (closetItems.length === 0 && !closetLoading) {
+      fetchClosetItems();
+    }
+  }, [closetItems.length, closetLoading, fetchClosetItems]);
+
+  // Track successful outfit suggestions load
+  useEffect(() => {
+    if (outfits.length > 0 && !isLoading) {
+      track('outfit_suggestions_loaded', {
+        count: outfits.length,
+        has_recommended_items: outfits.some(
+          (o) => o.recommendedItems && o.recommendedItems.length > 0
+        ),
+        total_recommended_items: outfits.reduce(
+          (sum, o) => sum + (o.recommendedItems?.length || 0),
+          0
+        ),
+      });
+    }
+  }, [outfits.length, isLoading]);
 
   const closetMap = useMemo(
     () => new Map(closetItems.map((item) => [item.id, item])),
     [closetItems]
   );
 
-  if (status === 'loading' || !isAuth) {
-    return (
-      <AppShell contentClassName="px-6 pt-14">
-        <div className="h-9 w-40 rounded-xl bg-white/5 animate-pulse" />
-      </AppShell>
-    );
+  async function handleRegenerate() {
+    track('outfit_regenerate_clicked');
+    try {
+      await fetchOutfits({ limit: 3 });
+    } catch (error) {
+      track('outfit_regenerate_failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
-  const isEmpty = outfits.length === 0 && !isLoading;
-
   return (
-    <AppShell contentClassName="px-6 pt-14 pb-12">
-      {/* Header */}
+    <div className="container mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="m-0 text-[32px] font-bold leading-none text-white" style={{ letterSpacing: '-0.5px' }}>
-          Outfits
-        </h1>
+        <h1 className="text-3xl font-bold">Outfit Suggestions</h1>
         <button
-          type="button"
-          onClick={() => fetchOutfits()}
+          onClick={handleRegenerate}
+          className="px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 disabled:opacity-50"
           disabled={isLoading}
-          className="inline-flex items-center gap-2 rounded-full px-4 py-2 text-[14px] font-medium text-white transition-transform active:scale-[0.97] disabled:opacity-60"
-          style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
         >
-          <RotateCw size={16} className={isLoading ? 'animate-spin' : undefined} />
-          Regenerate
+          Generate Outfit
         </button>
       </div>
-
+      {isLoading && (
+        <div className="py-4 text-sm text-gray-500">
+          Generating personalized looks…
+        </div>
+      )}
       {error && (
-        <p className="mb-4 text-[14px]" style={{ color: 'var(--danger)' }}>
-          {error}
-        </p>
-      )}
-
-      {isLoading && outfits.length === 0 && (
-        <div className="space-y-4">
-          {[0, 1].map((i) => (
-            <div key={i} className="h-56 rounded-[24px] bg-white/5 animate-pulse" />
-          ))}
+        <div className="py-4 text-sm text-red-600">
+          {error}. Please try again.
         </div>
       )}
-
-      {isEmpty && !error && (
-        <div className="pt-24">
-          <EmptyState
-            icon={<span style={{ fontSize: 38, color: 'var(--mint)' }}>✦</span>}
-            title="No outfits yet"
-            body="Add a few more items and Tailor will generate outfits tailored to your week."
-            ctaLabel="Generate outfits"
-            ctaIcon={<RotateCw size={18} />}
-            onCta={() => fetchOutfits()}
-          />
+      {outfits.length === 0 && !isLoading ? (
+        <div className="text-center py-16">
+          <p className="text-gray-600 mb-4">No outfit suggestions yet</p>
+          <p className="text-sm text-gray-500">
+            Generate your first AI-powered outfit suggestion
+          </p>
         </div>
-      )}
-
-      {!isEmpty && (
-        <div className="space-y-4">
-          {outfits.map((outfit, idx) => {
-            const liked = likedOutfits.includes(outfit.id);
-            const resolved = outfit.items
-              .map((itemId) => closetMap.get(itemId))
-              .filter((item): item is NonNullable<typeof item> => Boolean(item));
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {outfits.map((outfit) => {
+            const isLiked = likedOutfits.includes(outfit.id);
 
             return (
-              <GlassCard key={outfit.id} tint="frost" padding={16}>
-                {/* Card header */}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h2 className="m-0 truncate text-[18px] font-bold text-white">
-                      {outfit.name || `Look ${idx + 1}`}
-                    </h2>
+              <div
+                key={outfit.id}
+                className="border rounded-lg p-6 hover:shadow-lg transition-shadow"
+              >
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    {outfit.name && (
+                      <h3 className="text-xl font-semibold mb-1">
+                        {outfit.name}
+                      </h3>
+                    )}
                     {outfit.occasion && (
-                      <p className="m-0 mt-0.5 text-[13px] capitalize" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                        {outfit.occasion}
+                      <p className="text-sm text-gray-600">
+                        Occasion: {outfit.occasion}
                       </p>
                     )}
                   </div>
                   <button
-                    type="button"
-                    onClick={() => toggleLike(outfit.id)}
-                    aria-label={liked ? 'Unlike outfit' : 'Like outfit'}
-                    className="flex items-center justify-center transition-transform active:scale-90"
-                    style={{
-                      width: 38,
-                      height: 38,
-                      borderRadius: '50%',
-                      flexShrink: 0,
-                      background: 'rgba(0,0,0,0.28)',
-                      border: '1px solid var(--tr-20)',
-                      color: liked ? 'var(--mint)' : 'rgba(255,255,255,0.85)',
+                    onClick={() => {
+                      const wasLiked = isLiked;
+                      toggleLike(outfit.id);
+                      // Track like/unlike action
+                      track(wasLiked ? 'outfit_unliked' : 'outfit_liked', {
+                        outfit_id: outfit.id,
+                        has_recommended_items:
+                          (outfit.recommendedItems?.length || 0) > 0,
+                        occasion: outfit.occasion,
+                      });
                     }}
+                    className="text-sm font-medium text-gray-600 hover:text-black"
                   >
-                    <Heart size={18} fill={liked ? 'currentColor' : 'none'} />
+                    {isLiked ? '★ Liked' : '☆ Like'}
                   </button>
                 </div>
+                <div className="space-y-2">
+                  {outfit.items.map((itemId) => {
+                    const item = closetMap.get(itemId);
 
-                {/* Item thumbnails */}
-                <div className="mt-3.5">
-                  {resolved.length > 0 ? (
-                    <div className="flex gap-2">
-                      {resolved.map((item) => (
-                        <div
-                          key={item.id}
-                          className="flex-1 aspect-[3/4] overflow-hidden rounded-2xl"
-                          style={{ background: 'rgba(255,255,255,0.06)' }}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={item.imageUrl || FALLBACK_IMG}
-                            alt={item.name}
-                            loading="lazy"
-                            className="h-full w-full object-cover"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="m-0 text-[13px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
-                      Items unavailable
-                    </p>
-                  )}
+                    return (
+                      <div
+                        key={itemId}
+                        className="flex flex-col rounded border bg-gray-50 px-3 py-2 text-sm"
+                      >
+                        <span className="font-medium">
+                          {item?.name ?? 'Closet item'}
+                        </span>
+                        <span className="text-xs text-gray-500 capitalize">
+                          {item?.category ?? 'unknown category'}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
-
-                {/* AI recommended addition strip — first card only */}
-                {idx === 0 && (
-                  <div
-                    className="mt-3.5 flex items-center gap-2.5 rounded-2xl px-3.5 py-3"
-                    style={{ background: 'var(--grad-ai)', border: '1px solid var(--tr-20)' }}
-                  >
-                    <span style={{ color: 'var(--mint)', fontSize: 16, flexShrink: 0 }}>✦</span>
-                    <span className="text-[13.5px] text-white">Add a scarf to finish this look</span>
+                {outfit.recommendedItems && outfit.recommendedItems.length > 0 && (
+                  <div className="mt-4 border-t pt-4">
+                    <p className="text-sm font-semibold mb-2">
+                      Recommended additions
+                    </p>
+                    <ul className="space-y-2 text-sm text-gray-600">
+                      {outfit.recommendedItems.map((item) => (
+                        <li key={item.id}>
+                          {item.name}
+                          {item.reason && (
+                            <span className="text-gray-500">
+                              {' '}
+                              – {item.reason}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
-              </GlassCard>
+              </div>
             );
           })}
         </div>
       )}
-    </AppShell>
+    </div>
   );
 }
+
+
