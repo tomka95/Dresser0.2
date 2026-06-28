@@ -97,9 +97,27 @@ export default function ReviewPage() {
       let changed = false;
       const updated = prev.map((c) => {
         const u = incomingById.get(c.candidate_id);
-        if (u && (u.image_url !== c.image_url || u.image_status !== c.image_status)) {
+        // Refresh in place (same index → deck position kept) whenever the server has
+        // enriched ANY displayed field — not just the image. Cards staged early can
+        // gain name/brand/category/color/size/price/confidence as a second contributing
+        // email merges (backend COALESCE), and images stream in from the background
+        // fill. User edits live separately in `edits`, so replacing the candidate row
+        // never clobbers an in-flight edit.
+        if (
+          u &&
+          (u.image_url !== c.image_url ||
+            u.image_status !== c.image_status ||
+            u.name !== c.name ||
+            u.brand !== c.brand ||
+            u.category !== c.category ||
+            u.color !== c.color ||
+            u.size !== c.size ||
+            u.unit_price !== c.unit_price ||
+            u.currency !== c.currency ||
+            u.confidence_overall !== c.confidence_overall)
+        ) {
           changed = true;
-          return { ...c, image_url: u.image_url, image_status: u.image_status };
+          return u;
         }
         return c;
       });
@@ -410,6 +428,7 @@ export default function ReviewPage() {
   const confLow = conf < 0.7;
   const cardEdits = edits[current.candidate_id] ?? {};
   const name = (cardEdits.name as string) ?? current.name ?? 'Unknown item';
+  const category = (cardEdits.category as string) ?? current.category ?? '';
   const color = (cardEdits.color as string) ?? current.color ?? '';
   const size = (cardEdits.size as string) ?? current.size ?? '';
   const price =
@@ -474,9 +493,11 @@ export default function ReviewPage() {
             aria-hidden
           />
 
-          {/* Top card */}
+          {/* Top card — flex column so the body (name/category/brand/chips) is ALWAYS
+              rendered: the image flexes into whatever space is left and shrinks on
+              short viewports instead of pushing the text out of the clipped card. */}
           <div
-            className="absolute inset-0 overflow-hidden rounded-3xl"
+            className="absolute inset-0 flex flex-col overflow-hidden rounded-3xl"
             style={{
               background: '#222',
               border: '1px solid var(--tr-20)',
@@ -486,14 +507,22 @@ export default function ReviewPage() {
           >
             {/* Image — verified-only (only ever set after vision-verify). While the
                 background fill is still resolving, show a soft shimmer instead of a
-                broken/wrong image; an exhausted card falls back to a neutral panel. */}
-            <div className="relative aspect-square w-full" style={{ background: '#333' }}>
+                broken/wrong image; an exhausted card falls back to a neutral panel.
+                flex-1 + min-h-0 lets it absorb spare height yet yield to the body. */}
+            <div className="relative w-full flex-1 min-h-0" style={{ background: '#333' }}>
               {current.image_url ? (
                 /* eslint-disable-next-line @next/next/no-img-element */
                 <img
                   src={current.image_url}
                   alt={name}
                   className="h-full w-full object-cover"
+                  // A resolved URL that fails to load (404 / CORS / hotlink block) must
+                  // degrade to the neutral panel — never a broken-image glyph. Clearing
+                  // onerror first prevents a loop if the fallback itself ever failed.
+                  onError={(e) => {
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = FALLBACK_IMG;
+                  }}
                 />
               ) : current.image_status === 'pending' ? (
                 <div className="h-full w-full animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
@@ -514,8 +543,9 @@ export default function ReviewPage() {
               </span>
             </div>
 
-            {/* Body */}
-            <div style={{ padding: '14px 16px' }}>
+            {/* Body — shrink-0: the textual facts always render in full; only the
+                image above gives up space when the card is short. */}
+            <div className="shrink-0" style={{ padding: '14px 16px' }}>
               <div className="flex items-start justify-between gap-2">
                 <h2 className="m-0 text-[19px] font-bold leading-tight text-white">{name}</h2>
                 <span className="flex items-center gap-1.5" style={{ flexShrink: 0 }}>
@@ -540,9 +570,12 @@ export default function ReviewPage() {
 
               {/* Fact chips */}
               <div className="mt-3 flex flex-wrap gap-2">
+                {category && (
+                  <FactChip>{category.charAt(0).toUpperCase() + category.slice(1)}</FactChip>
+                )}
                 {color && <FactChip>{color}</FactChip>}
                 {size && <FactChip>Size {size}</FactChip>}
-                {price != null && (
+                {price != null && Number.isFinite(price) && (
                   <FactChip>
                     {current.currency === 'GBP' ? '£' : current.currency === 'EUR' ? '€' : '$'}
                     {price.toFixed(2)}
