@@ -36,10 +36,34 @@ class Settings(BaseSettings):
     SUPABASE_S3_BUCKET: Optional[str] = None
     SUPABASE_PUBLIC_BASE_URL: Optional[str] = None
 
-    # Google OAuth configuration
-    GOOGLE_CLIENT_ID: Optional[str] = None
-    GOOGLE_CLIENT_SECRET: Optional[str] = None
-    GOOGLE_REDIRECT_URI: Optional[str] = None
+    # --- Gmail ingest OAuth (dedicated "Tailor Gmail Ingest" Google client) -----
+    # This is the SEPARATE Google OAuth client used ONLY to obtain a
+    # gmail.readonly refresh token for receipt ingestion. It is NOT the login
+    # client: "Login with Google" is owned entirely by Supabase Auth (its client
+    # id/secret live in the Supabase dashboard and never touch this backend).
+    #
+    # The legacy single-client GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI were retired
+    # in the Gmail-connect cutover; do not reintroduce them. The backend always
+    # uses GMAIL_OAUTH_REDIRECT_URI from env and never honors a caller-supplied
+    # redirect_uri (which was the open-redirect foot-gun in the old flow).
+    GMAIL_OAUTH_CLIENT_ID: Optional[str] = None
+    GMAIL_OAUTH_CLIENT_SECRET: Optional[str] = None
+    GMAIL_OAUTH_REDIRECT_URI: str = "http://localhost:3000/gmail/oauth/callback"
+    # The only scope this client ever requests. gmail.readonly is read-only mail
+    # access; no identity scopes (login already established identity via Supabase).
+    GMAIL_OAUTH_SCOPE: str = "https://www.googleapis.com/auth/gmail.readonly"
+
+    # Secret used to sign the short-lived OAuth `state` (CSRF) token that binds the
+    # consent round-trip to the initiating user's session. Independent of the
+    # legacy login JWT secret on purpose (different purpose, different rotation).
+    GMAIL_OAUTH_STATE_SECRET: Optional[str] = None
+    GMAIL_OAUTH_STATE_TTL_SECONDS: int = 600  # consent must complete within 10 min
+
+    # Base64-encoded 32-byte key (AES-256) for at-rest encryption of the Gmail
+    # access/refresh tokens stored in google_accounts. Held in env only, NEVER in
+    # the database, so a DB compromise alone yields only ciphertext. Decryption
+    # happens exclusively inside the token-refresh service.
+    GMAIL_TOKEN_ENC_KEY: Optional[str] = None
 
     # JWT configuration (legacy custom-JWT path, signed with JWT_SECRET_KEY).
     # Kept live during the Supabase Auth transition (dual-accept). Rotate before

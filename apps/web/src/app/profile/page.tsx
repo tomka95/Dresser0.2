@@ -10,6 +10,7 @@ import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { ProfileHeader } from '@/components/profile/ProfileHeader';
 import { ProfileStats } from '@/components/profile/ProfileStats';
 import { StylePreferencesCard } from '@/components/profile/StylePreferencesCard';
+import { GmailConnectCard } from '@/components/profile/GmailConnectCard';
 import { GeneralSettingsCard } from '@/components/profile/GeneralSettingsCard';
 
 // TODO: Replace with real API endpoints once available
@@ -115,10 +116,12 @@ export default function ProfilePage() {
               outfitsCount={MOCK_OUTFITS_COUNT} 
             />
             
-            <StylePreferencesCard 
+            <StylePreferencesCard
               favoriteStyles={MOCK_FAVORITE_STYLES}
               colorPreferences={MOCK_COLOR_PREFERENCES}
             />
+
+            <GmailConnectCard />
 
             <GeneralSettingsCard onLogout={handleLogout} />
           </>
