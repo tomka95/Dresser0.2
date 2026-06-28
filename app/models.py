@@ -90,7 +90,9 @@ class ClothingItem(Base):
 
     __table_args__ = (
         Index('idx_clothing_items_user_id', 'user_id'),
-        Index('idx_clothing_items_user_id_created_at', 'user_id', 'created_at'),
+        # created_at is DESC in the live DB (recent-first queries). Expressed via
+        # text() so ORM metadata matches reflection and autogenerate stays clean.
+        Index('idx_clothing_items_user_id_created_at', 'user_id', text('created_at DESC')),
         # GIN indexes present live. postgresql_using='gin' is honored on Postgres
         # and ignored on SQLite (create_all emits a plain index there).
         Index('clothing_items_tags_gin', 'tags', postgresql_using='gin'),
@@ -280,7 +282,8 @@ class UserPreferenceEvent(Base):
     __table_args__ = (
         CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence"),
         CheckConstraint("source IN ('chat', 'manual', 'inferred')", name="source"),
-        Index("idx_user_preference_events_user_key_time", "user_id", "key", "created_at"),
+        # created_at DESC live (recent-first). text() keeps metadata == reflection.
+        Index("idx_user_preference_events_user_key_time", "user_id", "key", text("created_at DESC")),
     )
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
@@ -346,7 +349,8 @@ class Waitlist(Base):
     __table_args__ = (
         UniqueConstraint("email", name="waitlist_email_key"),
         Index("idx_waitlist_email", "email"),
-        Index("idx_waitlist_created_at", "created_at"),
+        # created_at DESC live (recent-first). text() keeps metadata == reflection.
+        Index("idx_waitlist_created_at", text("created_at DESC")),
         {"comment": "Stores email addresses of users who joined the waitlist"},
     )
 
