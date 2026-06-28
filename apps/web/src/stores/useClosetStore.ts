@@ -25,6 +25,7 @@ type ClosetState = {
   addItem: (input: NewClosetItemInput) => Promise<void>;
   fetchItem: (id: string) => Promise<ClosetItem>;
   updateItem: (id: string, updates: ClosetItemUpdate) => Promise<ClosetItem>;
+  invalidate: () => void;
 };
 
 export const useClosetStore = create<ClosetState>((set, get) => ({
@@ -124,6 +125,9 @@ export const useClosetStore = create<ClosetState>((set, get) => ({
       }));
       throw error;
     }
+  },
+  invalidate() {
+    set({ hasFetchedItems: false });
   },
   async updateItem(id: string, updates: ClosetItemUpdate) {
     set((state) => ({

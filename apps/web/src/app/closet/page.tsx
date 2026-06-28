@@ -163,7 +163,7 @@ export default function ClosetPage() {
         onOpenChange={setDrawerOpen}
         onGmailClick={() => {
           setDrawerOpen(false);
-          router.push('/gmail-sync');
+          router.push('/review');
         }}
       />
 
