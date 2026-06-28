@@ -87,12 +87,12 @@ describe('ClosetPage', () => {
     expect(screen.getByText('Shoes')).toBeInTheDocument();
   });
 
-  it('shows mock fallback items when the store is empty', () => {
-    // Current behavior: an empty store renders design-preview mock items.
+  it('shows the empty state when the store is empty', () => {
+    // Post-e599895: an empty store renders the real empty state — no mock fallback.
     mockStore({ items: [], hasFetchedItems: true });
     render(<ClosetPage />);
-    expect(screen.getByText('Beige Cardigan')).toBeInTheDocument();
-    expect(screen.getByText('Dark Denim')).toBeInTheDocument();
+    expect(screen.getByText('Your closet is empty')).toBeInTheDocument();
+    expect(screen.queryByText('Beige Cardigan')).not.toBeInTheDocument();
   });
 
   it('renders real items from the store when present', () => {
@@ -116,17 +116,17 @@ describe('ClosetPage', () => {
 
   it('filters items by category when a filter is selected', async () => {
     const user = userEvent.setup();
-    mockStore({ items: [], hasFetchedItems: true }); // mock fallback items
+    mockStore({ items: storeItems, hasFetchedItems: true });
     render(<ClosetPage />);
 
-    // Both a top and a bottom are visible initially.
-    expect(screen.getByText('Beige Cardigan')).toBeInTheDocument(); // top
-    expect(screen.getByText('Dark Denim')).toBeInTheDocument(); // bottom
+    // A top (Blue Shirt) and a bottom (Black Jeans) are visible initially.
+    expect(screen.getByText('Blue Shirt')).toBeInTheDocument(); // top
+    expect(screen.getByText('Black Jeans')).toBeInTheDocument(); // bottom
 
     await user.click(screen.getByText('Tops'));
 
     // After filtering to Tops, the bottom item is gone, the top remains.
-    expect(screen.getByText('Beige Cardigan')).toBeInTheDocument();
-    expect(screen.queryByText('Dark Denim')).not.toBeInTheDocument();
+    expect(screen.getByText('Blue Shirt')).toBeInTheDocument();
+    expect(screen.queryByText('Black Jeans')).not.toBeInTheDocument();
   });
 });
