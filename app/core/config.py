@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # Hard cap on the email body chars sent to the model (token/cost guard).
     GMAIL_EXTRACT_MAX_BODY_CHARS: int = 12000
     
+    # --- Photo -> closet garment detection (Wave 1) ------------------------
+    # The schema-first detector behind /photo/ingest/start. Returns per-garment
+    # box_2d (+ optional mask) via Gemini structured output. Flash (not flash-lite)
+    # for stronger spatial grounding; box/mask quality matters for the cutout.
+    GEMINI_DETECT_MODEL: str = "gemini-2.5-flash"
+
     IMAGE_API_BASE_URL: str = ""
     IMAGE_API_MODEL: str = ""
     IMAGE_API_TIMEOUT: float = 30.0
