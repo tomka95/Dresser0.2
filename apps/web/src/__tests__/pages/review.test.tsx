@@ -40,6 +40,7 @@ const CANDIDATES: IngestCandidate[] = [
     order_date: '2026-01-02', is_return: false,
     image_url: 'https://example.com/a.jpg', image_status: 'resolved',
     confidence_overall: 0.92, low_confidence_fields: [], seen_count: 1,
+    source_type: 'gmail',
     source: { merchant: 'Levi', order_id: null, message_id: 'm1', google_account_id: 1, email_date: null },
   },
   {
@@ -48,6 +49,7 @@ const CANDIDATES: IngestCandidate[] = [
     order_date: null, is_return: false,
     image_url: null, image_status: 'pending',
     confidence_overall: null, low_confidence_fields: ['brand', 'unit_price'], seen_count: 1,
+    source_type: 'gmail',
     source: { merchant: null, order_id: null, message_id: 'm2', google_account_id: 1, email_date: null },
   },
 ];

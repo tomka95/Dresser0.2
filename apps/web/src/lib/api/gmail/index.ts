@@ -48,6 +48,10 @@ export interface IngestCandidate {
   confidence_overall: number | null;
   low_confidence_fields: string[];
   seen_count: number;
+  // Ingestion source — drives the source-aware deck badge. The candidates/confirm/
+  // status endpoints are source-agnostic; only this tag differs between Gmail and
+  // photo-uploaded items.
+  source_type: 'gmail' | 'photo';
   source: CandidateSource;
 }
 
@@ -246,6 +250,48 @@ export async function getIngestCandidates(): Promise<IngestCandidate[]> {
   });
 
   if (!response.ok) throw new Error('Failed to load candidates.');
+  return response.json();
+}
+
+// ─── Photo ingest (Wave 1) ──────────────────────────────────────────────────
+// A SECOND ingestion source that feeds the SAME candidates/confirm/status spine as
+// Gmail. Only the start call differs (a multipart photo upload instead of a Gmail
+// sync); everything downstream is shared.
+
+export interface PhotoIngestResponse {
+  sync_id: string;
+  images_processed: number;
+  staged: number;
+  duplicates: number;
+  held_multi_person: number;
+  message: string | null;
+}
+
+/** Upload one or more photos; each garment is detected, cut out, and staged as a
+ *  pending candidate for the shared review deck. Processing is inline (no polling). */
+export async function startPhotoIngest(files: File[]): Promise<PhotoIngestResponse> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const formData = new FormData();
+  for (const f of files) formData.append('files', f);
+
+  const response = await fetch(`${API_BASE_URL}/photo/ingest/start`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    if (Array.isArray(error.detail)) {
+      throw new Error(error.detail.map((e: any) => e.msg).join(', '));
+    }
+    throw new Error(
+      typeof error.detail === 'string' ? error.detail : 'Failed to process photos.',
+    );
+  }
+
   return response.json();
 }
 

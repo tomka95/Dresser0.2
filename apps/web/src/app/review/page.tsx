@@ -10,7 +10,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, Mail, Pencil, X } from 'lucide-react';
+import { Camera, Check, Mail, Pencil, X } from 'lucide-react';
 
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
@@ -539,7 +539,16 @@ export default function ReviewPage() {
                   padding: '4px 10px',
                 }}
               >
-                ✦ Detected in Gmail
+                {/* Source-aware: the deck serves both Gmail and photo candidates. */}
+                {current.source_type === 'photo' ? (
+                  <>
+                    <Camera size={13} /> From your photo
+                  </>
+                ) : (
+                  <>
+                    <Mail size={13} /> Detected in Gmail
+                  </>
+                )}
               </span>
             </div>
 
