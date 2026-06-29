@@ -115,6 +115,8 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         "confidence_overall": _to_float(c.confidence_overall),
         "low_confidence_fields": _low_confidence_fields(c),
         "seen_count": c.seen_count or 1,
+        # Ingestion source ('gmail' | 'photo') so the deck shows a source-aware badge.
+        "source_type": c.source_type or "gmail",
         "source": {
             "merchant": c.merchant,
             "order_id": c.order_id,
@@ -261,7 +263,11 @@ def _upsert_clothing_item(
     # background fill already exhausted the slow tiers, else 'pending' (the self-heal
     # pass re-resolves these cache-first later). image_cache_key links the row to the
     # shared product-image cache.
-    if cand.image_url:
+    if cand.image_status == "user_uploaded":
+        # Photo-sourced cutout: its own terminal lifecycle state (not the resolve/
+        # verify pipeline). Preserve it rather than relabeling as 'resolved'.
+        image_status = "user_uploaded"
+    elif cand.image_url:
         image_status = "resolved"
     elif cand.image_status == "placeholder":
         image_status = "placeholder"
@@ -289,6 +295,9 @@ def _upsert_clothing_item(
         merchant=cand.merchant,
         image_status=image_status,
         image_cache_key=image_cache_key,
+        # Carry the ingestion source forward ('gmail' | 'photo') so the closet records
+        # how each item arrived. The candidate's value is server-set at stage time.
+        source_type=cand.source_type,
     )
     stmt = pg_insert(tbl).values(**vals)
     ex = stmt.excluded
@@ -313,6 +322,7 @@ def _upsert_clothing_item(
             "merchant": ex.merchant,
             "image_status": ex.image_status,
             "image_cache_key": ex.image_cache_key,
+            "source_type": ex.source_type,
             "updated_at": func.now(),
         },
     ).returning(tbl.c.id, literal_column("(xmax = 0)").label("inserted"))

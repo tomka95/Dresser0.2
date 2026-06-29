@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.db import check_database_connection
 from app.security import hash_password, verify_password, create_access_token
-from app.api.routes import auth_google, closet, gmail_oauth, gmail_ingest
+from app.api.routes import auth_google, closet, gmail_oauth, gmail_ingest, photo_ingest
 
 import os
 import tempfile
@@ -68,6 +68,9 @@ app.include_router(gmail_oauth.router)
 
 # Gmail receipt ingestion (phase 3b: fetch + filter + idempotency)
 app.include_router(gmail_ingest.router)
+
+# Photo -> closet ingestion (Wave 1: detect + cutout + stage; reuses the deck/confirm)
+app.include_router(photo_ingest.router)
 
 # Closet endpoints
 app.include_router(closet.router)

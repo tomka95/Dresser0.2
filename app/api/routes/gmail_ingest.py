@@ -88,6 +88,8 @@ class CandidateOut(BaseModel):
     # Fields the UI should flag for edit (null value or weak per-field confidence).
     low_confidence_fields: List[str] = Field(default_factory=list)
     seen_count: int = 1
+    # Ingestion source: 'gmail' | 'photo'. Drives the source-aware deck badge.
+    source_type: str = "gmail"
     source: CandidateSource
 
 

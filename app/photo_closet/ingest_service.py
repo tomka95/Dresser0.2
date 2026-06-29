@@ -177,7 +177,7 @@ def ingest_photos(
     sync_id: Optional[UUID] = None,
     provider=None,
     storage_client=None,
-    detect: Callable[..., DetectionResult] = detect_garments_with_regions,
+    detect: Optional[Callable[..., DetectionResult]] = None,
 ) -> PhotoIngestResult:
     """Run validate-already-done images through detect -> crop -> stage.
 
@@ -185,6 +185,11 @@ def ingest_photos(
     ingest_runs row (source_type='photo') so /…/status works, and a processed_uploads
     row per image for idempotency. Returns counts; never writes clothing_items.
     """
+    # Resolve at call time (not as a default arg) so tests can monkeypatch the module
+    # symbol on the route path that doesn't pass `detect` explicitly.
+    if detect is None:
+        detect = detect_garments_with_regions
+
     sync_id = sync_id or uuid4()
     run = IngestRun(sync_id=sync_id, user_id=user_id, status="running", source_type="photo")
     db.add(run)
