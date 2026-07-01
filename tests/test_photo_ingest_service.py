@@ -149,6 +149,37 @@ def test_identical_boxes_collapse_to_one_candidate(db, user):
     assert res.staged == 2
 
 
+def test_deck_scoped_to_current_run(db, user):
+    """The deck fetch filters to the active sync_id AND to pending, so a photo run
+    never surfaces stale candidates from a prior run."""
+    from uuid import uuid4
+    from app.gmail_closet.review_service import list_pending_candidates
+
+    run_a, run_b = uuid4(), uuid4()
+
+    def _cand(sync_id, slk, status="pending"):
+        db.add(IngestCandidate(
+            user_id=user.id, sync_id=sync_id, source_line_key=slk, name="x",
+            category="top", status=status, source_type="photo",
+            image_url="https://blob/x.jpg", image_status="user_uploaded",
+        ))
+
+    # run A: 2 pending. run B (older): 2 pending + 1 already accepted.
+    _cand(run_a, "a1"); _cand(run_a, "a2")
+    _cand(run_b, "b1"); _cand(run_b, "b2"); _cand(run_b, "b3", status="accepted")
+    db.commit()
+
+    scoped_a = list_pending_candidates(db, user.id, sync_id=str(run_a))
+    assert len(scoped_a) == 2  # only run A's pending
+
+    scoped_b = list_pending_candidates(db, user.id, sync_id=str(run_b))
+    assert len(scoped_b) == 2  # run B's pending; the accepted one is excluded
+
+    # Unscoped (Gmail deck behavior) is unchanged: all pending, accepted excluded.
+    unscoped = list_pending_candidates(db, user.id)
+    assert len(unscoped) == 4
+
+
 def test_unusable_box_skipped(db, user):
     detection = DetectionResult(person_count=1, garments=[
         _garment("Good", box=(0, 0, 1000, 1000)),

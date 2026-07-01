@@ -130,7 +130,9 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
     }
 
 
-def list_pending_candidates(db: Session, user_id: UUID) -> List[Dict[str, Any]]:
+def list_pending_candidates(
+    db: Session, user_id: UUID, sync_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Return the user's status='pending' candidates for the swipe deck.
 
     Phase 4 ordering: image-PRESENT candidates first, then the still-resolving
@@ -138,6 +140,12 @@ def list_pending_candidates(db: Session, user_id: UUID) -> List[Dict[str, Any]]:
     images onto the rest. Within each group, ranked most-confident first
     (confidence_overall DESC, nulls last), then newest. User-scoped by an explicit
     user_id filter (the owner-role connection bypasses RLS — see module docstring).
+
+    ``sync_id`` scopes the deck to a SINGLE run. The photo flow passes the run created
+    by /photo/ingest/start so its deck shows only that upload's garments — never stale
+    pending candidates from an earlier (Gmail or photo) run. When None (the Gmail deck),
+    behavior is unchanged: all of the user's pending candidates. status='pending' is
+    always enforced, so already accepted/rejected candidates never reappear either way.
     """
     # One Gmail account per user (UNIQUE(user_id)); use its id as the source account.
     account = (
@@ -147,12 +155,15 @@ def list_pending_candidates(db: Session, user_id: UUID) -> List[Dict[str, Any]]:
     )
     ga_id = account[0] if account else None
 
+    q = db.query(IngestCandidate).filter(
+        IngestCandidate.user_id == user_id,
+        IngestCandidate.status == "pending",
+    )
+    if sync_id is not None:
+        q = q.filter(IngestCandidate.sync_id == sync_id)
+
     rows = (
-        db.query(IngestCandidate)
-        .filter(
-            IngestCandidate.user_id == user_id,
-            IngestCandidate.status == "pending",
-        )
+        q
         .order_by(
             # image present (image_url NOT NULL) sorts before imageless: `IS NULL`
             # yields false(0) for present rows, true(1) for imageless — ascending puts

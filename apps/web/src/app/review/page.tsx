@@ -81,6 +81,11 @@ export default function ReviewPage() {
   const [scanError, setScanError] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
+  // When the deck is opened for a specific run (the photo flow navigates to
+  // /review?sync_id=…), scope every candidate fetch to that run so stale pending
+  // candidates from earlier runs never appear. undefined = Gmail deck (all pending).
+  // Read from window.location (not useSearchParams) to avoid the Suspense requirement.
+  const scopeSyncIdRef = useRef<string | undefined>(undefined);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const schedule = useCallback((fn: () => void, ms: number) => {
     timersRef.current.push(setTimeout(fn, ms));
@@ -132,7 +137,7 @@ export default function ReviewPage() {
   const pollImages = useCallback(async function pollImages() {
     if (!mountedRef.current) return;
     try {
-      const cands = await getIngestCandidates();
+      const cands = await getIngestCandidates(scopeSyncIdRef.current);
       if (!mountedRef.current) return;
       mergeCandidates(cands);
       if (cands.some((c) => c.image_status === 'pending')) schedule(pollImages, 2500);
@@ -146,7 +151,10 @@ export default function ReviewPage() {
   const pollSync = useCallback(async function pollSync(syncId: string) {
     if (!mountedRef.current) return;
     try {
-      const [st, cands] = await Promise.all([getIngestStatus(syncId), getIngestCandidates()]);
+      const [st, cands] = await Promise.all([
+        getIngestStatus(syncId),
+        getIngestCandidates(scopeSyncIdRef.current),
+      ]);
       if (!mountedRef.current) return;
       mergeCandidates(cands);
       setScanCount(st.progress.extracted || cands.length);
@@ -168,6 +176,9 @@ export default function ReviewPage() {
     if (starting || scanning) return;
     setStarting(true);
     setScanError(null);
+    // A Gmail scan is unscoped (all pending) — drop any photo-run scope from the URL
+    // so this scan's cards aren't filtered to a different run.
+    scopeSyncIdRef.current = undefined;
     try {
       const { sync_id } = await startIngest(); // 409 → id of the already-running sync
       if (!mountedRef.current) return;
@@ -187,8 +198,12 @@ export default function ReviewPage() {
   useEffect(() => {
     if (!isAuth) return;
     mountedRef.current = true;
+    // Scope this deck to a run if the URL carries one (the photo flow navigates to
+    // /review?sync_id=…). Gmail opens /review with no param -> undefined -> all pending.
+    scopeSyncIdRef.current =
+      new URLSearchParams(window.location.search).get('sync_id') ?? undefined;
     setLoading(true);
-    getIngestCandidates()
+    getIngestCandidates(scopeSyncIdRef.current)
       .then((cands) => {
         if (!mountedRef.current) return;
         setCandidates(cands);

@@ -165,6 +165,49 @@ def test_route_single_person_stages_and_appears_in_deck(db, client, monkeypatch)
     assert cands[0]["image_status"] == "user_uploaded"
 
 
+def test_route_deck_scoped_excludes_stale_candidates(db, client, monkeypatch):
+    """Reproduces the bug: a stale pending Gmail candidate must NOT appear in the
+    photo run's scoped deck. Scoped fetch = only the run's cards; unscoped = both."""
+    import uuid
+    user = _user(db, "scope@example.com")
+    token = create_access_token(data={"sub": str(user.id)})
+
+    # A stale, image-less pending Gmail candidate from an earlier run.
+    db.add(IngestCandidate(
+        user_id=user.id, sync_id=uuid.uuid4(), source_line_key="stale-gmail",
+        name="Old Gmail Thing", category="top", status="pending",
+        source_type="gmail", image_status="pending",
+    ))
+    db.commit()
+
+    detection = DetectionResult(person_count=1, garments=[
+        GarmentRegion(name="Photo Shirt", category="top", box_2d=[10, 10, 900, 900],
+                      confidence_overall=0.9)])
+    monkeypatch.setattr(
+        ingest_service, "detect_garments_with_regions",
+        lambda *, image_bytes, content_type, provider=None: detection,
+    )
+    start = client.post(
+        "/photo/ingest/start", headers={"Authorization": f"Bearer {token}"},
+        files={"files": ("me.jpg", _jpeg(), "image/jpeg")},
+    )
+    sync_id = start.json()["sync_id"]
+
+    # Scoped to the photo run: ONLY the photo candidate (stale Gmail one excluded).
+    scoped = client.get(
+        f"/gmail/ingest/candidates?sync_id={sync_id}",
+        headers={"Authorization": f"Bearer {token}"}).json()
+    assert len(scoped) == 1
+    assert scoped[0]["source_type"] == "photo"
+    assert scoped[0]["name"] == "Photo Shirt"
+
+    # Unscoped (Gmail deck behavior) still returns both -> Gmail unchanged.
+    unscoped = client.get(
+        "/gmail/ingest/candidates",
+        headers={"Authorization": f"Bearer {token}"}).json()
+    assert len(unscoped) == 2
+
+
 def test_route_multi_person_held(db, client, monkeypatch):
     user = _user(db, "r2@example.com")
     token = create_access_token(data={"sub": str(user.id)})

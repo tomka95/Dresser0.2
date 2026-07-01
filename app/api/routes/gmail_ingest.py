@@ -213,6 +213,7 @@ def get_ingest_status(
 
 @router.get("/candidates", response_model=List[CandidateOut])
 def get_ingest_candidates(
+    sync_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> List[CandidateOut]:
@@ -223,8 +224,13 @@ def get_ingest_candidates(
     group most-confident first. Each candidate carries image_status so the deck can show
     a shimmer while resolution is in flight and poll this endpoint until nothing is
     pending. low_confidence_fields flags weak/null fields for inline edit.
+
+    Optional ``sync_id`` scopes the deck to a single run: the photo flow passes the run
+    from /photo/ingest/start so its deck shows only that upload's garments (no stale
+    pending candidates from a prior run). Omitted -> all pending (the Gmail deck,
+    unchanged).
     """
-    return list_pending_candidates(db, current_user.id)
+    return list_pending_candidates(db, current_user.id, sync_id=sync_id)
 
 
 @router.get("/usage")

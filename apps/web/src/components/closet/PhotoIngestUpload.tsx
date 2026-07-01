@@ -88,7 +88,9 @@ export function PhotoIngestUpload() {
       // Closet may change after confirm; invalidate so it refetches later.
       useClosetStore.getState().invalidate?.();
       if (res.staged > 0) {
-        router.push('/review'); // staged candidates appear in the shared deck
+        // Scope the deck to THIS run so it shows only the photo's garments — not stale
+        // pending candidates from an earlier run.
+        router.push(`/review?sync_id=${encodeURIComponent(res.sync_id)}`);
         return;
       }
       // Nothing to review — surface why (held for multi-person / dup / no clothing).

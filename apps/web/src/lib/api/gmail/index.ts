@@ -240,12 +240,17 @@ export async function getIngestStatus(syncId: string): Promise<IngestStatus> {
   return response.json();
 }
 
-/** Fetch the authenticated user's status='pending' candidates for the swipe deck. */
-export async function getIngestCandidates(): Promise<IngestCandidate[]> {
+/** Fetch the authenticated user's status='pending' candidates for the swipe deck.
+ *  Pass syncId to scope the deck to a single run (the photo flow does this so its deck
+ *  shows only that upload's garments); omit it for the Gmail deck (all pending). */
+export async function getIngestCandidates(syncId?: string): Promise<IngestCandidate[]> {
   const token = await getAccessToken();
   if (!token) throw new Error('Not authenticated. Please sign in first.');
 
-  const response = await fetch(`${API_BASE_URL}/gmail/ingest/candidates`, {
+  const url = syncId
+    ? `${API_BASE_URL}/gmail/ingest/candidates?sync_id=${encodeURIComponent(syncId)}`
+    : `${API_BASE_URL}/gmail/ingest/candidates`;
+  const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
