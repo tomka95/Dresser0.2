@@ -1,6 +1,81 @@
 // API client for Gmail endpoints
 import { getAccessToken } from '@/lib/auth';
 
+// ─── Ingest types ─────────────────────────────────────────────────────────────
+
+export interface IngestProgress {
+  fetched: number;
+  filtered: number;
+  extracted: number;
+  total_estimate: number | null;
+}
+
+export interface IngestStatus {
+  // Backend emits 'running' | 'completed' | 'error'. ('failed' kept for back-compat.)
+  sync_id: string;
+  status: 'running' | 'completed' | 'error' | 'failed';
+  progress: IngestProgress;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface CandidateSource {
+  merchant: string | null;
+  order_id: string | null;
+  message_id: string | null;
+  google_account_id: number | null;
+  email_date: string | null;
+}
+
+export interface IngestCandidate {
+  candidate_id: string;
+  name: string | null;
+  brand: string | null;
+  category: string | null;
+  color: string | null;
+  size: string | null;
+  qty: number;
+  unit_price: number | null;
+  currency: string | null;
+  order_date: string | null;
+  is_return: boolean;
+  image_url: string | null;
+  // Image lifecycle for the streaming deck (Phase 4):
+  //   'resolved'    — image_url is present (verified).
+  //   'pending'     — still resolving in the background → shimmer + keep polling.
+  //   'placeholder' — slow tiers exhausted, no image found → static placeholder.
+  image_status: 'resolved' | 'pending' | 'placeholder' | 'user_uploaded' | null;
+  confidence_overall: number | null;
+  low_confidence_fields: string[];
+  seen_count: number;
+  // Ingestion source — drives the source-aware deck badge. The candidates/confirm/
+  // status endpoints are source-agnostic; only this tag differs between Gmail and
+  // photo-uploaded items.
+  source_type: 'gmail' | 'photo';
+  source: CandidateSource;
+}
+
+export interface ConfirmRequest {
+  accepted: string[];
+  rejected: string[];
+  edits: Record<string, Record<string, unknown>>;
+}
+
+export interface ConfirmWrittenItem {
+  clothing_item_id: string;
+  candidate_id: string;
+  name: string;
+  inserted: boolean;
+}
+
+export interface ConfirmResponse {
+  accepted_count: number;
+  rejected_count: number;
+  inserted_count: number;
+  updated_count: number;
+  written: ConfirmWrittenItem[];
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export interface GmailConnectionStatus {
@@ -113,9 +188,137 @@ export async function extractClothingFromGmail(): Promise<ExtractClothingRespons
     }
     
     throw new Error(
-      typeof error.detail === 'string' 
-        ? error.detail 
+      typeof error.detail === 'string'
+        ? error.detail
         : 'Failed to extract clothing items from Gmail'
+    );
+  }
+
+  return response.json();
+}
+
+// ─── Phase 3d-b ingest API ────────────────────────────────────────────────────
+
+/** Start a 2-year Gmail receipt sync. Returns {sync_id} for polling.
+ *  If a sync is already running (409), returns its sync_id so the caller can poll it. */
+export async function startIngest(): Promise<{ sync_id: string }> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const response = await fetch(`${API_BASE_URL}/gmail/ingest/start`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (response.status === 409) {
+    const error = await response.json().catch(() => ({}));
+    const match =
+      typeof error.detail === 'string' && error.detail.match(/sync_id=([0-9a-f-]+)/i);
+    if (match) return { sync_id: match[1] };
+    throw new Error('A sync is already running.');
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to start sync.');
+  }
+
+  return response.json();
+}
+
+/** Poll a sync run's status and progress. */
+export async function getIngestStatus(syncId: string): Promise<IngestStatus> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const response = await fetch(
+    `${API_BASE_URL}/gmail/ingest/status?sync_id=${encodeURIComponent(syncId)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+
+  if (!response.ok) throw new Error('Failed to get sync status.');
+  return response.json();
+}
+
+/** Fetch the authenticated user's status='pending' candidates for the swipe deck.
+ *  Pass syncId to scope the deck to a single run (the photo flow does this so its deck
+ *  shows only that upload's garments); omit it for the Gmail deck (all pending). */
+export async function getIngestCandidates(syncId?: string): Promise<IngestCandidate[]> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const url = syncId
+    ? `${API_BASE_URL}/gmail/ingest/candidates?sync_id=${encodeURIComponent(syncId)}`
+    : `${API_BASE_URL}/gmail/ingest/candidates`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!response.ok) throw new Error('Failed to load candidates.');
+  return response.json();
+}
+
+// ─── Photo ingest (Wave 1) ──────────────────────────────────────────────────
+// A SECOND ingestion source that feeds the SAME candidates/confirm/status spine as
+// Gmail. Only the start call differs (a multipart photo upload instead of a Gmail
+// sync); everything downstream is shared.
+
+export interface PhotoIngestResponse {
+  sync_id: string;
+  images_processed: number;
+  staged: number;
+  duplicates: number;
+  held_multi_person: number;
+  message: string | null;
+}
+
+/** Upload one or more photos; each garment is detected, cut out, and staged as a
+ *  pending candidate for the shared review deck. Processing is inline (no polling). */
+export async function startPhotoIngest(files: File[]): Promise<PhotoIngestResponse> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const formData = new FormData();
+  for (const f of files) formData.append('files', f);
+
+  const response = await fetch(`${API_BASE_URL}/photo/ingest/start`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    if (Array.isArray(error.detail)) {
+      throw new Error(error.detail.map((e: any) => e.msg).join(', '));
+    }
+    throw new Error(
+      typeof error.detail === 'string' ? error.detail : 'Failed to process photos.',
+    );
+  }
+
+  return response.json();
+}
+
+/** Confirm (accept/reject/edit) a batch of candidates.
+ *  Accepted ones are upserted into clothing_items. Rejected ones write nothing. */
+export async function confirmCandidates(body: ConfirmRequest): Promise<ConfirmResponse> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const response = await fetch(`${API_BASE_URL}/gmail/ingest/confirm`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(
+      typeof error.detail === 'string' ? error.detail : 'Failed to confirm candidates.',
     );
   }
 

@@ -78,7 +78,7 @@ export function ConnectGmailModal({
             We can automatically add items to your closet from your email receipts.
           </p>
           <p className="text-[16px] font-normal leading-[22px] text-[#4F4F4F] text-center mb-[24px]" style={{ fontFamily: 'Inter, sans-serif' }}>
-            Without Gmail sync, we won't be able to import your purchases.
+            Without Gmail sync, we won&apos;t be able to import your purchases.
           </p>
           <p className="text-[16px] font-normal leading-[22px] text-[#4F4F4F] text-center" style={{ fontFamily: 'Inter, sans-serif' }}>
             You stay in control – we only scan shopping receipts.

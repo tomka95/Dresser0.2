@@ -25,6 +25,25 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+# Manual backup tables (e.g. `backup_clothing_items_20260615`) get created out-of-band
+# during ops work. They have no ORM counterpart, so autogenerate / `alembic check`
+# would reflect them and propose DROP TABLE. Anything named backup_* is operator-owned
+# and must be invisible to autogenerate — filtered by prefix in BOTH hooks below.
+_BACKUP_TABLE_PREFIX = "backup_"
+
+
+def _include_name(name, type_, parent_names):
+    """Exclude reflected backup_* tables from autogenerate / `alembic check`.
+
+    include_name is the hook that sees names present in the DB but ABSENT from the ORM
+    metadata (exactly how a backup_* table appears), so this is where a spurious DROP
+    for such a table is suppressed. All other names pass through unchanged.
+    """
+    if type_ == "table" and name and name.startswith(_BACKUP_TABLE_PREFIX):
+        return False
+    return True
+
+
 def _include_object(object, name, type_, reflected, compare_to):
     """Keep autogenerate clean for migration-owned, ORM-inexpressible objects.
 
@@ -35,7 +54,12 @@ def _include_object(object, name, type_, reflected, compare_to):
     mode. Without this exclusion, `alembic revision --autogenerate` would reflect
     the live FK, find no counterpart in the ORM metadata, and propose dropping it.
     The migration is the schema authority for this constraint, so we skip it here.
+
+    Also skips any backup_* table (operator-owned, ORM-inexpressible) as a
+    belt-and-suspenders companion to _include_name.
     """
+    if type_ == "table" and name and name.startswith(_BACKUP_TABLE_PREFIX):
+        return False
     if type_ == "foreign_key_constraint":
         if name == "users_id_fkey":
             return False
@@ -53,6 +77,7 @@ def _include_object(object, name, type_, reflected, compare_to):
 _COMPARE = dict(
     compare_type=True,
     compare_server_default=False,
+    include_name=_include_name,
     include_object=_include_object,
 )
 

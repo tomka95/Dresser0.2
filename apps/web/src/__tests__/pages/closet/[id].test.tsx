@@ -61,6 +61,7 @@ describe('ItemDetailsPage', () => {
         updateItem: mockUpdateItem,
         fetchItems: vi.fn(),
         addItem: vi.fn(),
+        invalidate: vi.fn(),
       };
       return selector(state);
     });
@@ -79,6 +80,7 @@ describe('ItemDetailsPage', () => {
         updateItem: mockUpdateItem,
         fetchItems: vi.fn(),
         addItem: vi.fn(),
+        invalidate: vi.fn(),
       });
     });
 

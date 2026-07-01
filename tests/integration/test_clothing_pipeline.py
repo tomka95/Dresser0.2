@@ -28,10 +28,10 @@ async def test_full_outfit_pipeline_integration(tmp_path: Path):
                 input_image = file_path
                 break
     
-    assert input_image is not None and input_image.exists(), (
-        f"No image file found in {images_dir}. "
-        f"Please place at least one image file (jpg, png, etc.) in the Images folder."
-    )
+    # Live-integration smoke test: needs a local fixture image (+ a real vision API).
+    # Skip cleanly when the Images/ folder has none, rather than hard-failing CI.
+    if input_image is None or not input_image.exists():
+        pytest.skip(f"no fixture image in {images_dir}; place a jpg/png to run this test")
 
     responses_dir = project_root / "Responses"
     responses_dir.mkdir(exist_ok=True)

@@ -10,6 +10,13 @@ export const closetItemSchema = z.object({
   category: z.enum(['top', 'bottom', 'dress', 'outerwear', 'shoes', 'accessories', 'other']),
   color: z.string().optional(),
   brand: z.string().optional(),
+  size: z.string().optional(),
+  quantity: z.number().int().min(1).optional(),
+  unitPrice: z.number().optional(),
+  currency: z.string().optional(),
+  orderDate: z.string().optional(),
+  isReturn: z.boolean().optional(),
+  merchant: z.string().optional(),
   imageUrl: z.string().url().optional(),
   // TODO: define expected analysis_raw JSON shape (user will provide example)
   analysisRaw: z.unknown().optional(),
@@ -28,6 +35,9 @@ export const closetItemUpdateSchema = z.object({
   category: z.enum(['top', 'bottom', 'dress', 'outerwear', 'shoes', 'accessories', 'other']).optional(),
   color: z.string().optional(),
   brand: z.string().optional(),
+  size: z.string().optional(),
+  unitPrice: z.number().optional(),
+  currency: z.string().optional(),
   imageUrl: z.string().url().optional(),
   // TODO: define expected analysis_raw JSON shape (user will provide example)
   analysisRaw: z.unknown().optional(),

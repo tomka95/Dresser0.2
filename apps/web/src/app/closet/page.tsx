@@ -13,51 +13,6 @@ import { CategoryFilters } from '@/components/closet/CategoryFilters';
 import { ClosetGrid } from '@/components/closet/ClosetGrid';
 import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
 import { Plus } from 'lucide-react';
-import type { ClosetItem } from '@tailor/contracts';
-
-// Mock items for empty state/preview
-const MOCK_ITEMS: ClosetItem[] = [
-  {
-    id: 'mock-1',
-    userId: 'mock-user',
-    name: 'Beige Cardigan',
-    category: 'top',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?q=80&w=300&auto=format&fit=crop',
-    brand: 'Uniqlo'
-  },
-  {
-    id: 'mock-2',
-    userId: 'mock-user',
-    name: 'Dark Denim',
-    category: 'bottom',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?q=80&w=300&auto=format&fit=crop',
-    brand: "Levi's"
-  },
-  {
-    id: 'mock-3',
-    userId: 'mock-user',
-    name: 'White Sneakers',
-    category: 'shoes',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1638247025967-b4e38f787b76?q=80&w=300&auto=format&fit=crop',
-    brand: 'Common Projects'
-  },
-  {
-    id: 'mock-4',
-    userId: 'mock-user',
-    name: 'Winter Coat',
-    category: 'outerwear',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1551028919-ac66e6a39b51?q=80&w=300&auto=format&fit=crop',
-    brand: 'AllSaints'
-  }
-];
 
 export default function ClosetPage() {
   const router = useRouter();
@@ -74,6 +29,8 @@ export default function ClosetPage() {
   const items = useClosetStore((state) => state.items);
   const fetchItems = useClosetStore((state) => state.fetchItems);
   const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
+  const isLoading = useClosetStore((state) => state.isLoading);
+  const error = useClosetStore((state) => state.error);
 
   useEffect(() => {
     // Fetch items if authenticated and not yet fetched
@@ -82,9 +39,10 @@ export default function ClosetPage() {
     }
   }, [isAuth, hasFetchedItems, fetchItems]);
 
-  // Filter items by category and search
+  // Filter the REAL closet items by category and search. No mock fallback — an
+  // empty result renders the empty state below, never placeholder cards.
   const filteredItems = useMemo(() => {
-    let filtered = items.length > 0 ? items : MOCK_ITEMS;
+    let filtered = items;
 
     // Filter by category
     if (selectedCategory !== 'all') {
@@ -117,10 +75,11 @@ export default function ClosetPage() {
     <div className="min-h-full bg-[#1E1E1E] relative pb-24">
       {/* Background Layers */}
       <div className="fixed top-0 bottom-0 left-0 right-0 z-0 w-full max-w-[430px] mx-auto pointer-events-none">
-        {/* Layer 1: Image */}
-        <div 
+        {/* Layer 1: decorative closet backdrop over the --app-bg fallback */}
+        <div
           className="absolute inset-0"
           style={{
+            background: 'var(--app-bg)',
             backgroundImage: "url('/images/closet-background-blur.jpg')",
             backgroundSize: 'cover',
             backgroundPosition: 'center',
@@ -140,11 +99,38 @@ export default function ClosetPage() {
       <div className="relative z-10 px-6 pt-12">
         <ClosetHeader />
         <ClosetSearchBar value={searchQuery} onChange={setSearchQuery} />
-        <CategoryFilters 
-          selectedCategory={selectedCategory} 
-          onSelectCategory={setSelectedCategory} 
+        <CategoryFilters
+          selectedCategory={selectedCategory}
+          onSelectCategory={setSelectedCategory}
         />
-        <ClosetGrid items={filteredItems} />
+        {/* First load: show a spinner rather than flashing the empty state before
+            the /closet fetch resolves. On error, offer a retry. Otherwise hand the
+            REAL items to the grid, which renders its own empty state when there are none. */}
+        {!hasFetchedItems && isLoading ? (
+          <div className="flex justify-center py-16">
+            <div
+              className="h-8 w-8 rounded-full"
+              style={{
+                border: '3px solid var(--tr-20)',
+                borderTopColor: 'var(--mint)',
+                animation: 'tailor-spin 0.8s linear infinite',
+              }}
+            />
+          </div>
+        ) : error ? (
+          <div className="py-12 text-center">
+            <p className="text-white/60 text-sm">Couldn&rsquo;t load your closet.</p>
+            <button
+              type="button"
+              onClick={() => fetchItems()}
+              className="mt-2 text-sm underline text-white/80"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <ClosetGrid items={filteredItems} />
+        )}
       </div>
 
       {/* Floating Action Button */}
@@ -163,7 +149,7 @@ export default function ClosetPage() {
         onOpenChange={setDrawerOpen}
         onGmailClick={() => {
           setDrawerOpen(false);
-          router.push('/gmail-sync');
+          router.push('/review');
         }}
       />
 

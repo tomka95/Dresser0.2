@@ -11,12 +11,115 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "gemini"
     OPENAI_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
+
+    # --- Gmail receipt extraction (phase 3c) -------------------------------
+    # The extractor turns Tier-1-kept receipt emails into typed, confidence-scored
+    # CLOTHING candidates via Gemini STRUCTURED OUTPUT. Flash-Lite is the default
+    # (cheap, $0.10/$0.40 per 1M tok); we escalate to Flash ONLY on a parse failure
+    # or when overall_confidence < the threshold below. Most emails never escalate.
+    GEMINI_EXTRACT_MODEL: str = "gemini-2.5-flash-lite"
+    GEMINI_EXTRACT_ESCALATION_MODEL: str = "gemini-2.5-flash"
+    # Below this overall_confidence the cheap pass is re-run on the stronger model.
+    GMAIL_EXTRACT_CONFIDENCE_THRESHOLD: float = 0.55
+    # Concurrent LLM extractions per sync (kept modest to respect Gemini rate limits).
+    GMAIL_EXTRACT_MAX_CONCURRENCY: int = 8
+    # Hard cap on the email body chars sent to the model (token/cost guard).
+    GMAIL_EXTRACT_MAX_BODY_CHARS: int = 12000
     
+    # --- Photo -> closet garment detection (Wave 1) ------------------------
+    # The schema-first detector behind /photo/ingest/start. Returns per-garment
+    # box_2d (+ optional mask) via Gemini structured output. Flash (not flash-lite)
+    # for stronger spatial grounding; box/mask quality matters for the cutout.
+    GEMINI_DETECT_MODEL: str = "gemini-2.5-flash"
+
     IMAGE_API_BASE_URL: str = ""
     IMAGE_API_MODEL: str = ""
     IMAGE_API_TIMEOUT: float = 30.0
 
-    GMAIL_MAX_YEARS: float = 1.0
+    # --- Cost model (editable per-unit rates for per-sync/per-user cost) -----
+    # Dollar cost is computed from RECORDED units (real provider usage_metadata token
+    # counts + issued Serper queries), never estimated — see app/gmail_closet/usage.py.
+    # Rates are USD per 1,000,000 tokens so they read straight off the provider's
+    # pricing page; bump them here when pricing changes (no code change needed).
+    #   Gemini 2.5 Flash-Lite — the extraction base model AND the vision-verify model.
+    GEMINI_FLASH_LITE_INPUT_USD_PER_1M: float = 0.10
+    GEMINI_FLASH_LITE_OUTPUT_USD_PER_1M: float = 0.40
+    #   Gemini 2.5 Flash — the extraction escalation model (stronger, pricier).
+    GEMINI_FLASH_INPUT_USD_PER_1M: float = 0.30
+    GEMINI_FLASH_OUTPUT_USD_PER_1M: float = 2.50
+    #   Serper — one credit per issued shopping-search query (~$0.001 at 50k/$50).
+    SERPER_USD_PER_CREDIT: float = 0.001
+
+    # --- Image vision-verify (Wave 2b) -------------------------------------
+    # A cheap Gemini vision check confirms a resolved image actually shows the
+    # item's garment type + color before the image is trusted (and before its
+    # product_image_cache row is flipped verified=true / served cross-user).
+    # Reuses GEMINI_API_KEY. media_resolution=LOW (color + garment, not OCR).
+    GMAIL_VERIFY_ENABLED: bool = True
+    GMAIL_VERIFY_MODEL: str = "gemini-2.5-flash-lite"
+    # Trust the image only when the model's overall match score >= this AND it says
+    # the garment type matches. Conservative on garment; shade leniency is in the
+    # prompt. ~$0.0002/image at LOW resolution.
+    GMAIL_VERIFY_SCORE_THRESHOLD: float = 0.6
+    # Per-run cost guard: at most this many verify calls per sync. Beyond it,
+    # further images are left image_status='pending' for a later run to verify.
+    GMAIL_VERIFY_MAX_PER_RUN: int = 200
+
+    # --- Long-tail shopping search (Wave 2c) -------------------------------
+    # When the cache + email + og tiers all miss, query DataForSEO Google Shopping
+    # (Merchant API, Standard async queue) by brand+name+color to find retailer
+    # product pages, then resolve a FIRST-PARTY image from the retailer page and
+    # vision-verify it before trusting. Opt-in (paid external API).
+    GMAIL_SEARCH_ENABLED: bool = False
+    # Which shopping-search provider Tier 5 uses. 'serper' (free tier, synchronous,
+    # the default) or 'dataforseo' (async task queue). Both return the same
+    # ShopCandidate(url, source_domain, title) shape.
+    SEARCH_PROVIDER: str = "serper"
+    SERPER_API_KEY: Optional[str] = None
+    DATAFORSEO_LOGIN: Optional[str] = None
+    DATAFORSEO_PASSWORD: Optional[str] = None
+    # Cost cap: at most this many SHOPPING-SEARCH queries per sync.
+    GMAIL_SEARCH_MAX_PER_RUN: int = 25
+    # Candidate retailer links tried per item (ranked), before falling to pending.
+    GMAIL_SEARCH_MAX_CANDIDATES: int = 3
+    # Standard-queue poll: total seconds to wait for a task to be ready, and the
+    # interval between task_get polls.
+    GMAIL_SEARCH_POLL_TIMEOUT: float = 30.0
+    GMAIL_SEARCH_POLL_INTERVAL: float = 2.0
+    # Default localization for non-Hebrew items (Hebrew items auto-route to Israel).
+    # LOCATION_CODE is DataForSEO's numeric geo; GL is Serper's 2-letter country.
+    # LANGUAGE_CODE doubles as Serper's hl. (Hebrew items -> location 2376 / gl 'il' / he.)
+    GMAIL_SEARCH_LOCATION_CODE: int = 2840   # United States (DataForSEO)
+    GMAIL_SEARCH_GL: str = "us"              # Serper country code
+    GMAIL_SEARCH_LANGUAGE_CODE: str = "en"   # hl / language_code
+
+    # Anti-amplification: hard ceiling on outbound guarded fetches per sync. Covers
+    # BOTH the retailer and the new "open" (non-allowlisted) profile, shared across
+    # all items/candidates in the run.
+    GMAIL_FETCH_MAX_PER_RUN: int = 100
+
+    # --- Pluggable product-feed seam (Tier 4.5, Phase 4 stub) ---------------
+    # A product-feed lookup (Sovrn / Awin / etc.) that maps brand+name+color -> a
+    # first-party product image URL, sitting between og:image (Tier 4) and shopping
+    # search (Tier 5). Ships disabled with a NullFeedProvider; a real provider plugs
+    # in behind app/gmail_closet/feed_provider.get_feed_provider() with ZERO resolver
+    # changes. Feed images route through the SAME guarded-fetch + vision-verify +
+    # cache-seed path as every other untrusted-web tier (verify is mandatory).
+    GMAIL_FEED_ENABLED: bool = False
+
+    # --- Background image fill + self-heal (Phase 4) -----------------------
+    # The slow image tiers (og:image / feed / search) and the cross-user self-heal
+    # pass run in a background task AFTER the deck is shown, streaming images onto
+    # cards as they resolve. This caps how many still-imageless candidates and how
+    # many pending confirmed clothing_items one background run will touch (cost /
+    # wall-clock guard; the per-run Verify/Fetch/Search budgets are the hard ceilings).
+    GMAIL_IMAGE_FILL_MAX_CANDIDATES: int = 500
+    GMAIL_SELF_HEAL_MAX_ITEMS: int = 500
+
+    # How far back the Gmail receipt scan looks. Read via gmail_oauth_client.
+    # default_since(); the deleted pipeline._calculate_since read an unset env var
+    # (MAX_YEARS_TO_SCAN) and could raise on years <= 0.
+    GMAIL_MAX_YEARS: float = 2.0
     GMAIL_IMAP_TIMEOUT: int = 30
 
     # Database configuration.

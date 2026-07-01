@@ -3,50 +3,35 @@ import { cn } from '@/lib/utils';
 import type { ClosetItem } from '@tailor/contracts';
 import Link from 'next/link';
 
+import { ItemImage } from '@/components/ui/ItemImage';
+
 interface ClothingItemCardProps {
   item: ClosetItem;
   className?: string;
 }
 
 export function ClothingItemCard({ item, className }: ClothingItemCardProps) {
-  // Mock background color logic based on Figma observation (some cards have colored bg)
-  // In a real app, this might come from analysis or color extraction
-  const bgColor = item.category === 'top' ? 'bg-[#C8A27C]' : 'bg-white';
-  const textColor = item.category === 'top' ? 'text-white' : 'text-black';
-  const heartColor = item.category === 'top' ? 'text-white/80' : 'text-gray-400';
-
   return (
     <Link href={`/closet/${item.id}`} className="block">
-      <div 
+      <div
         className={cn(
-          "relative aspect-[3/4] rounded-2xl overflow-hidden p-3 transition-transform hover:scale-[1.02]",
-          bgColor,
-          className
+          'relative aspect-[3/4] rounded-2xl overflow-hidden transition-transform hover:scale-[1.02]',
+          className,
         )}
       >
-        <button 
-          className="absolute top-3 right-3 z-10 w-[32px] h-[32px] rounded-full bg-black/10 border border-white/30 flex items-center justify-center hover:bg-black/15 transition-colors"
+        <button
+          className="absolute top-3 right-3 z-10 w-[32px] h-[32px] rounded-full bg-black/20 border border-white/30 flex items-center justify-center hover:bg-black/30 transition-colors"
           onClick={(e) => {
             e.preventDefault();
             // TODO: Toggle favorite
           }}
         >
-          <Heart className={cn("w-5 h-5", heartColor)} />
+          <Heart className="w-5 h-5 text-white/80" />
         </button>
 
-        <div className="w-full h-full flex items-center justify-center">
-            {item.imageUrl ? (
-                <img 
-                src={item.imageUrl} 
-                alt={item.name} 
-                className="w-full h-full object-contain mix-blend-multiply"
-                />
-            ) : (
-                <div className={cn("text-sm font-medium opacity-50", textColor)}>
-                    {item.name}
-                </div>
-            )}
-        </div>
+        {/* Shared image path. contain = whole garment; opaque neutral backing (no
+            mix-blend, which was erasing neutral-background cutouts here). */}
+        <ItemImage src={item.imageUrl} alt={item.name} fit="contain" emptyLabel={item.name} />
       </div>
     </Link>
   );
