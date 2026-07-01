@@ -63,4 +63,18 @@ describe('ReviewPage deck card', () => {
     expect(screen.getByText('Bottom')).toBeInTheDocument(); // capitalized category chip
     expect(screen.getByText('92%')).toBeInTheDocument();
   });
+
+  it('renders the card image visibly with the candidate src, in a non-collapsing container', async () => {
+    getIngestCandidates.mockResolvedValue(CANDIDATES);
+    const { container } = render(<ReviewPage />);
+    await screen.findByText("Levi's 501");
+
+    // The loaded cutout paints: <img> present, correct src, not hidden/display:none.
+    const img = screen.getByRole('img', { name: "Levi's 501" });
+    expect(img).toHaveAttribute('src', 'https://example.com/a.jpg');
+    expect(img).toBeVisible();
+
+    // The image container carries an explicit min-height so h-full can't resolve to 0.
+    expect(container.querySelector('[class*="min-h-["]')).not.toBeNull();
+  });
 });

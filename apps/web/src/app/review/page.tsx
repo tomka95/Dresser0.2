@@ -519,14 +519,17 @@ export default function ReviewPage() {
                 background fill is still resolving, show a soft shimmer instead of a
                 broken/wrong image; an exhausted card falls back to a neutral panel.
                 flex-1 + min-h-0 lets it absorb spare height yet yield to the body. */}
-            <div className="relative w-full flex-1 min-h-0">
+            {/* Explicit min-height: flex-1 lets the image absorb spare height, but the
+                floor guarantees a RESOLVED height so ItemImage's fill box can never
+                collapse to 0px (the bug that hid loaded cutouts). */}
+            <div className="relative w-full flex-1 min-h-[320px]">
               {current.image_status === 'pending' && !current.image_url ? (
                 // Still resolving in the background fill — soft shimmer, not a wrong image.
                 <div className="h-full w-full animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
               ) : (
-                // Shared render path: opaque neutral backing so a load failure or empty
-                // card shows a neutral panel — never the app's closet backdrop.
-                <ItemImage src={current.image_url} alt={name} fit="cover" emptyLabel="No image" />
+                // Shared render path: opaque neutral backing + absolute-fill <img>. contain
+                // shows the WHOLE cutout (cover would crop the garment).
+                <ItemImage src={current.image_url} alt={name} fit="contain" emptyLabel="No image" />
               )}
               <span
                 className="absolute left-3 top-3 inline-flex items-center gap-1 text-[12px] font-medium"

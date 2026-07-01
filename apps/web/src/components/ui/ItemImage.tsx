@@ -11,11 +11,16 @@ import { cn } from '@/lib/utils';
  * app's fixed z-0 backdrop (`/images/closet-background-blur.jpg`) showed straight
  * through — reading as a misleading dark "closet" stock photo. This component fixes
  * that at the source:
- *   - always renders on an OPAQUE neutral panel, so the backdrop can never bleed through
- *   - plain <img> (no next/image config to miss) with a real object-fit box
+ *   - always renders on an OPAQUE neutral panel (the PARENT, behind), so the backdrop
+ *     can never bleed through
+ *   - the <img> is ABSOLUTELY positioned filling the panel (inset-0, 100%/100%, block).
+ *     It does NOT use chained percentage height (h-full), which collapses to 0px when an
+ *     ancestor lacks a resolved height — the exact bug that made loaded images vanish.
+ *     Callers MUST give the wrapping box a resolved height (aspect-ratio or min-height).
+ *   - plain <img src> (no next/image, no fetch, no blob/object-URL) with object-fit
  *   - NO mix-blend (which was silently erasing neutral-background cutouts on /home)
  *   - onError hides the broken <img>, revealing the neutral empty state beneath —
- *     never a stock photo
+ *     never a stock photo. No onLoad/opacity gate that could stick hidden.
  *
  * Client component: the onError handler is a client-only feature (all current callers
  * already sit inside 'use client' boundaries). No React state — cheap to render.
@@ -65,7 +70,10 @@ export function ItemImage({
           src={src}
           alt={alt}
           className={cn(
-            'relative h-full w-full',
+            // Absolute-fill the opaque panel: immune to the chained-percentage-height
+            // collapse (h-full through a flex/absolute ancestor -> 0px) that hid loaded
+            // images. The panel (parent) supplies the box; this fills it.
+            'absolute inset-0 block h-full w-full',
             fit === 'contain' ? 'object-contain' : 'object-cover',
             imgClassName,
           )}
