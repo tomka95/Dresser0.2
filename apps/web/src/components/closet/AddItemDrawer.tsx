@@ -1,6 +1,6 @@
 'use client';
 
-import { Camera, Image, Mail, X } from 'lucide-react';
+import { Camera, Image, Mail, Sparkles, X } from 'lucide-react';
 import { useState, useRef } from 'react';
 import { Dialog, DialogContent, DialogTrigger, DialogClose } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -12,15 +12,17 @@ interface AddItemDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onGmailClick: () => void;
+  onPhotoClick: () => void;
 }
 
 const ACCEPTED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
-export function AddItemDrawer({ 
-  open, 
-  onOpenChange, 
-  onGmailClick 
+export function AddItemDrawer({
+  open,
+  onOpenChange,
+  onGmailClick,
+  onPhotoClick
 }: AddItemDrawerProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -195,6 +197,29 @@ export function AddItemDrawer({
               <span className="text-[14px] font-medium text-white">Upload Photo</span>
             </button>
           </div>
+
+          {/* Photo-detect Option — routes to /add-photo (Wave 1 multi-garment detect
+              flow), mirroring the Gmail row's navigate-then-close pattern. */}
+          <button
+            onClick={() => {
+              onPhotoClick();
+              onOpenChange(false);
+            }}
+            disabled={uploading}
+            className={cn(
+              "flex items-center gap-4 bg-white/10 backdrop-blur-md hover:bg-white/20 active:scale-95 transition-all rounded-[10px] p-4 border border-white/20 mb-4",
+              "disabled:opacity-50 disabled:cursor-not-allowed"
+            )}
+            style={{ fontFamily: 'Inter, sans-serif' }}
+          >
+            <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0">
+              <Sparkles className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex flex-col items-start">
+              <span className="text-[14px] font-medium text-white">Add from a photo</span>
+              <span className="text-[12px] text-white/70">Detect everything you&rsquo;re wearing</span>
+            </div>
+          </button>
 
           {/* Gmail Option */}
           <button

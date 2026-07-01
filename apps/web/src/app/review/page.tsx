@@ -35,16 +35,16 @@ type CardEdits = Record<string, Record<string, unknown>>;
 function FactChip({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <span
-      className="inline-flex items-center gap-1.5 text-[12.5px]"
+      className="inline-flex items-center gap-1"
       style={{
         background: 'var(--tr-10)',
         border: '1px solid var(--tr-20)',
         borderRadius: 10,
-        padding: '5px 10px',
+        padding: '7px 11px',
       }}
     >
-      <span style={{ color: 'rgba(255,255,255,0.55)' }}>{label}</span>
-      <span className="font-semibold text-white">{value}</span>
+      <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11 }}>{label}</span>
+      <span className="font-semibold text-white" style={{ fontSize: 13 }}>{value}</span>
     </span>
   );
 }
@@ -65,6 +65,12 @@ export default function ReviewPage() {
 
   // Inline editor state for the current card.
   const [editing, setEditing] = useState(false);
+
+  // Drag-to-swipe state for the top card. `x` is the live horizontal offset (px);
+  // `dragging` disables the snap-back transition while the finger/mouse is down.
+  const [drag, setDrag] = useState<{ x: number; dragging: boolean }>({ x: 0, dragging: false });
+  const dragStartRef = useRef<number | null>(null); // pointer clientX at press
+  const dragXRef = useRef(0);                        // live offset (read on release, no stale closure)
 
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -219,6 +225,20 @@ export default function ReviewPage() {
       timersRef.current = [];
     };
   }, [isAuth, pollImages]);
+
+  // Preload the NEXT couple of card images so they paint instantly on advance instead
+  // of loading after the swipe (the "old image lingers ~2s" gap). `new Image()` warms
+  // the browser's HTTP cache; the visible <img> then decodes from cache immediately.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    for (let i = index + 1; i <= index + 2; i++) {
+      const url = candidates[i]?.image_url;
+      if (url) {
+        const img = new window.Image();
+        img.src = url;
+      }
+    }
+  }, [index, candidates]);
 
   const total = candidates.length;
   const current = candidates[index];
@@ -459,6 +479,46 @@ export default function ReviewPage() {
     chips.push({ label: 'Price', value: `${currencySymbol}${Number(price).toFixed(2)}` });
   }
 
+  // Alternating stack tilt: even cards lean left (−2°), odd cards lean right (+2°), so a
+  // card and the one peeking behind it lean opposite ways.
+  const baseRot = index % 2 === 0 ? -2 : 2;
+
+  // Drag-to-swipe: release past this many px commits (accept right / skip left).
+  const SWIPE_COMMIT = 90;
+  const acceptHint = Math.max(0, Math.min(1, drag.x / SWIPE_COMMIT));
+  const rejectHint = Math.max(0, Math.min(1, -drag.x / SWIPE_COMMIT));
+
+  function onSwipeDown(e: React.PointerEvent) {
+    if (editing) return; // don't hijack drags on the inline-edit inputs
+    dragStartRef.current = e.clientX;
+    dragXRef.current = 0;
+    setDrag({ x: 0, dragging: true });
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+  function onSwipeMove(e: React.PointerEvent) {
+    if (dragStartRef.current == null) return;
+    const dx = e.clientX - dragStartRef.current;
+    dragXRef.current = dx;
+    setDrag({ x: dx, dragging: true });
+  }
+  function onSwipeEnd() {
+    if (dragStartRef.current == null) return;
+    const dx = dragXRef.current;
+    dragStartRef.current = null;
+    dragXRef.current = 0;
+    if (Math.abs(dx) > SWIPE_COMMIT) {
+      // Past the line → commit NOW (synchronous, like the buttons). No timer/transition
+      // dependency, so a background image-poll re-render can't strand the card off-screen.
+      // dragging:true resets the offset with transitions OFF, so the next card appears
+      // centered instantly instead of sliding in from the fling position.
+      if (dx > 0) handleAccept();
+      else handleReject();
+      setDrag({ x: 0, dragging: true });
+    } else {
+      setDrag({ x: 0, dragging: false }); // didn't cross the line → snap back (animated)
+    }
+  }
+
   return (
     <AppShell scroll={false}>
       <div className="flex h-full flex-col px-5 pt-12 pb-8">
@@ -498,10 +558,10 @@ export default function ReviewPage() {
             style={{
               width: '94%',
               height: 'calc(100% - 16px)',
-              transform: 'translateX(-50%) scale(0.94)',
+              transform: `translateX(-50%) scale(0.94) rotate(${baseRot}deg)`,
               background: '#2a2a2a',
               border: '1px solid var(--tr-10)',
-              opacity: 0.4,
+              opacity: 0.5,
             }}
             aria-hidden
           />
@@ -510,10 +570,10 @@ export default function ReviewPage() {
             style={{
               width: '97%',
               height: 'calc(100% - 8px)',
-              transform: 'translateX(-50%) scale(0.97)',
-              background: '#262626',
+              transform: `translateX(-50%) scale(0.97) rotate(${-baseRot}deg)`,
+              background: '#2f2f2f',
               border: '1px solid var(--tr-10)',
-              opacity: 0.6,
+              opacity: 0.75,
             }}
             aria-hidden
           />
@@ -523,11 +583,19 @@ export default function ReviewPage() {
               short viewports instead of pushing the text out of the clipped card. */}
           <div
             className="absolute inset-0 flex flex-col overflow-hidden rounded-3xl"
+            onPointerDown={onSwipeDown}
+            onPointerMove={onSwipeMove}
+            onPointerUp={onSwipeEnd}
+            onPointerCancel={onSwipeEnd}
             style={{
               background: '#222',
               border: '1px solid var(--tr-20)',
-              boxShadow: 'var(--shadow-lg)',
-              transform: 'rotate(-2deg)',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
+              transform: `translateX(${drag.x}px) rotate(${baseRot + drag.x * 0.04}deg)`,
+              transition: drag.dragging ? 'none' : 'transform 200ms var(--ease-out)',
+              cursor: 'grab',
+              touchAction: 'none',
+              userSelect: 'none',
             }}
           >
             {/* Image — verified-only (only ever set after vision-verify). While the
@@ -538,24 +606,24 @@ export default function ReviewPage() {
                 aspect-[3/4] yields a definite HEIGHT with zero dependency on the
                 main→min-h-full→h-full ancestor chain. The image region can never collapse
                 to 0px regardless of ancestors (the bug that hid loaded cutouts). */}
-            <div className="relative w-full aspect-[3/4]">
+            <div className="relative w-full aspect-[1/1]">
               {current.image_status === 'pending' && !current.image_url ? (
                 // Still resolving in the background fill — soft shimmer, not a wrong image.
                 <div className="absolute inset-0 animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
               ) : (
                 // Shared render path: opaque neutral backing + absolute-fill <img>. contain
                 // shows the WHOLE cutout (cover would crop the garment).
-                <ItemImage src={current.image_url} alt={name} fit="contain" emptyLabel="No image" />
+                <ItemImage key={current.candidate_id} src={current.image_url} alt={name} fit="contain" emptyLabel="No image" />
               )}
               {/* Gradient fade: blends the image bottom into the dark info panel (#222)
                   so there's no hard seam between the photo and the card body. */}
               <div
-                className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3"
-                style={{ background: 'linear-gradient(to bottom, rgba(34,34,34,0), #222)' }}
+                className="pointer-events-none absolute inset-0"
+                style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent 55%)' }}
                 aria-hidden
               />
               <span
-                className="absolute left-3 top-3 inline-flex items-center gap-1 text-[12px] font-medium"
+                className="absolute left-3 top-3 inline-flex items-center gap-1.5 text-[11px] font-semibold"
                 style={{
                   color: 'var(--brand-teal)',
                   background: 'var(--mint)',
@@ -574,6 +642,34 @@ export default function ReviewPage() {
                   </>
                 )}
               </span>
+
+              {/* Swipe affordance stamps — fade in with drag distance/direction. */}
+              <span
+                aria-hidden
+                className="absolute font-bold"
+                style={{
+                  top: '38%', left: 18, transform: 'translateY(-50%) rotate(-14deg)',
+                  opacity: rejectHint, transition: drag.dragging ? 'none' : 'opacity 150ms',
+                  border: '3px solid var(--danger)', color: 'var(--danger)',
+                  borderRadius: 8, padding: '2px 12px', fontSize: 22, letterSpacing: 1,
+                  pointerEvents: 'none',
+                }}
+              >
+                SKIP
+              </span>
+              <span
+                aria-hidden
+                className="absolute font-bold"
+                style={{
+                  top: '38%', right: 18, transform: 'translateY(-50%) rotate(14deg)',
+                  opacity: acceptHint, transition: drag.dragging ? 'none' : 'opacity 150ms',
+                  border: '3px solid var(--mint)', color: 'var(--mint)',
+                  borderRadius: 8, padding: '2px 12px', fontSize: 22, letterSpacing: 1,
+                  pointerEvents: 'none',
+                }}
+              >
+                ADD
+              </span>
             </div>
 
             {/* Body — shrink-0: the textual facts always render in full; only the
@@ -584,7 +680,7 @@ export default function ReviewPage() {
                 <span className="flex items-center gap-1.5" style={{ flexShrink: 0 }}>
                   <ConfidenceDot conf={conf} />
                   <span
-                    className="text-[13px] font-semibold"
+                    className="text-[12px]"
                     style={{ color: confLow ? 'var(--amber)' : 'var(--mint)' }}
                   >
                     {Math.round(conf * 100)}%
@@ -594,8 +690,8 @@ export default function ReviewPage() {
 
               {current.brand && (
                 <p
-                  className="m-0 mt-1 font-accent uppercase"
-                  style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, letterSpacing: '0.5px' }}
+                  className="m-0 font-accent uppercase"
+                  style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, letterSpacing: '0.4px', marginTop: 2 }}
                 >
                   {current.brand}
                 </p>
