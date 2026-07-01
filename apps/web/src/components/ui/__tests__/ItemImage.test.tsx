@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 import { ItemImage } from '@/components/ui/ItemImage';
 
@@ -21,6 +21,38 @@ describe('ItemImage', () => {
     expect(img.className).toContain('absolute');
     expect(img.className).toContain('inset-0');
     expect(img.className).toContain('object-contain');
+  });
+
+  it('does NOT render the "No image" placeholder when a valid image is present/loaded', () => {
+    render(
+      <div style={{ position: 'relative', width: 200, height: 300 }}>
+        <ItemImage src="https://example.com/a.jpg" alt="Loaded Tee" emptyLabel="No image" />
+      </div>,
+    );
+
+    const img = screen.getByRole('img', { name: 'Loaded Tee' });
+    // Placeholder must not be in the DOM at all while a valid image is shown — so it
+    // cannot cover/overlay the image.
+    expect(screen.queryByText('No image')).toBeNull();
+    expect(img).toBeVisible();
+
+    // Firing onLoad keeps the image shown and the placeholder absent.
+    fireEvent.load(img);
+    expect(screen.queryByText('No image')).toBeNull();
+    expect(screen.getByRole('img', { name: 'Loaded Tee' })).toBeVisible();
+  });
+
+  it('on error, unmounts the <img> and shows the neutral placeholder', () => {
+    render(
+      <div style={{ position: 'relative', width: 200, height: 300 }}>
+        <ItemImage src="https://example.com/broken.jpg" alt="Broken" emptyLabel="No image" />
+      </div>,
+    );
+
+    fireEvent.error(screen.getByRole('img', { name: 'Broken' }));
+    // <img> is gone (unmounted, not just hidden) and the placeholder shows.
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.getByText('No image')).toBeVisible();
   });
 
   it('shows the neutral empty label and no <img> when src is null', () => {
