@@ -151,6 +151,10 @@ export default function ClosetPage() {
           setDrawerOpen(false);
           router.push('/review');
         }}
+        onPhotoClick={() => {
+          setDrawerOpen(false);
+          router.push('/add-photo');
+        }}
       />
 
       <BottomNavBar activeRoute={pathname} />
