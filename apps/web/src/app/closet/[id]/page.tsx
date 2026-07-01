@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { Button } from '@/components/ui/button';
+import { ItemImage } from '@/components/ui/ItemImage';
 import { cn } from '@/lib/utils';
 
 interface ItemDetailsPageProps {
@@ -122,17 +123,9 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
       </div>
 
       <div className="space-y-8">
-        {/* Image Section */}
-        <div className="aspect-square w-full bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center relative">
-          {itemImageUrl ? (
-            <img 
-              src={itemImageUrl} 
-              alt={name} 
-              className="w-full h-full object-contain"
-            />
-          ) : (
-            <div className="text-gray-400">No image available</div>
-          )}
+        {/* Image Section — shared, opaque-backed render path. */}
+        <div className="aspect-square w-full rounded-lg overflow-hidden relative">
+          <ItemImage src={itemImageUrl} alt={name} fit="contain" emptyLabel="No image available" />
         </div>
 
         {/* Name Edit Section */}

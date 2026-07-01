@@ -23,17 +23,12 @@ import {
   type IngestCandidate,
 } from '@/lib/api/gmail';
 import { AppShell } from '@/components/layout/AppShell';
+import { ItemImage } from '@/components/ui/ItemImage';
 import { ConfidenceDot } from '@/components/ui/ConfidenceDot';
 import { LightButton } from '@/components/ui/LightButton';
 import { EmptyState } from '@/components/ui/EmptyState';
 
 type CardEdits = Record<string, Record<string, unknown>>;
-
-const FALLBACK_IMG =
-  'data:image/svg+xml;utf8,' +
-  encodeURIComponent(
-    "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400'><rect width='100%' height='100%' fill='%23333'/></svg>"
-  );
 
 function FactChip({ children }: { children: React.ReactNode }) {
   return (
@@ -524,26 +519,14 @@ export default function ReviewPage() {
                 background fill is still resolving, show a soft shimmer instead of a
                 broken/wrong image; an exhausted card falls back to a neutral panel.
                 flex-1 + min-h-0 lets it absorb spare height yet yield to the body. */}
-            <div className="relative w-full flex-1 min-h-0" style={{ background: '#333' }}>
-              {current.image_url ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
-                  src={current.image_url}
-                  alt={name}
-                  className="h-full w-full object-cover"
-                  // A resolved URL that fails to load (404 / CORS / hotlink block) must
-                  // degrade to the neutral panel — never a broken-image glyph. Clearing
-                  // onerror first prevents a loop if the fallback itself ever failed.
-                  onError={(e) => {
-                    e.currentTarget.onerror = null;
-                    e.currentTarget.src = FALLBACK_IMG;
-                  }}
-                />
-              ) : current.image_status === 'pending' ? (
+            <div className="relative w-full flex-1 min-h-0">
+              {current.image_status === 'pending' && !current.image_url ? (
+                // Still resolving in the background fill — soft shimmer, not a wrong image.
                 <div className="h-full w-full animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
               ) : (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img src={FALLBACK_IMG} alt={name} className="h-full w-full object-cover" />
+                // Shared render path: opaque neutral backing so a load failure or empty
+                // card shows a neutral panel — never the app's closet backdrop.
+                <ItemImage src={current.image_url} alt={name} fit="cover" emptyLabel="No image" />
               )}
               <span
                 className="absolute left-3 top-3 inline-flex items-center gap-1 text-[12px] font-medium"

@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import type { ClosetItem } from '@tailor/contracts';
 
+import { ItemImage } from '@/components/ui/ItemImage';
+
 interface ClosetItemCardProps {
   item: ClosetItem;
 }
@@ -9,19 +11,14 @@ export function ClosetItemCard({ item }: ClosetItemCardProps) {
   return (
     <Link href={`/closet/${item.id}`} className="block group">
       <div className="relative aspect-[3/4] rounded-2xl overflow-hidden mb-2">
-        {/* Background/Image */}
-        {item.imageUrl ? (
-          <img
-            src={item.imageUrl}
-            alt={item.name}
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-          />
-        ) : (
-          <div className="w-full h-full bg-white/5 flex items-center justify-center">
-            <span className="text-white/40 text-sm">No Image</span>
-          </div>
-        )}
-        
+        {/* Shared, opaque-backed image render path (no backdrop bleed-through). */}
+        <ItemImage
+          src={item.imageUrl}
+          alt={item.name}
+          fit="cover"
+          imgClassName="transition-transform duration-500 group-hover:scale-110"
+        />
+
         {/* Gradient Overlay */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-80" />
         
