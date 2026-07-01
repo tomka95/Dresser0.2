@@ -17,13 +17,19 @@ interface AppShellProps {
  * legible; without it the backdrop washes out the UI. Card surfaces are opaque now (see
  * ItemImage), so the backdrop can't bleed through card image boxes. The layers are
  * pinned to the centered 430px column so they stay put while content scrolls above.
+ *
+ * Stacking/hit-testing: the backdrop layers are `pointer-events-none` (so they never win
+ * elementFromPoint over content) and are centered WITHOUT a transform (left-0 right-0
+ * mx-auto, not left-1/2 -translate-x-1/2). A transform would create its own stacking
+ * context / compositing layer for the fixed backdrop, breaking z-index comparison with
+ * the `relative z-10` content and letting the backdrop capture clicks over the cards.
  */
 export function AppShell({ children, contentClassName, scroll = true, dim = false }: AppShellProps) {
   return (
     <div className="relative min-h-full w-full" style={{ background: 'var(--app-bg)' }}>
       {/* Background image (over the --app-bg fallback). */}
       <div
-        className="fixed top-0 bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-0"
+        className="pointer-events-none fixed top-0 bottom-0 left-0 right-0 mx-auto w-full max-w-[430px] z-0"
         style={{
           background: 'var(--app-bg)',
           backgroundImage: "url('/images/closet-background-blur.jpg')",
@@ -35,13 +41,13 @@ export function AppShell({ children, contentClassName, scroll = true, dim = fals
       {/* Scrim gradient — darkens the photo for legibility (the missing layer that made
           the backdrop look washed-out). */}
       <div
-        className="fixed top-0 bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-0"
+        className="pointer-events-none fixed top-0 bottom-0 left-0 right-0 mx-auto w-full max-w-[430px] z-0"
         style={{ background: 'var(--grad-scrim)' }}
         aria-hidden
       />
       {dim && (
         <div
-          className="fixed top-0 bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-0"
+          className="pointer-events-none fixed top-0 bottom-0 left-0 right-0 mx-auto w-full max-w-[430px] z-0"
           style={{ background: 'rgba(0,0,0,0.55)' }}
           aria-hidden
         />
