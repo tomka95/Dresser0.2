@@ -12,16 +12,16 @@ interface AppShellProps {
 }
 
 /**
- * Dark photographic app shell — frosted closet background over the solid --app-bg
- * fallback. The card surfaces are opaque now (see ItemImage), so this z-0 backdrop can
- * no longer bleed through card image boxes; it is purely decorative. --app-bg stays as
- * the color behind/fallback. The layer is pinned to the centered 430px column so it
- * stays put while content scrolls above it.
+ * Dark photographic app shell — frosted closet background + scrim gradient, over the
+ * solid --app-bg fallback. The scrim (--grad-scrim) darkens the photo so content stays
+ * legible; without it the backdrop washes out the UI. Card surfaces are opaque now (see
+ * ItemImage), so the backdrop can't bleed through card image boxes. The layers are
+ * pinned to the centered 430px column so they stay put while content scrolls above.
  */
 export function AppShell({ children, contentClassName, scroll = true, dim = false }: AppShellProps) {
   return (
     <div className="relative min-h-full w-full" style={{ background: 'var(--app-bg)' }}>
-      {/* Decorative closet backdrop (over the --app-bg fallback). */}
+      {/* Background image (over the --app-bg fallback). */}
       <div
         className="fixed top-0 bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-0"
         style={{
@@ -30,6 +30,13 @@ export function AppShell({ children, contentClassName, scroll = true, dim = fals
           backgroundSize: 'cover',
           backgroundPosition: 'center',
         }}
+        aria-hidden
+      />
+      {/* Scrim gradient — darkens the photo for legibility (the missing layer that made
+          the backdrop look washed-out). */}
+      <div
+        className="fixed top-0 bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-0"
+        style={{ background: 'var(--grad-scrim)' }}
         aria-hidden
       />
       {dim && (
