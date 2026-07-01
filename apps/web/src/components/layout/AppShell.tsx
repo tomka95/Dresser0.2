@@ -12,27 +12,22 @@ interface AppShellProps {
 }
 
 /**
- * Dark photographic app shell — frosted closet background + scrim gradient.
- * The background layer is pinned to the centered 430px column so it stays put
- * while the content scrolls above it.
+ * Dark app shell with a SOLID neutral background — not a photo.
+ *
+ * A decorative fixed z-0 closet stock image (`/images/closet-background-blur.jpg`) used
+ * to live here. A photo backdrop masquerades as broken/loaded images: any transparent
+ * card box, decode gap, or empty/loading/error state shows it straight through and
+ * reads as a "dark luxury closet" placeholder — masking real rendering bugs. Replaced
+ * with the solid --app-bg token so those states read as plainly empty. The layer is
+ * pinned to the centered 430px column so it stays put while content scrolls above it.
  */
 export function AppShell({ children, contentClassName, scroll = true, dim = false }: AppShellProps) {
   return (
     <div className="relative min-h-full w-full" style={{ background: 'var(--app-bg)' }}>
-      {/* Background image */}
+      {/* Solid neutral backdrop (no stock photo). */}
       <div
         className="fixed top-0 bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-0"
-        style={{
-          backgroundImage: "url('/images/closet-background-blur.jpg')",
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-        }}
-        aria-hidden
-      />
-      {/* Scrim gradient */}
-      <div
-        className="fixed top-0 bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-0"
-        style={{ background: 'var(--grad-scrim)' }}
+        style={{ background: 'var(--app-bg)' }}
         aria-hidden
       />
       {dim && (

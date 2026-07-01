@@ -88,6 +88,10 @@ export function PhotoIngestUpload() {
       // Closet may change after confirm; invalidate so it refetches later.
       useClosetStore.getState().invalidate?.();
       if (res.staged > 0) {
+        // Release the preview object-URLs before navigating — otherwise they leak as
+        // 0-byte blob: entries that outlive this screen. The deck renders the server's
+        // image_url directly (no blob), so nothing here needs them anymore.
+        picked.forEach((p) => URL.revokeObjectURL(p.previewUrl));
         // Scope the deck to THIS run so it shows only the photo's garments — not stale
         // pending candidates from an earlier run.
         router.push(`/review?sync_id=${encodeURIComponent(res.sync_id)}`);
