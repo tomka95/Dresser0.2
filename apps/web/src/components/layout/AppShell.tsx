@@ -25,8 +25,12 @@ interface AppShellProps {
  * the `relative z-10` content and letting the backdrop capture clicks over the cards.
  */
 export function AppShell({ children, contentClassName, scroll = true, dim = false }: AppShellProps) {
+  // h-full (definite, off the h-screen frame via <main>) so descendant h-full boxes
+  // resolve — min-h-full alone is only a floor, which collapsed the deck's height chain
+  // (flex-1 -> 0) and clipped the review card image. min-h-full stays so scrolling pages
+  // can still grow beyond the viewport.
   return (
-    <div className="relative min-h-full w-full" style={{ background: 'var(--app-bg)' }}>
+    <div className="relative h-full min-h-full w-full" style={{ background: 'var(--app-bg)' }}>
       {/* Background image (over the --app-bg fallback). */}
       <div
         className="pointer-events-none fixed top-0 bottom-0 left-0 right-0 mx-auto w-full max-w-[430px] z-0"

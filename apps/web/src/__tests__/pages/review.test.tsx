@@ -54,14 +54,49 @@ const CANDIDATES: IngestCandidate[] = [
   },
 ];
 
+// A photo candidate: category + color, NO price / NO brand — must degrade gracefully.
+const PHOTO_ONLY: IngestCandidate[] = [
+  {
+    candidate_id: 'p1', name: 'Wide-leg Jeans', brand: null, category: 'bottom',
+    color: 'Olive', size: 'M', qty: 1, unit_price: null, currency: null,
+    order_date: null, is_return: false,
+    image_url: 'https://example.com/photo.jpg', image_status: 'user_uploaded',
+    confidence_overall: 0.8, low_confidence_fields: [], seen_count: 1,
+    source_type: 'photo',
+    source: { merchant: null, order_id: null, message_id: null, google_account_id: null, email_date: null },
+  },
+];
+
 describe('ReviewPage deck card', () => {
-  it('renders the card body (name + category chip) without throwing on null fields', async () => {
+  it('renders gmail card with data-driven Label/Value chips (incl. Price)', async () => {
     getIngestCandidates.mockResolvedValue(CANDIDATES);
     render(<ReviewPage />);
     // mount loads candidates async → wait for the first card body.
     expect(await screen.findByText("Levi's 501")).toBeInTheDocument();
-    expect(screen.getByText('Bottom')).toBeInTheDocument(); // capitalized category chip
     expect(screen.getByText('92%')).toBeInTheDocument();
+    // Populated chips render as Label + Value.
+    expect(screen.getByText('Category')).toBeInTheDocument();
+    expect(screen.getByText('Bottom')).toBeInTheDocument();
+    expect(screen.getByText('Color')).toBeInTheDocument();
+    expect(screen.getByText('Indigo')).toBeInTheDocument();
+    expect(screen.getByText('Price')).toBeInTheDocument();
+    expect(screen.getByText('$98.00')).toBeInTheDocument();
+    // Gmail source badge.
+    expect(screen.getByText(/Detected in Gmail/)).toBeInTheDocument();
+  });
+
+  it('photo card degrades gracefully: category/color/size chips, NO Price chip', async () => {
+    getIngestCandidates.mockResolvedValue(PHOTO_ONLY);
+    render(<ReviewPage />);
+    expect(await screen.findByText('Wide-leg Jeans')).toBeInTheDocument();
+    // Populated chips present…
+    expect(screen.getByText('Color')).toBeInTheDocument();
+    expect(screen.getByText('Olive')).toBeInTheDocument();
+    expect(screen.getByText('Size')).toBeInTheDocument();
+    // …but no price data → the Price chip must NOT render (no blank "Price $").
+    expect(screen.queryByText('Price')).toBeNull();
+    // Source-aware badge for photo.
+    expect(screen.getByText(/From your photo/)).toBeInTheDocument();
   });
 
   it('renders the card image visibly with the candidate src, in a width-derived aspect box', async () => {

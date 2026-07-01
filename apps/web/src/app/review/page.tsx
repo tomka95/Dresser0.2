@@ -30,10 +30,12 @@ import { EmptyState } from '@/components/ui/EmptyState';
 
 type CardEdits = Record<string, Record<string, unknown>>;
 
-function FactChip({ children }: { children: React.ReactNode }) {
+// A bordered "Label Value" pill (Option A). Label muted, value bold. Only rendered by
+// the caller when the value exists — never a blank/empty chip.
+function FactChip({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <span
-      className="inline-flex items-center text-[12.5px] text-white/85"
+      className="inline-flex items-center gap-1.5 text-[12.5px]"
       style={{
         background: 'var(--tr-10)',
         border: '1px solid var(--tr-20)',
@@ -41,7 +43,8 @@ function FactChip({ children }: { children: React.ReactNode }) {
         padding: '5px 10px',
       }}
     >
-      {children}
+      <span style={{ color: 'rgba(255,255,255,0.55)' }}>{label}</span>
+      <span className="font-semibold text-white">{value}</span>
     </span>
   );
 }
@@ -444,6 +447,18 @@ export default function ReviewPage() {
   const price =
     cardEdits.unit_price != null ? Number(cardEdits.unit_price) : current.unit_price;
 
+  // Data-driven chips: only those with a value render, so photo items (no price/brand)
+  // degrade gracefully — never a blank "Price $" or empty chip.
+  const currencySymbol =
+    current.currency === 'GBP' ? '£' : current.currency === 'EUR' ? '€' : '$';
+  const chips: { label: string; value: string }[] = [];
+  if (category) chips.push({ label: 'Category', value: category.charAt(0).toUpperCase() + category.slice(1) });
+  if (color) chips.push({ label: 'Color', value: color });
+  if (size) chips.push({ label: 'Size', value: size });
+  if (price != null && Number.isFinite(Number(price))) {
+    chips.push({ label: 'Price', value: `${currencySymbol}${Number(price).toFixed(2)}` });
+  }
+
   return (
     <AppShell scroll={false}>
       <div className="flex h-full flex-col px-5 pt-12 pb-8">
@@ -532,6 +547,13 @@ export default function ReviewPage() {
                 // shows the WHOLE cutout (cover would crop the garment).
                 <ItemImage src={current.image_url} alt={name} fit="contain" emptyLabel="No image" />
               )}
+              {/* Gradient fade: blends the image bottom into the dark info panel (#222)
+                  so there's no hard seam between the photo and the card body. */}
+              <div
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3"
+                style={{ background: 'linear-gradient(to bottom, rgba(34,34,34,0), #222)' }}
+                aria-hidden
+              />
               <span
                 className="absolute left-3 top-3 inline-flex items-center gap-1 text-[12px] font-medium"
                 style={{
@@ -579,20 +601,14 @@ export default function ReviewPage() {
                 </p>
               )}
 
-              {/* Fact chips */}
-              <div className="mt-3 flex flex-wrap gap-2">
-                {category && (
-                  <FactChip>{category.charAt(0).toUpperCase() + category.slice(1)}</FactChip>
-                )}
-                {color && <FactChip>{color}</FactChip>}
-                {size && <FactChip>Size {size}</FactChip>}
-                {price != null && Number.isFinite(price) && (
-                  <FactChip>
-                    {current.currency === 'GBP' ? '£' : current.currency === 'EUR' ? '€' : '$'}
-                    {price.toFixed(2)}
-                  </FactChip>
-                )}
-              </div>
+              {/* Fact chips — data-driven; renders only populated chips. */}
+              {chips.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {chips.map((c) => (
+                    <FactChip key={c.label} label={c.label} value={c.value} />
+                  ))}
+                </div>
+              )}
 
               {/* Inline editor */}
               {editing && (

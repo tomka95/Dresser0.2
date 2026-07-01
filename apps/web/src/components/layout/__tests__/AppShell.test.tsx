@@ -31,4 +31,17 @@ describe('AppShell backdrop stacking', () => {
     const content = container.querySelector('.z-10');
     expect(content).not.toBeNull();
   });
+
+  it('root wrapper has a DEFINITE height (h-full), not only min-h-full, so h-full descendants resolve', () => {
+    const { container } = render(
+      <AppShell>
+        <div>content</div>
+      </AppShell>,
+    );
+    const root = container.firstChild as HTMLElement;
+    // min-h-full alone is only a floor; h-full gives a definite height off the h-screen
+    // frame so the deck's flex-1/h-full chain can't collapse to 0.
+    expect(root.className).toContain('h-full');
+    expect(root.className).toContain('min-h-full');
+  });
 });
