@@ -86,8 +86,16 @@ export default function ProfilePage() {
     <div className="min-h-full bg-[#1E1E1E] relative pb-24">
       {/* Background Layers - Matches Home/Closet page */}
       <div className="fixed top-0 bottom-0 left-0 right-0 z-0 w-full max-w-[430px] mx-auto pointer-events-none">
-        {/* Layer 1: solid neutral backdrop (no stock photo — see AppShell rationale) */}
-        <div className="absolute inset-0" style={{ background: 'var(--app-bg)' }} />
+        {/* Layer 1: decorative closet backdrop over the --app-bg fallback */}
+        <div
+          className="absolute inset-0"
+          style={{
+            background: 'var(--app-bg)',
+            backgroundImage: "url('/images/closet-background-blur.jpg')",
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+          }}
+        />
 
         {/* Layer 2: Even Darker Gradient for readability */}
         <div 

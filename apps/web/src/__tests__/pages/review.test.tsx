@@ -64,7 +64,7 @@ describe('ReviewPage deck card', () => {
     expect(screen.getByText('92%')).toBeInTheDocument();
   });
 
-  it('renders the card image visibly with the candidate src, in a non-collapsing container', async () => {
+  it('renders the card image visibly with the candidate src, in a width-derived aspect box', async () => {
     getIngestCandidates.mockResolvedValue(CANDIDATES);
     const { container } = render(<ReviewPage />);
     await screen.findByText("Levi's 501");
@@ -74,7 +74,8 @@ describe('ReviewPage deck card', () => {
     expect(img).toHaveAttribute('src', 'https://example.com/a.jpg');
     expect(img).toBeVisible();
 
-    // The image container carries an explicit min-height so h-full can't resolve to 0.
-    expect(container.querySelector('[class*="min-h-["]')).not.toBeNull();
+    // The image container is a width-derived aspect box → definite height, no dependency
+    // on the ancestor min-h-full/h-full chain, so it can't collapse to 0.
+    expect(container.querySelector('[class*="aspect-["]')).not.toBeNull();
   });
 });

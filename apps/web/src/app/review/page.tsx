@@ -519,13 +519,14 @@ export default function ReviewPage() {
                 background fill is still resolving, show a soft shimmer instead of a
                 broken/wrong image; an exhausted card falls back to a neutral panel.
                 flex-1 + min-h-0 lets it absorb spare height yet yield to the body. */}
-            {/* Explicit min-height: flex-1 lets the image absorb spare height, but the
-                floor guarantees a RESOLVED height so ItemImage's fill box can never
-                collapse to 0px (the bug that hid loaded cutouts). */}
-            <div className="relative w-full flex-1 min-h-[320px]">
+            {/* Width-derived aspect box: the frame width is definite (max-w-[430px]), so
+                aspect-[3/4] yields a definite HEIGHT with zero dependency on the
+                main→min-h-full→h-full ancestor chain. The image region can never collapse
+                to 0px regardless of ancestors (the bug that hid loaded cutouts). */}
+            <div className="relative w-full aspect-[3/4]">
               {current.image_status === 'pending' && !current.image_url ? (
                 // Still resolving in the background fill — soft shimmer, not a wrong image.
-                <div className="h-full w-full animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
+                <div className="absolute inset-0 animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
               ) : (
                 // Shared render path: opaque neutral backing + absolute-fill <img>. contain
                 // shows the WHOLE cutout (cover would crop the garment).
