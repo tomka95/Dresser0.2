@@ -29,12 +29,15 @@ import {
 } from '@/lib/api/gmail';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
+import { HeicTranscodeError, looksLikeHeic, transcodeHeicToJpeg } from '@/lib/image/heic';
 import { RegionSelector } from './RegionSelector';
 
 type Step = 'pick' | 'detecting' | 'select' | 'committing';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB — mirrors the backend cap
 const MAX_FILES = 10;
+// Formats accepted as-is. HEIC/HEIF are also accepted but transcoded to JPEG first
+// (see addFiles), so by the time a file is uploaded it is always one of these.
 const ACCEPTED = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 
 interface Picked {
@@ -52,6 +55,9 @@ export function PhotoIngestUpload() {
   const [step, setStep] = useState<Step>('pick');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // True while a HEIC/HEIF file is being transcoded to JPEG (async, can be slow on
+  // large photos) — drives a lightweight "preparing" affordance so the UI isn't frozen.
+  const [preparing, setPreparing] = useState(false);
   // Detect sessions, index-aligned with `picked` (the API returns them in file order).
   const [sessions, setSessions] = useState<PhotoDetectSession[] | null>(null);
 
@@ -75,28 +81,56 @@ export function PhotoIngestUpload() {
     [],
   );
 
-  /** Validate + wrap incoming files; returns the resulting picked list. */
+  /**
+   * Validate + wrap incoming files; returns the resulting picked list.
+   *
+   * HEIC/HEIF files are transcoded to JPEG HERE, once, before being wrapped — the
+   * transcoded File is what gets stored, previewed, hashed (server-side) and
+   * re-uploaded at commit, so detect and commit always see byte-identical bytes.
+   * The size cap is checked on the FINAL bytes (what actually uploads).
+   */
   const addFiles = useCallback(
-    (incoming: FileList | File[] | null): Picked[] => {
+    async (incoming: FileList | File[] | null): Promise<Picked[]> => {
       const files = Array.from(incoming ?? []);
       if (files.length === 0) return pickedRef.current;
       setError(null);
       setNotice(null);
+      const needsTranscode = files.some(looksLikeHeic);
+      if (needsTranscode) setPreparing(true);
       const next = [...pickedRef.current];
-      for (const file of files) {
-        if (next.length >= MAX_FILES) {
-          setNotice(`Up to ${MAX_FILES} photos at a time.`);
-          break;
+      try {
+        for (const incomingFile of files) {
+          if (next.length >= MAX_FILES) {
+            setNotice(`Up to ${MAX_FILES} photos at a time.`);
+            break;
+          }
+          const isHeic = looksLikeHeic(incomingFile);
+          if (!ACCEPTED.includes(incomingFile.type) && !isHeic) {
+            setError('Please choose JPEG, PNG, WebP, or HEIC images.');
+            continue;
+          }
+          let file = incomingFile;
+          if (isHeic) {
+            try {
+              // Transcode ONCE — this JPEG is now the canonical file everywhere.
+              file = await transcodeHeicToJpeg(incomingFile);
+            } catch (err) {
+              setError(
+                err instanceof HeicTranscodeError
+                  ? err.message
+                  : "We couldn't read that HEIC photo. Try exporting it as JPEG.",
+              );
+              continue;
+            }
+          }
+          if (file.size > MAX_FILE_SIZE) {
+            setError(`Each photo must be under ${MAX_FILE_SIZE / 1024 / 1024}MB.`);
+            continue;
+          }
+          next.push({ id: ++pickedSeq, file, previewUrl: URL.createObjectURL(file) });
         }
-        if (!ACCEPTED.includes(file.type)) {
-          setError('Please choose JPEG, PNG, or WebP images.');
-          continue;
-        }
-        if (file.size > MAX_FILE_SIZE) {
-          setError(`Each photo must be under ${MAX_FILE_SIZE / 1024 / 1024}MB.`);
-          continue;
-        }
-        next.push({ id: ++pickedSeq, file, previewUrl: URL.createObjectURL(file) });
+      } finally {
+        if (needsTranscode) setPreparing(false);
       }
       updatePicked(next);
       return next;
@@ -151,12 +185,15 @@ export function PhotoIngestUpload() {
     [updatePicked],
   );
 
-  // Drawer handoff: consume Files stashed by AddItemDrawer and go straight to detect.
+  // Drawer handoff: consume Files stashed by AddItemDrawer and go straight to detect
+  // (transcoding any HEIC first, inside addFiles).
   useEffect(() => {
     const handoff = usePhotoPickStore.getState().takeFiles();
     if (handoff.length === 0) return;
-    const list = addFiles(handoff);
-    if (list.length > 0) void runDetect(list);
+    void (async () => {
+      const list = await addFiles(handoff);
+      if (list.length > 0) await runDetect(list);
+    })();
   }, [addFiles, runDetect]);
 
   const handleSubmit = useCallback(() => {
@@ -215,7 +252,7 @@ export function PhotoIngestUpload() {
     [sessions, router, runDetect, updatePicked],
   );
 
-  const busy = step === 'detecting' || step === 'committing';
+  const busy = step === 'detecting' || step === 'committing' || preparing;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -227,6 +264,24 @@ export function PhotoIngestUpload() {
       {notice && (
         <div className="rounded-lg px-3 py-2 text-[13px]" style={{ background: 'var(--tr-10)', color: 'rgba(255,255,255,0.75)' }}>
           {notice}
+        </div>
+      )}
+
+      {preparing && (
+        <div
+          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px]"
+          style={{ background: 'var(--tr-10)', color: 'rgba(255,255,255,0.75)' }}
+          role="status"
+        >
+          <span
+            className="h-4 w-4 shrink-0 rounded-full"
+            style={{
+              border: '2px solid var(--tr-20)',
+              borderTopColor: 'var(--mint)',
+              animation: 'tailor-spin 0.8s linear infinite',
+            }}
+          />
+          Preparing photo… converting HEIC for upload.
         </div>
       )}
 
@@ -268,8 +323,9 @@ export function PhotoIngestUpload() {
             multiple
             className="hidden"
             onChange={(e) => {
-              addFiles(e.target.files);
-              e.currentTarget.value = '';
+              const files = e.target.files;
+              e.currentTarget.value = ''; // reset synchronously (event is pooled)
+              void addFiles(files);
             }}
           />
           <input
@@ -279,8 +335,9 @@ export function PhotoIngestUpload() {
             capture="environment"
             className="hidden"
             onChange={(e) => {
-              addFiles(e.target.files);
-              e.currentTarget.value = '';
+              const files = e.target.files;
+              e.currentTarget.value = ''; // reset synchronously (event is pooled)
+              void addFiles(files);
             }}
           />
 
@@ -328,7 +385,7 @@ export function PhotoIngestUpload() {
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={picked.length === 0}
+            disabled={picked.length === 0 || busy}
             className="rounded-xl py-3.5 text-[15px] font-semibold disabled:opacity-50"
             style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
           >
@@ -337,7 +394,7 @@ export function PhotoIngestUpload() {
               : 'Select photos to continue'}
           </button>
           <p className="text-center text-[12px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
-            Use a photo of just yourself. JPEG, PNG, or WebP, up to {MAX_FILE_SIZE / 1024 / 1024}MB each.
+            Use a photo of just yourself. JPEG, PNG, WebP, or HEIC, up to {MAX_FILE_SIZE / 1024 / 1024}MB each.
           </p>
         </>
       )}

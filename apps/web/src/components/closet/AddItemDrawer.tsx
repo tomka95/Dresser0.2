@@ -16,6 +16,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sheet, GmailGlyph } from '@/components/ds';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
+import { looksLikeHeic } from '@/lib/image/heic';
 
 interface AddItemDrawerProps {
   open: boolean;
@@ -24,6 +25,10 @@ interface AddItemDrawerProps {
 }
 
 const ACCEPTED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+// HEIC/HEIF are accepted here and transcoded to JPEG in /add-photo (PhotoIngestUpload);
+// the drawer only stashes the originals, so it must not reject them. Extensions cover
+// the common case of an empty/odd MIME on HEIC files.
+const ACCEPT_ATTR = [...ACCEPTED_TYPES, 'image/heic', 'image/heif', '.heic', '.heif'].join(',');
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB — mirrors the backend cap
 const MAX_FILES = 10;
 
@@ -73,7 +78,8 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
   const validate = (files: File[]): string | null => {
     if (files.length > MAX_FILES) return `Up to ${MAX_FILES} photos at a time.`;
     for (const file of files) {
-      if (!ACCEPTED_TYPES.includes(file.type)) return 'Please choose JPEG, PNG, or WebP images.';
+      if (!ACCEPTED_TYPES.includes(file.type) && !looksLikeHeic(file))
+        return 'Please choose JPEG, PNG, WebP, or HEIC images.';
       if (file.size > MAX_FILE_SIZE) return `Each photo must be under ${MAX_FILE_SIZE / 1024 / 1024}MB.`;
     }
     return null;
@@ -110,7 +116,7 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
       <input
         ref={cameraRef}
         type="file"
-        accept={ACCEPTED_TYPES.join(',')}
+        accept={ACCEPT_ATTR}
         capture="environment"
         onChange={(e) => handleFiles(e.target.files)}
         className="hidden"
@@ -118,7 +124,7 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
       <input
         ref={galleryRef}
         type="file"
-        accept={ACCEPTED_TYPES.join(',')}
+        accept={ACCEPT_ATTR}
         multiple
         onChange={(e) => handleFiles(e.target.files)}
         className="hidden"

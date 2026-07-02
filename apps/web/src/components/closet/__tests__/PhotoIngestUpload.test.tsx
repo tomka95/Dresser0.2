@@ -45,8 +45,28 @@ vi.mock('@/lib/api/gmail', () => {
   };
 });
 
+// HEIC decoder is mocked (no wasm): looksLikeHeic keys off name/type, and transcode
+// returns a deterministic JPEG File so tests can assert the SAME bytes flow onward.
+// The error class is declared INSIDE the factory (it's referenced at mock-eval time,
+// so a module-level class would hit the TDZ under ESM import hoisting).
+const looksLikeHeic = vi.fn(
+  (f: File) => /\.heic$/i.test(f.name) || (f.type || '').includes('heic'),
+);
+const transcodeHeicToJpeg = vi.fn(
+  async (f: File) => new File(['jpeg-bytes'], f.name.replace(/\.heic$/i, '.jpg'), { type: 'image/jpeg' }),
+);
+vi.mock('@/lib/image/heic', () => {
+  class HeicTranscodeError extends Error {}
+  return {
+    looksLikeHeic: (...args: unknown[]) => looksLikeHeic(...(args as [File])),
+    transcodeHeicToJpeg: (...args: unknown[]) => transcodeHeicToJpeg(...(args as [File])),
+    HeicTranscodeError,
+  };
+});
+
 import { PhotoIngestUpload } from '../PhotoIngestUpload';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
+import { HeicTranscodeError } from '@/lib/image/heic'; // the mocked factory's class
 
 function region(region_id: number, name: string, box_2d: [number, number, number, number]): PhotoRegion {
   return {
@@ -213,5 +233,52 @@ describe('PhotoIngestUpload', () => {
     expect(await screen.findByText('Could not reach the scanner.')).toBeInTheDocument();
     // Files stay picked so the user can just retry.
     expect(screen.getByRole('button', { name: 'Find clothes in 1 photo' })).toBeEnabled();
+  });
+
+  it('transcodes a picked HEIC to JPEG and sends BYTE-IDENTICAL bytes to detect and commit', async () => {
+    const heic = new File(['heic-bytes'], 'IMG.heic', { type: 'image/heic' });
+    detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
+    commitPhotoIngest.mockResolvedValue({
+      sync_id: 'run-h',
+      images_processed: 1,
+      staged: 2,
+      duplicates: 0,
+      held_multi_person: 0,
+      message: null,
+    });
+
+    render(<PhotoIngestUpload />);
+    pickFiles([heic]);
+
+    // addFiles transcodes (async) before the CTA reflects the picked photo.
+    fireEvent.click(await screen.findByRole('button', { name: 'Find clothes in 1 photo' }));
+    expect(await screen.findByRole('button', { name: 'Add 2 items' })).toBeEnabled();
+
+    expect(transcodeHeicToJpeg).toHaveBeenCalledTimes(1); // transcoded ONCE
+    const detectFile = (detectPhotoIngest.mock.calls[0][0] as File[])[0];
+    expect(detectFile.type).toBe('image/jpeg'); // not the original HEIC
+    expect(detectFile.name).toBe('IMG.jpg');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add 2 items' }));
+    await waitFor(() => expect(commitPhotoIngest).toHaveBeenCalledTimes(1));
+
+    const commitFile = (commitPhotoIngest.mock.calls[0][0] as File[])[0];
+    // The exact same transcoded File object reaches both endpoints — identical bytes,
+    // so the server's sha256 detect→commit rebind holds.
+    expect(commitFile).toBe(detectFile);
+  });
+
+  it('surfaces a clear error when HEIC transcode fails, staying at pick', async () => {
+    transcodeHeicToJpeg.mockRejectedValueOnce(
+      new HeicTranscodeError("We couldn't read that HEIC photo."),
+    );
+
+    render(<PhotoIngestUpload />);
+    pickFiles([new File(['x'], 'broken.heic', { type: 'image/heic' })]);
+
+    expect(await screen.findByText(/couldn't read that heic/i)).toBeInTheDocument();
+    // Nothing picked, no detect — recoverable.
+    expect(screen.getByRole('button', { name: 'Select photos to continue' })).toBeDisabled();
+    expect(detectPhotoIngest).not.toHaveBeenCalled();
   });
 });
