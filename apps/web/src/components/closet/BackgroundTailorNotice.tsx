@@ -50,7 +50,9 @@ export function BackgroundTailorNotice() {
 
   return (
     <AnimatePresence>
-      {pending && !onOwnedScreen && <NoticeInner key={pending.syncId} pending={pending} />}
+      {pending && !onOwnedScreen && (
+        <NoticeInner key={pending.syncId ?? 'provisional'} pending={pending} />
+      )}
     </AnimatePresence>
   );
 }
@@ -97,6 +99,12 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
   }, [done, revealed]);
 
   const goReview = () => {
+    // Provisional (no id yet): the run is still committing — nothing to review. Re-expand
+    // and wait; the id lands in a moment and this becomes a live "Review" CTA.
+    if (!pending.syncId) {
+      setExpanded(true);
+      return;
+    }
     clear();
     router.push(`/review?sync_id=${encodeURIComponent(pending.syncId)}`);
   };
@@ -181,11 +189,13 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
                 </>
               )}
             </button>
-            {/* Minimize while running (→ side dock); dismiss once done. */}
+            {/* Always MINIMIZE to the side dock — never clear. A pending review (running or
+                ready) must stay reachable; it only clears when the user enters the review
+                (goReview). Losing it on ✕ would strand a ready review. */}
             <button
               type="button"
-              onClick={() => (done ? clear() : setExpanded(false))}
-              aria-label={done ? 'Dismiss' : 'Minimize'}
+              onClick={() => setExpanded(false)}
+              aria-label="Minimize"
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full active:scale-95"
               style={{
                 background: 'var(--tr-10)',
@@ -198,7 +208,9 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
             </button>
           </motion.div>
         ) : (
-          // Minimized dock: a small floating circle on the side. Tap to re-expand.
+          // Minimized dock: a small floating circle on the side. Tap to re-expand. When
+          // the review is READY it glows mint with a sparkle (not a spinner) so a minimized
+          // ready review still reads as "ready", not "still working".
           <motion.button
             key="mini"
             type="button"
@@ -207,25 +219,37 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.5 }}
             transition={{ duration: 0.2, ease: 'easeOut' }}
-            aria-label={`Tailoring ${total} ${noun} — expand`}
+            aria-label={done ? `Review ${total} ${noun} — expand` : `Tailoring ${total} ${noun} — expand`}
             className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full"
-            style={{
-              background: 'var(--tr-10)',
-              border: '1px solid var(--tr-20)',
-              backdropFilter: 'blur(8px)',
-              WebkitBackdropFilter: 'blur(8px)',
-              boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
-            }}
+            style={
+              done
+                ? {
+                    background: 'var(--mint)',
+                    color: 'var(--brand-teal)',
+                    boxShadow: '0 0 22px 3px rgba(75,226,214,0.55)',
+                  }
+                : {
+                    background: 'var(--tr-10)',
+                    border: '1px solid var(--tr-20)',
+                    backdropFilter: 'blur(8px)',
+                    WebkitBackdropFilter: 'blur(8px)',
+                    boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
+                  }
+            }
           >
-            <span
-              className="h-4 w-4 rounded-full"
-              style={{
-                border: '2px solid var(--tr-20)',
-                borderTopColor: 'var(--mint)',
-                animation: 'tailor-spin 0.8s linear infinite',
-              }}
-              aria-hidden
-            />
+            {done ? (
+              <Sparkles size={18} />
+            ) : (
+              <span
+                className="h-4 w-4 rounded-full"
+                style={{
+                  border: '2px solid var(--tr-20)',
+                  borderTopColor: 'var(--mint)',
+                  animation: 'tailor-spin 0.8s linear infinite',
+                }}
+                aria-hidden
+              />
+            )}
           </motion.button>
         )}
       </AnimatePresence>

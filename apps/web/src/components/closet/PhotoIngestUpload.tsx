@@ -53,6 +53,13 @@ interface Picked {
 // Module-level id: object URLs aren't unique under the test stub, so keys use this.
 let pickedSeq = 0;
 
+// Drop a PROVISIONAL background indicator (one set with no sync_id while a commit was
+// still in flight). Real runs (syncId set) are left alone.
+function clearProvisionalPending() {
+  const p = useGenerationStore.getState().pending;
+  if (p && p.syncId == null) useGenerationStore.getState().clear();
+}
+
 export function PhotoIngestUpload() {
   const router = useRouter();
   const [picked, setPicked] = useState<Picked[]>([]);
@@ -67,6 +74,9 @@ export function PhotoIngestUpload() {
   const [preparing, setPreparing] = useState(false);
   // Detect sessions, index-aligned with `picked` (the API returns them in file order).
   const [sessions, setSessions] = useState<PhotoDetectSession[] | null>(null);
+  // Estimated staged count for the in-flight commit — the number the provisional
+  // background indicator shows before commit returns the real sync_id + count.
+  const stagedGuessRef = useRef(0);
 
   const galleryRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -200,8 +210,10 @@ export function PhotoIngestUpload() {
   useEffect(() => {
     const pending = useGenerationStore.getState().pending;
     const hasHandoff = usePhotoPickStore.getState().files.length > 0;
-    if (pending && !hasHandoff && pickedRef.current.length === 0) {
-      setGenRun(pending);
+    // Only resume a REAL run (has a sync_id) into the preparing pill — a provisional
+    // pending (no id yet) has nothing to poll here.
+    if (pending?.syncId && !hasHandoff && pickedRef.current.length === 0) {
+      setGenRun({ syncId: pending.syncId, staged: pending.staged });
       setStep('preparing');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -251,6 +263,13 @@ export function PhotoIngestUpload() {
       // ⚠️ BACKEND: the ~10s is server-synchronous cutout in POST /photo/ingest/commit, so
       // the run id + item count can't appear until it returns. If we want the COUNT instant
       // too, commit must be split into a fast stage-ack + async cutout.
+      // Estimate the staged count now (selected regions + manual boxes) so a provisional
+      // background indicator can show a number instantly if the user backgrounds the flow
+      // before commit returns.
+      stagedGuessRef.current = selections.reduce(
+        (n, s) => n + s.selected_region_ids.length + s.manual_boxes.length,
+        0,
+      );
       setError(null);
       setNotice(null);
       setGenRun(null);
@@ -271,7 +290,9 @@ export function PhotoIngestUpload() {
           setGenRun({ syncId: res.sync_id, staged: res.staged });
           return;
         }
-        // Nothing staged — surface why and reset to pick.
+        // Nothing staged — surface why and reset to pick. Drop any provisional background
+        // indicator the user set by backgrounding (it has no real run to point to).
+        clearProvisionalPending();
         list.forEach((p) => URL.revokeObjectURL(p.previewUrl));
         updatePicked([]);
         setSessions(null);
@@ -281,10 +302,13 @@ export function PhotoIngestUpload() {
         if (err instanceof PhotoSessionExpiredError) {
           // Detect sessions TTL'd out server-side — transparently re-scan the same
           // files. (Selections reset to all-selected: region ids may change.)
+          clearProvisionalPending();
           setNotice('That scan expired — re-scanning your photos…');
           await runDetect(list);
           return;
         }
+        // Commit failed — a provisional background indicator would point at nothing, clear it.
+        clearProvisionalPending();
         setStep('select'); // recoverable: selections are still on screen
         setError(err instanceof Error ? err.message : 'Failed to add items.');
       }
@@ -401,7 +425,15 @@ export function PhotoIngestUpload() {
           )}
           <button
             type="button"
-            onClick={() => router.push('/home')}
+            onClick={() => {
+              // If commit hasn't returned a run yet, drop a PROVISIONAL pending so the home
+              // indicator shows INSTANTLY (not after commit finishes ~10s later). It's
+              // patched to the real sync_id the moment commit resolves.
+              if (!useGenerationStore.getState().pending) {
+                useGenerationStore.getState().setPending({ syncId: null, staged: stagedGuessRef.current });
+              }
+              router.push('/home');
+            }}
             className="text-[13px] underline"
             style={{ color: 'rgba(255,255,255,0.5)' }}
           >

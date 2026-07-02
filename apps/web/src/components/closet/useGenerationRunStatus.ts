@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { getIngestStatus } from '@/lib/api/gmail';
 
-export function useGenerationRunStatus(syncId: string, initialTotal = 0) {
+export function useGenerationRunStatus(syncId: string | null, initialTotal = 0) {
   const [ready, setReady] = useState(0);
   const [total, setTotal] = useState(initialTotal);
   const [done, setDone] = useState(false);
@@ -24,10 +24,18 @@ export function useGenerationRunStatus(syncId: string, initialTotal = 0) {
   useEffect(() => {
     mountedRef.current = true;
     setDone(false);
+    // Provisional run (no id yet): nothing to poll — report the initial (estimated) total
+    // so the indicator shows "Tailoring…" instantly. Polling begins once a real id lands.
+    if (!syncId) {
+      return () => {
+        mountedRef.current = false;
+      };
+    }
+    const id = syncId; // non-null past the guard above
     async function poll() {
       if (!mountedRef.current) return;
       try {
-        const st = await getIngestStatus(syncId);
+        const st = await getIngestStatus(id);
         if (!mountedRef.current) return;
         const gt = st.progress.generation_total || 0;
         const gr = st.progress.generation_ready || 0;

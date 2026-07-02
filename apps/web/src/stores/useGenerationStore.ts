@@ -16,8 +16,13 @@ import { create } from 'zustand';
  */
 
 export interface PendingGeneration {
-  syncId: string;
-  /** Candidates staged by the commit — the pill's initial denominator. */
+  /**
+   * The run to poll. `null` = provisional: the user backgrounded the flow while the commit
+   * was still in flight (no sync_id yet), so the indicator can render INSTANTLY without a
+   * run to poll. It's patched to the real id (via setPending) the moment commit resolves.
+   */
+  syncId: string | null;
+  /** Candidates staged by the commit — the pill's initial denominator (an estimate while provisional). */
   staged: number;
 }
 

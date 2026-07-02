@@ -23,7 +23,6 @@ import {
   getIngestStatus,
   startGmailConnect,
   startIngest,
-  type ConfirmResponse,
   type IngestCandidate,
 } from '@/lib/api/gmail';
 import { AppShell } from '@/components/layout/AppShell';
@@ -33,46 +32,6 @@ import { LightButton } from '@/components/ui/LightButton';
 import { EmptyState } from '@/components/ui/EmptyState';
 
 type CardEdits = Record<string, Record<string, unknown>>;
-
-// A ring that empties over `seconds` — the visible countdown before the post-confirm
-// auto-advance to the closet. Wraps the success check.
-function CountdownRing({ seconds, children }: { seconds: number; children: React.ReactNode }) {
-  const size = 72;
-  const stroke = 3;
-  const r = (size - stroke) / 2 - 1;
-  const circumference = 2 * Math.PI * r;
-  return (
-    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="absolute" style={{ transform: 'rotate(-90deg)' }} aria-hidden>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--tr-20)" strokeWidth={stroke} />
-        <motion.circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke="var(--mint)"
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          initial={{ strokeDashoffset: 0 }}
-          animate={{ strokeDashoffset: circumference }}
-          transition={{ duration: seconds, ease: 'linear' }}
-        />
-      </svg>
-      <div
-        className="flex items-center justify-center rounded-full"
-        style={{
-          width: size - 16,
-          height: size - 16,
-          background: 'rgba(10,207,131,0.18)',
-          border: '1px solid rgba(10,207,131,0.4)',
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
 
 // The URL a card WILL paint into its <img>, or null if the card shows a non-image state
 // (still-generating "tailoring" placeholder / resolving shimmer) and so needs no warming.
@@ -172,9 +131,12 @@ export default function ReviewPage() {
   const dragStartRef = useRef<number | null>(null); // pointer clientX at press
   const dragXRef = useRef(0);                        // live offset (read on release, no stale closure)
 
-  const [confirming, setConfirming] = useState(false);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
-  const [result, setResult] = useState<ConfirmResponse | null>(null);
+  // Auto-add + auto-advance: reaching the end of the deck commits the accepted batch and
+  // navigates to the closet after a short countdown — no "Add to closet" press. The commit
+  // fires once (memoized promise); navigation awaits it so the closet shows the new items.
+  const autoCommitRef = useRef<Promise<void> | null>(null);
+  const leftRef = useRef(false);
+  const [autoError, setAutoError] = useState<string | null>(null);
 
   // Progressive sync state. A sync is started ONLY by the explicit "Scan my inbox" CTA
   // (handleScan below) — never automatically on mount, focus, or poll — so visiting an
@@ -377,13 +339,19 @@ export default function ReviewPage() {
     warmCardImages(candidates, index, index + 2);
   }, [index, candidates]);
 
-  // After a successful confirm, auto-advance to the closet a beat later (the countdown
-  // ring shows it coming). The summary is tappable to go immediately.
+  // Reached the end of a decided deck (not still scanning) → auto-commit the batch and
+  // auto-advance to the closet after a 1.5s countdown (the top bar shows it coming). No
+  // button press. Commit fires immediately for a head start; the timer navigates.
+  const deckComplete =
+    !loading && !loadError && candidates.length > 0 && index >= candidates.length && !scanning;
   useEffect(() => {
-    if (!result) return;
-    const t = setTimeout(() => router.push('/closet'), 2500);
+    if (!deckComplete) return;
+    setAutoError(null);
+    void commitBatch();
+    const t = setTimeout(() => void finishAndGo(), 1500);
     return () => clearTimeout(t);
-  }, [result, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckComplete]);
 
   const total = candidates.length;
   const current = candidates[index];
@@ -413,25 +381,39 @@ export default function ReviewPage() {
     }));
   }
 
-  async function handleConfirm() {
-    setConfirming(true);
-    setConfirmError(null);
+  // Commit the accepted batch exactly once. Memoized so the on-mount head-start call and a
+  // later tap/timer share ONE POST. On failure the memo resets so a tap can retry.
+  function commitBatch(): Promise<void> {
+    if (autoCommitRef.current) return autoCommitRef.current;
+    autoCommitRef.current =
+      accepted.length === 0
+        ? Promise.resolve()
+        : confirmCandidates({ accepted, rejected, edits })
+            .then(() => {
+              useClosetStore.getState().invalidate();
+              // This run's batch is decided — drop any pending "review in background" pill.
+              useGenerationStore.getState().clear();
+            })
+            .catch((err) => {
+              autoCommitRef.current = null; // allow a retry tap
+              setAutoError(err instanceof Error ? err.message : 'Failed to add items.');
+              throw err;
+            });
+    return autoCommitRef.current;
+  }
+
+  // Await the commit (usually already resolved from the head start), then go to the closet.
+  // Fires from the 1.5s countdown OR an early tap. Stays put on commit failure so the
+  // error + retry are visible instead of stranding the user.
+  async function finishAndGo() {
+    if (leftRef.current) return;
     try {
-      const res = await confirmCandidates({ accepted, rejected, edits });
-      useClosetStore.getState().invalidate();
-      // This run's batch is decided — drop any pending "review in background" pill.
-      useGenerationStore.getState().clear();
-      setResult(res);
-      // NOTE: no router.refresh() here. It re-ran the route at the exact moment `result`
-      // was set — re-validating auth (a transient `status:'loading'` blanks the page) and
-      // churning the tree — which is why the countdown/success screen never reliably
-      // painted live. The closet store's invalidate() above already refreshes the closet
-      // when we land there via the auto-advance below.
-    } catch (err) {
-      setConfirmError(err instanceof Error ? err.message : 'Failed to add items.');
-    } finally {
-      setConfirming(false);
+      await commitBatch();
+    } catch {
+      return;
     }
+    leftRef.current = true;
+    router.push('/closet');
   }
 
   // ── Render guards ──────────────────────────────────────────────────────────
@@ -468,45 +450,6 @@ export default function ReviewPage() {
           <LightButton onClick={() => router.push('/home')} style={{ height: 48, padding: '0 26px' }}>
             Back to home
           </LightButton>
-        </div>
-      </AppShell>
-    );
-  }
-
-  // Confirmed → the post-confirm success screen with a VISIBLE countdown ring, hoisted
-  // ABOVE every other branch (empty deck / still-scanning / deck) so nothing can preempt
-  // it once the batch is committed. The auto-advance effect drives the 2.5s navigate; the
-  // card is tappable to go now. (Previously this lived deep inside the `index >= total`
-  // block, after the `total === 0` and `scanning` guards — a post-confirm re-render that
-  // landed in one of those branches hid it entirely, so it "never worked" live.)
-  if (result) {
-    return (
-      <AppShell scroll={false}>
-        <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-          <motion.button
-            type="button"
-            onClick={() => router.push('/closet')}
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.3, ease: 'easeOut' }}
-            className="flex flex-col items-center"
-            aria-label="Go to your closet now"
-          >
-            <div className="mb-5">
-              <CountdownRing seconds={2.5}>
-                <Check size={30} color="var(--success)" />
-              </CountdownRing>
-            </div>
-            <h1 className="m-0 text-[22px] font-bold text-white">
-              Added {result.inserted_count} to closet
-            </h1>
-            <p className="mt-2 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-              {result.inserted_count} new · {result.updated_count} updated · {result.rejected_count} skipped
-            </p>
-            <span className="mt-6 text-[13px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
-              Taking you to your closet… <span style={{ color: 'var(--mint)' }}>tap to go now</span>
-            </span>
-          </motion.button>
         </div>
       </AppShell>
     );
@@ -615,35 +558,54 @@ export default function ReviewPage() {
         </AppShell>
       );
     }
+    // Review complete → auto-add + auto-advance. No button: the batch commits on entry and
+    // the top bar depletes over 1.5s, then we navigate. Tapping anywhere commits + goes now.
     return (
       <AppShell scroll={false}>
-        <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-          <h1 className="m-0 text-[22px] font-bold text-white">Review complete</h1>
-          <p className="mt-2 mb-7 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-            {accepted.length} to add · {rejected.length} skipped
-          </p>
-          {confirmError && (
-            <p className="mb-4 text-[13px]" style={{ color: 'var(--danger)' }}>
-              {confirmError}
-            </p>
-          )}
-          <LightButton
-            onClick={handleConfirm}
-            disabled={confirming || accepted.length === 0}
-            style={{ height: 48, padding: '0 26px' }}
+        <div className="relative h-full">
+          {/* Top countdown bar — full-width, depletes to the left over 1.5s so the
+              auto-advance is visible. Matches the 1.5s timer in the deckComplete effect. */}
+          <motion.div
+            className="absolute left-0 top-0 h-[3px] w-full"
+            style={{ background: 'var(--mint)', transformOrigin: 'left' }}
+            initial={{ scaleX: 1 }}
+            animate={{ scaleX: 0 }}
+            transition={{ duration: 1.5, ease: 'linear' }}
+            aria-hidden
+          />
+          <button
+            type="button"
+            onClick={() => void finishAndGo()}
+            className="flex h-full w-full flex-col items-center justify-center px-8 text-center"
+            aria-label="Add to closet and go now"
           >
-            {confirming ? 'Adding…' : `Add ${accepted.length} to closet`}
-          </LightButton>
-          {accepted.length === 0 && (
-            <button
-              type="button"
-              onClick={() => router.push('/closet')}
-              className="mt-4 text-[13px] underline"
-              style={{ color: 'rgba(255,255,255,0.5)' }}
+            <div
+              className="mb-5 flex items-center justify-center rounded-full"
+              style={{
+                width: 64,
+                height: 64,
+                background: 'rgba(10,207,131,0.18)',
+                border: '1px solid rgba(10,207,131,0.4)',
+              }}
             >
-              Nothing to add — go to closet
-            </button>
-          )}
+              <Check size={30} color="var(--success)" />
+            </div>
+            <h1 className="m-0 text-[22px] font-bold text-white">
+              {accepted.length > 0 ? `Adding ${accepted.length} to your closet` : 'All caught up'}
+            </h1>
+            <p className="mt-2 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              {accepted.length} to add · {rejected.length} skipped
+            </p>
+            {autoError ? (
+              <span className="mt-6 text-[13px]" style={{ color: 'var(--danger)' }}>
+                {autoError} — tap to retry
+              </span>
+            ) : (
+              <span className="mt-6 text-[13px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                Taking you to your closet… <span style={{ color: 'var(--mint)' }}>tap to go now</span>
+              </span>
+            )}
+          </button>
         </div>
       </AppShell>
     );
