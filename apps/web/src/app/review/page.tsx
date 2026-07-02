@@ -10,10 +10,11 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Camera, Check, Mail, Pencil, X } from 'lucide-react';
+import { Camera, Check, Mail, Pencil, Sparkles, X } from 'lucide-react';
 
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
+import { useGenerationStore } from '@/stores/useGenerationStore';
 import {
   confirmCandidates,
   fetchGmailConnectionStatus,
@@ -89,6 +90,12 @@ export default function ReviewPage() {
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
 
+  // Wave 2: true while a photo run is still generating product cards (run status
+  // 'running'). Covers the brief window after commit where a photo candidate is still
+  // generation_status=null but its card is being made — so the deck shows a "creating…"
+  // state instead of flashing the raw crop. Only meaningful for a sync-scoped photo deck.
+  const [runGenerating, setRunGenerating] = useState(false);
+
   const mountedRef = useRef(true);
   // When the deck is opened for a specific run (the photo flow navigates to
   // /review?sync_id=…), scope every candidate fetch to that run so stale pending
@@ -121,6 +128,8 @@ export default function ReviewPage() {
           u &&
           (u.image_url !== c.image_url ||
             u.image_status !== c.image_status ||
+            u.generated_image_url !== c.generated_image_url ||
+            u.generation_status !== c.generation_status ||
             u.name !== c.name ||
             u.brand !== c.brand ||
             u.category !== c.category ||
@@ -141,15 +150,26 @@ export default function ReviewPage() {
     });
   }, []);
 
-  // While images keep resolving in the background, poll candidates to swap them in.
-  // This only READS candidates — it never starts a sync.
+  // While images keep resolving OR a photo run keeps generating product cards, poll to
+  // swap them in. READ-only — never starts a sync. For a sync-scoped photo deck it also
+  // reads the run status, so the "creating…" state persists across the window where a
+  // candidate is still generation_status=null but the run is mid-generation.
   const pollImages = useCallback(async function pollImages() {
     if (!mountedRef.current) return;
     try {
-      const cands = await getIngestCandidates(scopeSyncIdRef.current);
+      const syncId = scopeSyncIdRef.current;
+      const [cands, st] = await Promise.all([
+        getIngestCandidates(syncId),
+        // Status only matters when scoped to a run (the photo flow); tolerate its failure.
+        syncId ? getIngestStatus(syncId).catch(() => null) : Promise.resolve(null),
+      ]);
       if (!mountedRef.current) return;
       mergeCandidates(cands);
-      if (cands.some((c) => c.image_status === 'pending')) schedule(pollImages, 2500);
+      const generating = st ? st.status === 'running' : false;
+      setRunGenerating(generating);
+      const stillResolving = cands.some((c) => c.image_status === 'pending');
+      const stillGenerating = generating || cands.some((c) => c.generation_status === 'generating');
+      if (stillResolving || stillGenerating) schedule(pollImages, 2500);
     } catch {
       /* transient — a manual refresh recovers */
     }
@@ -221,7 +241,15 @@ export default function ReviewPage() {
         if (!mountedRef.current) return;
         setCandidates(cands);
         setLoading(false);
-        if (cands.some((c) => c.image_status === 'pending')) pollImages();
+        // Poll when images are still resolving, a card is generating, OR this is a
+        // sync-scoped photo deck (one poll reads the run status; it self-stops once the
+        // run is done and nothing is pending/generating).
+        if (
+          scopeSyncIdRef.current ||
+          cands.some((c) => c.image_status === 'pending' || c.generation_status === 'generating')
+        ) {
+          pollImages();
+        }
       })
       .catch((err) => {
         if (!mountedRef.current) return;
@@ -241,7 +269,13 @@ export default function ReviewPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     for (let i = index + 1; i <= index + 2; i++) {
-      const url = candidates[i]?.image_url;
+      const c = candidates[i];
+      // Warm the image the card will actually show: the generated card once ready, else
+      // the crop. (A still-generating card has nothing to preload.)
+      const url =
+        c?.generation_status === 'ready' && c.generated_image_url
+          ? c.generated_image_url
+          : c?.image_url;
       if (url) {
         const img = new window.Image();
         img.src = url;
@@ -283,6 +317,8 @@ export default function ReviewPage() {
     try {
       const res = await confirmCandidates({ accepted, rejected, edits });
       useClosetStore.getState().invalidate();
+      // This run's batch is decided — drop any pending "review in background" pill.
+      useGenerationStore.getState().clear();
       setResult(res);
       router.refresh();
     } catch (err) {
@@ -521,6 +557,35 @@ export default function ReviewPage() {
     chips.push({ label: 'Price', value: `${currencySymbol}${Number(price).toFixed(2)}` });
   }
 
+  // Wave 2 card image selection. A photo card shows the VERIFIED generated product card
+  // once ready; while it's being made — or the run is still generating and this card
+  // hasn't flipped to a status yet — it shows a "creating…" state, NEVER the raw crop
+  // (a full-scene shot with face/background). pending_retry/failed fall back to the crop
+  // with a subtle "Preview" tag (the item still gets an image on confirm). Gmail cards
+  // (generation_status null, unscoped) are unaffected — they render image_url as before.
+  const genStatus = current.generation_status;
+  const isPhotoCard = current.source_type === 'photo';
+  const generatedReady = genStatus === 'ready' && !!current.generated_image_url;
+  const showGenerating =
+    isPhotoCard && (genStatus === 'generating' || (genStatus == null && runGenerating));
+  const showPreviewTag = isPhotoCard && (genStatus === 'pending_retry' || genStatus === 'failed');
+  const cardSrc = generatedReady ? current.generated_image_url : current.image_url;
+
+  // True while this run is still generating product cards — gates the non-blocking
+  // "Tailor in the background" escape below.
+  const deckGenerating =
+    runGenerating || candidates.some((c) => c.generation_status === 'generating');
+
+  // Escape hatch: leave the blocking deck while generation continues server-side. Stash
+  // this run so the GenerationProgressPill can resurface on /add-photo and pop the deck
+  // back up (/review?sync_id=…) the moment it's ready. Only meaningful for a scoped run.
+  function handleReviewInBackground() {
+    const syncId = scopeSyncIdRef.current;
+    if (!syncId) return;
+    useGenerationStore.getState().setPending({ syncId, staged: candidates.length });
+    router.push('/add-photo');
+  }
+
   // Alternating stack tilt: even cards lean left (−2°), odd cards lean right (+2°), so a
   // card and the one peeking behind it lean opposite ways.
   const baseRot = index % 2 === 0 ? -2 : 2;
@@ -592,6 +657,25 @@ export default function ReviewPage() {
           </div>
         )}
 
+        {/* Non-blocking escape while product cards are still being tailored: leave the
+            deck and get pulled back by the progress pill the moment they're ready. */}
+        {deckGenerating && (
+          <button
+            type="button"
+            onClick={handleReviewInBackground}
+            className="mt-3 inline-flex items-center gap-2 self-start rounded-full px-3.5 py-2 text-[12.5px] font-semibold active:scale-95"
+            style={{
+              background: 'var(--tr-10)',
+              border: '1px solid var(--tr-20)',
+              color: 'rgba(255,255,255,0.85)',
+              transition: 'transform 120ms var(--ease-out)',
+            }}
+          >
+            <Sparkles size={14} style={{ color: 'var(--mint)' }} />
+            Tailor in the background
+          </button>
+        )}
+
         {/* Card area */}
         <div className="relative mt-6 flex-1">
           {/* Peeking cards behind */}
@@ -649,21 +733,65 @@ export default function ReviewPage() {
                 main→min-h-full→h-full ancestor chain. The image region can never collapse
                 to 0px regardless of ancestors (the bug that hid loaded cutouts). */}
             <div className="relative w-full aspect-[1/1]">
-              {current.image_status === 'pending' && !current.image_url ? (
-                // Still resolving in the background fill — soft shimmer, not a wrong image.
+              {showGenerating ? (
+                // Photo card mid-generation: a clearly-visible "tailoring" loading state —
+                // a LIFTED neutral panel (distinct from the #222 card) with a moving sheen,
+                // a bright spinner and copy on top. Never the raw full-scene crop, never a
+                // blank panel. (Earlier this was #2c2c2c-on-#222 with a 0.2-alpha ring + a
+                // dark gradient painted over it → it read as an empty black rectangle.)
+                <div
+                  className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 overflow-hidden"
+                  style={{ background: '#33343a' }}
+                  role="status"
+                  aria-label="Tailoring your item"
+                >
+                  {/* Moving sheen: a wide highlight bar sweeping across (clipped by the
+                      panel's overflow-hidden). Reads unmistakably as "working". */}
+                  <div
+                    className="pointer-events-none absolute inset-y-0 left-0"
+                    style={{
+                      width: '60%',
+                      background:
+                        'linear-gradient(100deg, transparent 0%, rgba(255,255,255,0.13) 50%, transparent 100%)',
+                      animation: 'tailor-shimmer 1.6s ease-in-out infinite',
+                    }}
+                    aria-hidden
+                  />
+                  <div
+                    className="relative h-9 w-9 rounded-full"
+                    style={{
+                      border: '3px solid rgba(255,255,255,0.18)',
+                      borderTopColor: 'var(--mint)',
+                      animation: 'tailor-spin 0.8s linear infinite',
+                    }}
+                  />
+                  <span className="relative text-[13.5px] font-semibold" style={{ color: 'rgba(255,255,255,0.92)' }}>
+                    Tailoring your item…
+                  </span>
+                  <span className="relative text-[11.5px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                    Pressing a clean product shot
+                  </span>
+                </div>
+              ) : current.image_status === 'pending' && !current.image_url ? (
+                // Gmail card still resolving in the background fill — soft shimmer, not a
+                // wrong image.
                 <div className="absolute inset-0 animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
               ) : (
                 // Shared render path: opaque neutral backing + absolute-fill <img>. contain
-                // shows the WHOLE cutout (cover would crop the garment).
-                <ItemImage key={current.candidate_id} src={current.image_url} alt={name} fit="contain" emptyLabel="No image" />
+                // shows the WHOLE card (cover would crop it). cardSrc is the generated
+                // product card when ready, else the crop fallback.
+                <ItemImage key={current.candidate_id} src={cardSrc} alt={name} fit="contain" emptyLabel="No image" />
               )}
-              {/* Gradient fade: blends the image bottom into the dark info panel (#222)
-                  so there's no hard seam between the photo and the card body. */}
-              <div
-                className="pointer-events-none absolute inset-0"
-                style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent 55%)' }}
-                aria-hidden
-              />
+              {/* Gradient fade: blends a real image's bottom into the dark info panel
+                  (#222). Gated OFF the generating state — over the loading panel it only
+                  darkened the copy (part of the "black card" bug). */}
+              {!showGenerating && (
+                <div
+                  className="pointer-events-none absolute inset-0"
+                  style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent 55%)' }}
+                  aria-hidden
+                />
+              )}
               <span
                 className="absolute left-3 top-3 inline-flex items-center gap-1.5 text-[11px] font-semibold"
                 style={{
@@ -682,6 +810,23 @@ export default function ReviewPage() {
                   <>✦ Detected in Gmail</>
                 )}
               </span>
+
+              {/* Generation held (pending_retry / failed): the crop stands in as a preview
+                  — a subtle tag signals it isn't the final product card. Never blocks confirm. */}
+              {showPreviewTag && (
+                <span
+                  className="absolute right-3 top-3 inline-flex items-center text-[10.5px] font-semibold"
+                  style={{
+                    color: 'rgba(255,255,255,0.85)',
+                    background: 'rgba(0,0,0,0.5)',
+                    border: '1px solid var(--tr-20)',
+                    borderRadius: 999,
+                    padding: '3px 9px',
+                  }}
+                >
+                  Preview
+                </span>
+              )}
 
               {/* Swipe affordance stamps — fade in with drag distance/direction. */}
               <span

@@ -197,3 +197,14 @@
     opacity: 1;
   }
 }
+
+/* Loading-sheen sweep for the "tailoring your item" generating card (Wave 2). A wide
+   highlight bar translates across the panel; the panel itself clips it (overflow). */
+@keyframes tailor-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}

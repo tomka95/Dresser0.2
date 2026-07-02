@@ -36,11 +36,13 @@ vi.mock('@/stores/useClosetStore', () => ({
 
 const detectPhotoIngest = vi.fn();
 const commitPhotoIngest = vi.fn();
+const getIngestStatus = vi.fn();
 vi.mock('@/lib/api/gmail', () => {
   class PhotoSessionExpiredError extends Error {}
   return {
     detectPhotoIngest: (...args: unknown[]) => detectPhotoIngest(...args),
     commitPhotoIngest: (...args: unknown[]) => commitPhotoIngest(...args),
+    getIngestStatus: (...args: unknown[]) => getIngestStatus(...args),
     PhotoSessionExpiredError,
   };
 });
@@ -66,6 +68,7 @@ vi.mock('@/lib/image/heic', () => {
 
 import { PhotoIngestUpload } from '../PhotoIngestUpload';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
+import { useGenerationStore } from '@/stores/useGenerationStore';
 import { HeicTranscodeError } from '@/lib/image/heic'; // the mocked factory's class
 
 function region(region_id: number, name: string, box_2d: [number, number, number, number]): PhotoRegion {
@@ -114,10 +117,29 @@ function pickFiles(files: File[]) {
 beforeEach(() => {
   vi.clearAllMocks();
   usePhotoPickStore.setState({ files: [] });
+  // Module-singleton store — reset so a prior test's pending run can't hijack the mount
+  // (the resume effect would jump straight to the "preparing" pill).
+  useGenerationStore.setState({ pending: null });
+  // Default: a run still generating (the pill stays "Preparing …" until tapped).
+  getIngestStatus.mockResolvedValue({
+    sync_id: 'run',
+    status: 'running',
+    progress: {
+      fetched: 0,
+      filtered: 0,
+      extracted: 0,
+      total_estimate: null,
+      generation_total: 2,
+      generation_ready: 0,
+      generation_failed: 0,
+    },
+    started_at: null,
+    finished_at: null,
+  });
 });
 
 describe('PhotoIngestUpload', () => {
-  it('detect reaches the select step; commit pushes /review with the exact selections payload', async () => {
+  it('detect reaches the select step; commit shows the Preparing pill and routes to /review on tap', async () => {
     const file = jpeg('a.jpg');
     detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
     commitPhotoIngest.mockResolvedValue({
@@ -145,8 +167,13 @@ describe('PhotoIngestUpload', () => {
       [file],
       [{ session_id: 'sess-1', selected_region_ids: [1, 2], manual_boxes: [] }],
     );
-    await waitFor(() => expect(push).toHaveBeenCalledWith('/review?sync_id=run-9'));
+    // Commit no longer force-navigates: a non-blocking "Tailoring" pill appears while the
+    // product cards generate, and routes to the run-scoped deck when tapped.
+    const pill = await screen.findByRole('button', { name: 'Tailoring 2 items' });
     expect(invalidate).toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+    fireEvent.click(pill);
+    expect(push).toHaveBeenCalledWith('/review?sync_id=run-9');
   });
 
   it('toggling a region off before commit changes the payload', async () => {

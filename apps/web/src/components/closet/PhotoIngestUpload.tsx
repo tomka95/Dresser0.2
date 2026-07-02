@@ -17,7 +17,6 @@
  * straight to detection. Object URLs are revoked on reset and on unmount.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { Camera, ImagePlus, X } from 'lucide-react';
 
 import {
@@ -29,10 +28,14 @@ import {
 } from '@/lib/api/gmail';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
+import { useGenerationStore } from '@/stores/useGenerationStore';
 import { HeicTranscodeError, looksLikeHeic, transcodeHeicToJpeg } from '@/lib/image/heic';
 import { RegionSelector } from './RegionSelector';
+import { GenerationProgressPill } from './GenerationProgressPill';
 
-type Step = 'pick' | 'detecting' | 'select' | 'committing';
+// 'preparing' = commit succeeded and product cards are generating in the background; the
+// non-blocking pill lets the user review whenever they choose (never a forced navigation).
+type Step = 'pick' | 'detecting' | 'select' | 'committing' | 'preparing';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB — mirrors the backend cap
 const MAX_FILES = 10;
@@ -50,11 +53,13 @@ interface Picked {
 let pickedSeq = 0;
 
 export function PhotoIngestUpload() {
-  const router = useRouter();
   const [picked, setPicked] = useState<Picked[]>([]);
   const [step, setStep] = useState<Step>('pick');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // After a successful commit, the run whose product cards are generating — drives the
+  // non-blocking "Preparing N → Review" pill (step 'preparing').
+  const [genRun, setGenRun] = useState<{ syncId: string; staged: number } | null>(null);
   // True while a HEIC/HEIF file is being transcoded to JPEG (async, can be slow on
   // large photos) — drives a lightweight "preparing" affordance so the UI isn't frozen.
   const [preparing, setPreparing] = useState(false);
@@ -185,6 +190,21 @@ export function PhotoIngestUpload() {
     [updatePicked],
   );
 
+  // Resume a "review in background" run: if we arrived with a pending generation (the
+  // user tapped "Tailor in the background" in the deck, or is returning to /add-photo)
+  // and there's no fresh pick/handoff in flight, resurface the progress pill so the deck
+  // is one tap away once it's ready. Runs BEFORE the handoff effect so it never competes
+  // with a drawer hand-off (which owns the pristine-mount case).
+  useEffect(() => {
+    const pending = useGenerationStore.getState().pending;
+    const hasHandoff = usePhotoPickStore.getState().files.length > 0;
+    if (pending && !hasHandoff && pickedRef.current.length === 0) {
+      setGenRun(pending);
+      setStep('preparing');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Drawer handoff: consume Files stashed by AddItemDrawer and go straight to detect
   // (transcoding any HEIC first, inside addFiles).
   useEffect(() => {
@@ -226,9 +246,17 @@ export function PhotoIngestUpload() {
         const res = await commitPhotoIngest(liveFiles, selections);
         useClosetStore.getState().invalidate?.();
         if (res.staged > 0) {
-          // Scope the deck to THIS run so it shows only these garments. Preview
-          // object-URLs are revoked by the unmount cleanup.
-          router.push(`/review?sync_id=${encodeURIComponent(res.sync_id)}`);
+          // Product cards are now generating in the background. Don't force-navigate:
+          // reset the picker and show the non-blocking "Preparing N → Review" pill, which
+          // routes to the run-scoped deck when the user chooses (or once it's ready).
+          list.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+          updatePicked([]);
+          setSessions(null);
+          // Stash the run so the pill can resurface if the user navigates away (e.g. the
+          // in-deck "Tailor in the background" escape) and needs pulling back when ready.
+          useGenerationStore.getState().setPending({ syncId: res.sync_id, staged: res.staged });
+          setGenRun({ syncId: res.sync_id, staged: res.staged });
+          setStep('preparing');
           return;
         }
         // Nothing staged — surface why and reset to pick.
@@ -249,7 +277,7 @@ export function PhotoIngestUpload() {
         setError(err instanceof Error ? err.message : 'Failed to add items.');
       }
     },
-    [sessions, router, runDetect, updatePicked],
+    [sessions, runDetect, updatePicked],
   );
 
   const busy = step === 'detecting' || step === 'committing' || preparing;
@@ -311,6 +339,38 @@ export function PhotoIngestUpload() {
           onCancel={handleCancelSelect}
           onCommit={handleCommit}
         />
+      )}
+
+      {step === 'preparing' && genRun && (
+        <div className="flex flex-1 flex-col items-center justify-center gap-6 py-12 text-center">
+          <div className="flex flex-col items-center gap-2">
+            <span style={{ fontSize: 34 }}>✨</span>
+            <p className="m-0 text-[16px] font-semibold text-white">Tailoring your items</p>
+            <p className="mt-1 max-w-[260px] text-[13px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              We&rsquo;re pressing clean product shots. This keeps going in the
+              background — review whenever you&rsquo;re ready.
+            </p>
+          </div>
+          <GenerationProgressPill
+            syncId={genRun.syncId}
+            staged={genRun.staged}
+            onReview={() => useGenerationStore.getState().clear()}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              // Give up the return pill and start a fresh pick.
+              useGenerationStore.getState().clear();
+              setGenRun(null);
+              setNotice(null);
+              setStep('pick');
+            }}
+            className="text-[13px] underline"
+            style={{ color: 'rgba(255,255,255,0.5)' }}
+          >
+            Add more photos
+          </button>
+        </div>
       )}
 
       {step === 'pick' && (

@@ -8,6 +8,12 @@ export interface IngestProgress {
   filtered: number;
   extracted: number;
   total_estimate: number | null;
+  // Wave 2 product-image generation progress (photo runs; 0 for Gmail). While a photo
+  // run generates, status stays 'running' with generation_ready climbing toward
+  // generation_total — drives the add-photo "Preparing N → Review ready" pill.
+  generation_total: number;
+  generation_ready: number;
+  generation_failed: number;
 }
 
 export interface IngestStatus {
@@ -45,6 +51,12 @@ export interface IngestCandidate {
   //   'pending'     — still resolving in the background → shimmer + keep polling.
   //   'placeholder' — slow tiers exhausted, no image found → static placeholder.
   image_status: 'resolved' | 'pending' | 'placeholder' | 'user_uploaded' | null;
+  // Wave 2 generation (photo only; null for Gmail). generated_image_url is the VERIFIED
+  // clean product card built from the crop; generation_status is its lifecycle. The deck
+  // renders the card once 'ready', shows a "creating…" state while 'generating' (never
+  // the raw crop), and keeps polling until it settles. image_url stays the raw crop.
+  generated_image_url: string | null;
+  generation_status: 'generating' | 'ready' | 'failed' | 'pending_retry' | null;
   confidence_overall: number | null;
   low_confidence_fields: string[];
   seen_count: number;
