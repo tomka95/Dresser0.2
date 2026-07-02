@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -42,6 +43,7 @@ from app.models import IngestCandidate, IngestRun, PhotoDetectSession, Processed
 from app.photo_closet.cutout import build_cutout
 from app.photo_closet.dedup import dedup_check
 from app.photo_closet.detection import (
+    DetectionResult,
     GarmentCategory,
     GarmentDescription,
     GarmentRegion,
@@ -340,9 +342,40 @@ def run_photo_detect(
     ).delete(synchronize_session=False)
     db.commit()
 
+    # Pass 1 (serial, cheap DB reads): flag duplicates. A dup gets NO Gemini call and
+    # NO session — unchanged.
+    is_dup = [_is_duplicate_upload(db, user_id, s) for s in images]
+
+    # Pass 2 (concurrent): the per-photo Gemini detection is the dominant latency and does
+    # NO DB writes, so fan the non-duplicate photos out over a BOUNDED pool. There is no
+    # shared mutable state (each future returns its own DetectionResult), so nothing races.
+    # detect_garments_with_regions never raises (empty result on model/parse failure), so
+    # one bad photo can't fail the batch.
+    detections: Dict[int, DetectionResult] = {}
+    to_detect = [(i, s) for i, s in enumerate(images) if not is_dup[i]]
+    if to_detect:
+        cap = max(1, int(settings.PHOTO_DETECT_MAX_CONCURRENCY))
+        workers = min(cap, len(to_detect))
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="photodetect"
+        ) as pool:
+            futures = {
+                pool.submit(
+                    detect, image_bytes=s.data, content_type=s.content_type,
+                    provider=provider,
+                ): i
+                for (i, s) in to_detect
+            }
+            for fut in futures:
+                detections[futures[fut]] = fut.result()
+
+    # Pass 3 (serial, on the request session): persist each detect session in INPUT ORDER.
+    # All DB writes stay on the one session, so the (user, sha256, pending) upsert +
+    # idempotency + dup handling are identical to the serial version (even two identical
+    # photos in one batch collapse to one refreshed row, exactly as before).
     outcomes: List[PhotoDetectOutcome] = []
-    for sanitized in images:
-        if _is_duplicate_upload(db, user_id, sanitized):
+    for i, sanitized in enumerate(images):
+        if is_dup[i]:
             outcomes.append(PhotoDetectOutcome(
                 session_id=None, image_sha256=sanitized.sha256,
                 width=sanitized.width, height=sanitized.height,
@@ -350,11 +383,7 @@ def run_photo_detect(
             ))
             continue
 
-        detection = detect(
-            image_bytes=sanitized.data,
-            content_type=sanitized.content_type,
-            provider=provider,
-        )
+        detection = detections[i]
         regions = [
             _region_json(idx, garment)
             for idx, garment in enumerate(detection.garments)

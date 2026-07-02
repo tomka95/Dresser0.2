@@ -11,51 +11,6 @@ import { useClosetStore } from '@/stores/useClosetStore';
 import { AppShell } from '@/components/layout/AppShell';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { GlassCard, ItemTile, SectionHeader, Spark } from '@/components/ds';
-import type { ClosetItem } from '@tailor/contracts';
-
-// Mock items shown only while the closet is empty (design preview parity).
-const MOCK_ITEMS: ClosetItem[] = [
-  {
-    id: 'mock-1',
-    userId: 'mock-user',
-    name: 'Black Jeans',
-    category: 'bottom',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?q=80&w=300&auto=format&fit=crop',
-    brand: "Levi's",
-  },
-  {
-    id: 'mock-2',
-    userId: 'mock-user',
-    name: 'White T-Shirt',
-    category: 'top',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?q=80&w=300&auto=format&fit=crop',
-    brand: 'Uniqlo',
-  },
-  {
-    id: 'mock-3',
-    userId: 'mock-user',
-    name: 'Leather Jacket',
-    category: 'outerwear',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1551028919-ac66e6a39b51?q=80&w=300&auto=format&fit=crop',
-    brand: 'AllSaints',
-  },
-  {
-    id: 'mock-4',
-    userId: 'mock-user',
-    name: 'Chelsea Boots',
-    category: 'shoes',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    imageUrl: 'https://images.unsplash.com/photo-1638247025967-b4e38f787b76?q=80&w=300&auto=format&fit=crop',
-    brand: 'Common Projects',
-  },
-];
 
 export default function HomePage() {
   const router = useRouter();
@@ -99,8 +54,8 @@ export default function HomePage() {
     return null;
   }
 
-  // Real items when present; mock preview only for an empty closet.
-  const displayItems = (items.length > 0 ? items : MOCK_ITEMS).slice(0, 4);
+  // Real closet items only — never fake preview garments.
+  const displayItems = items.slice(0, 4);
 
   return (
     <AppShell>
@@ -146,19 +101,44 @@ export default function HomePage() {
         </div>
 
         <SectionHeader dark title="Your closet" action="See all" onAction={() => router.push('/closet')} />
-        <div className="mt-4 grid grid-cols-2 gap-3.5">
-          {displayItems.map((it) => (
-            <ItemTile
-              key={it.id}
-              name={it.name}
-              brand={it.brand}
-              imageUrl={it.imageUrl}
-              onClick={
-                it.id.startsWith('mock-') ? () => router.push('/closet') : () => router.push(`/closet/${it.id}`)
-              }
-            />
-          ))}
-        </div>
+        {displayItems.length > 0 ? (
+          <div className="mt-4 grid grid-cols-2 gap-3.5">
+            {displayItems.map((it) => (
+              <ItemTile
+                key={it.id}
+                name={it.name}
+                brand={it.brand}
+                imageUrl={it.imageUrl}
+                onClick={() => router.push(`/closet/${it.id}`)}
+              />
+            ))}
+          </div>
+        ) : hasFetchedItems ? (
+          // Real empty state — no fake garments. Tap to start adding.
+          <button
+            type="button"
+            onClick={() => router.push('/add-photo')}
+            className="mt-4 flex w-full flex-col items-center gap-1.5 rounded-2xl px-6 py-9 text-center transition-transform active:scale-[0.98]"
+            style={{ background: 'var(--tr-10)', border: '1px dashed var(--tr-20)' }}
+          >
+            <span style={{ fontSize: 30, color: 'var(--mint)' }}>✦</span>
+            <span className="text-[15px] font-semibold text-white">Your closet is empty</span>
+            <span className="text-[13px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              Add your first item from a photo
+            </span>
+          </button>
+        ) : (
+          // Loading (pre-fetch): quiet skeleton, never fake items.
+          <div className="mt-4 grid grid-cols-2 gap-3.5" aria-hidden>
+            {[0, 1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="aspect-square animate-pulse rounded-2xl"
+                style={{ background: 'var(--tr-10)' }}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <BottomNavBar activeRoute="/home" />

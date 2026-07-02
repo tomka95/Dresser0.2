@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # row is swept on the user's next detect. Sessions hold hashes + boxes, never
     # the photo itself, so a generous default costs nothing sensitive.
     PHOTO_SESSION_TTL_HOURS: int = 24
+    # Max photos whose Gemini detection runs CONCURRENTLY per /photo/ingest/detect call
+    # (bounded worker pool). A 2+ photo upload detects in ~1 photo's time, not the sum,
+    # without firing an unbounded number of model calls at once.
+    PHOTO_DETECT_MAX_CONCURRENCY: int = 4
 
     IMAGE_API_BASE_URL: str = ""
     IMAGE_API_MODEL: str = ""

@@ -10,6 +10,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { motion } from 'framer-motion';
 import { Camera, Check, Mail, Pencil, X } from 'lucide-react';
 
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
@@ -32,6 +33,64 @@ import { LightButton } from '@/components/ui/LightButton';
 import { EmptyState } from '@/components/ui/EmptyState';
 
 type CardEdits = Record<string, Record<string, unknown>>;
+
+// A ring that empties over `seconds` — the visible countdown before the post-confirm
+// auto-advance to the closet. Wraps the success check.
+function CountdownRing({ seconds, children }: { seconds: number; children: React.ReactNode }) {
+  const size = 72;
+  const stroke = 3;
+  const r = (size - stroke) / 2 - 1;
+  const circumference = 2 * Math.PI * r;
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="absolute" style={{ transform: 'rotate(-90deg)' }} aria-hidden>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--tr-20)" strokeWidth={stroke} />
+        <motion.circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="var(--mint)"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          initial={{ strokeDashoffset: 0 }}
+          animate={{ strokeDashoffset: circumference }}
+          transition={{ duration: seconds, ease: 'linear' }}
+        />
+      </svg>
+      <div
+        className="flex items-center justify-center rounded-full"
+        style={{
+          width: size - 16,
+          height: size - 16,
+          background: 'rgba(10,207,131,0.18)',
+          border: '1px solid rgba(10,207,131,0.4)',
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Warm the browser cache for the image each card WILL show (generated card once ready,
+// else the crop) so the visible <img> decodes instantly — no white flash on the first
+// card or on advance. The bg-sampling probe is separate and never gates this render.
+function warmCardImages(cands: IngestCandidate[], from: number, to: number) {
+  if (typeof window === 'undefined') return;
+  for (let i = Math.max(0, from); i <= to; i++) {
+    const c = cands[i];
+    const url =
+      c?.generation_status === 'ready' && c.generated_image_url
+        ? c.generated_image_url
+        : c?.image_url;
+    if (url) {
+      const img = new window.Image();
+      img.src = url;
+    }
+  }
+}
 
 // A bordered "Label Value" pill (Option A). Label muted, value bold. Only rendered by
 // the caller when the value exists — never a blank/empty chip.
@@ -239,6 +298,9 @@ export default function ReviewPage() {
     getIngestCandidates(scopeSyncIdRef.current)
       .then((cands) => {
         if (!mountedRef.current) return;
+        // Warm the first cards' images the instant we have URLs (a tick before React
+        // commits the <img>), so returning to the deck shows the first card immediately.
+        warmCardImages(cands, 0, 1);
         setCandidates(cands);
         setLoading(false);
         // Poll when images are still resolving, a card is generating, OR this is a
@@ -263,25 +325,20 @@ export default function ReviewPage() {
     };
   }, [isAuth, pollImages]);
 
-  // Preload the NEXT couple of card images so they paint instantly on advance instead
-  // of loading after the swipe (the "old image lingers ~2s" gap). `new Image()` warms
-  // the browser's HTTP cache; the visible <img> then decodes from cache immediately.
+  // Warm the CURRENT + next couple of card images so they paint instantly — the current
+  // covers the first-card-on-return case; the look-ahead covers swipes. Re-runs when a
+  // poll flips a card to 'ready', warming its freshly-generated image before it shows.
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    for (let i = index + 1; i <= index + 2; i++) {
-      const c = candidates[i];
-      // Warm the image the card will actually show: the generated card once ready, else
-      // the crop. (A still-generating card has nothing to preload.)
-      const url =
-        c?.generation_status === 'ready' && c.generated_image_url
-          ? c.generated_image_url
-          : c?.image_url;
-      if (url) {
-        const img = new window.Image();
-        img.src = url;
-      }
-    }
+    warmCardImages(candidates, index, index + 2);
   }, [index, candidates]);
+
+  // After a successful confirm, auto-advance to the closet a beat later (the countdown
+  // ring shows it coming). The summary is tappable to go immediately.
+  useEffect(() => {
+    if (!result) return;
+    const t = setTimeout(() => router.push('/closet'), 2500);
+    return () => clearTimeout(t);
+  }, [result, router]);
 
   const total = candidates.length;
   const current = candidates[index];
@@ -474,29 +531,31 @@ export default function ReviewPage() {
       <AppShell scroll={false}>
         <div className="flex h-full flex-col items-center justify-center px-8 text-center">
           {result ? (
-            <>
-              <div
-                className="mb-5 flex items-center justify-center"
-                style={{
-                  width: 72,
-                  height: 72,
-                  borderRadius: '50%',
-                  background: 'rgba(10,207,131,0.18)',
-                  border: '1px solid rgba(10,207,131,0.4)',
-                }}
-              >
-                <Check size={32} color="var(--success)" />
+            // Tappable to go NOW; otherwise the countdown ring auto-advances at 2.5s.
+            <motion.button
+              type="button"
+              onClick={() => router.push('/closet')}
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.3, ease: 'easeOut' }}
+              className="flex flex-col items-center"
+              aria-label="Go to your closet now"
+            >
+              <div className="mb-5">
+                <CountdownRing seconds={2.5}>
+                  <Check size={30} color="var(--success)" />
+                </CountdownRing>
               </div>
               <h1 className="m-0 text-[22px] font-bold text-white">
                 Added {result.inserted_count} to closet
               </h1>
-              <p className="mt-2 mb-7 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              <p className="mt-2 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
                 {result.inserted_count} new · {result.updated_count} updated · {result.rejected_count} skipped
               </p>
-              <LightButton onClick={() => router.push('/closet')} style={{ height: 48, padding: '0 26px' }}>
-                View closet
-              </LightButton>
-            </>
+              <span className="mt-6 text-[13px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                Taking you to your closet… <span style={{ color: 'var(--mint)' }}>tap to go now</span>
+              </span>
+            </motion.button>
           ) : (
             <>
               <h1 className="m-0 text-[22px] font-bold text-white">Review complete</h1>

@@ -24,7 +24,7 @@ import React, {
   useState,
 } from 'react';
 import { motion } from 'framer-motion';
-import { Check, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Move, Plus, X } from 'lucide-react';
 
 import type { PhotoCommitSelection, PhotoDetectSession } from '@/lib/api/gmail';
 import { DSButton } from '@/components/ds';
@@ -49,11 +49,19 @@ type Box = [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0..1000
 interface ManualBox {
   id: number;
   box: Box;
+  /** Optional user-given name (blank falls back to the server's auto-describe at commit). */
+  name?: string;
 }
+
+/** Minimum box size in 0..1000 units when dragging a corner (keeps a grabbable box). */
+const MIN_BOX_UNITS = 40;
+type DragMode = 'move' | 'nw' | 'ne' | 'sw' | 'se';
 
 interface PhotoSelection {
   regionIds: Set<number>;
   manual: ManualBox[];
+  /** Detected region ids converted to editable manual boxes (hidden as detected boxes). */
+  adjusted: Set<number>;
 }
 
 const MAX_MANUAL_BOXES = 8;
@@ -102,6 +110,7 @@ export function RegionSelector({
     photos.map((p) => ({
       regionIds: new Set(p.session.regions.map((r) => r.region_id)),
       manual: [],
+      adjusted: new Set<number>(),
     })),
   );
 
@@ -110,6 +119,8 @@ export function RegionSelector({
   const [draft, setDraft] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const manualSeqRef = useRef(0);
+  // Active move/resize drag on a manual box (px start + the box at grab time).
+  const boxDragRef = useRef<{ id: number; mode: DragMode; sx: number; sy: number; box: Box } | null>(null);
 
   // ── Measure the photo frame so the contained image rect can be computed ────
   const frameRef = useRef<HTMLDivElement>(null);
@@ -190,6 +201,43 @@ export function RegionSelector({
     [index, committing],
   );
 
+  const renameManual = useCallback(
+    (id: number, name: string) => {
+      setSelections((prev) =>
+        prev.map((s, i) =>
+          i === index ? { ...s, manual: s.manual.map((m) => (m.id === id ? { ...m, name } : m)) } : s,
+        ),
+      );
+    },
+    [index],
+  );
+
+  // "Adjust" a detected box: turn it into an editable (drag/resize/name) manual box so the
+  // ADJUSTED geometry flows to the cutout. The detected region is deselected and re-added
+  // as a manual box seeded with its geometry + name. (Manual boxes are box→cutout, no mask.)
+  const adjustRegion = useCallback(
+    (regionId: number, box: Box, name: string) => {
+      if (committing) return;
+      setSelections((prev) =>
+        prev.map((s, i) => {
+          if (i !== index) return s;
+          if (s.manual.length >= MAX_MANUAL_BOXES) return s;
+          const regionIds = new Set(s.regionIds);
+          regionIds.delete(regionId);
+          const adjusted = new Set(s.adjusted);
+          adjusted.add(regionId);
+          return {
+            ...s,
+            regionIds,
+            adjusted,
+            manual: [...s.manual, { id: ++manualSeqRef.current, box: [...box] as Box, name }],
+          };
+        }),
+      );
+    },
+    [index, committing],
+  );
+
   const goTo = useCallback(
     (next: number) => {
       setIndex(clamp(next, 0, photos.length - 1));
@@ -261,6 +309,56 @@ export function RegionSelector({
     drawStartRef.current = null;
     setDraft(null);
   };
+
+  // ── Move / resize a manual box (per-element pointer capture) ────────────────
+  // px deltas → 0..1000 units via the displayed image size (dw/dh). Move keeps the box
+  // size and clamps to the image; each corner handle resizes that corner (min size kept).
+  const beginBoxDrag = (e: React.PointerEvent, id: number, mode: DragMode, box: Box) => {
+    if (committing) return;
+    e.stopPropagation();
+    boxDragRef.current = { id, mode, sx: e.clientX, sy: e.clientY, box: [...box] as Box };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  const moveBoxDrag = (e: React.PointerEvent) => {
+    const d = boxDragRef.current;
+    if (!d || dw <= 0 || dh <= 0) return;
+    const dxu = ((e.clientX - d.sx) / dw) * 1000;
+    const dyu = ((e.clientY - d.sy) / dh) * 1000;
+    let [ymin, xmin, ymax, xmax] = d.box;
+    if (d.mode === 'move') {
+      const w = xmax - xmin;
+      const h = ymax - ymin;
+      const nx = clamp(xmin + dxu, 0, 1000 - w);
+      const ny = clamp(ymin + dyu, 0, 1000 - h);
+      xmin = nx;
+      xmax = nx + w;
+      ymin = ny;
+      ymax = ny + h;
+    } else {
+      if (d.mode.includes('n')) ymin = clamp(ymin + dyu, 0, ymax - MIN_BOX_UNITS);
+      if (d.mode.includes('s')) ymax = clamp(ymax + dyu, ymin + MIN_BOX_UNITS, 1000);
+      if (d.mode.includes('w')) xmin = clamp(xmin + dxu, 0, xmax - MIN_BOX_UNITS);
+      if (d.mode.includes('e')) xmax = clamp(xmax + dxu, xmin + MIN_BOX_UNITS, 1000);
+    }
+    const nb: Box = [Math.round(ymin), Math.round(xmin), Math.round(ymax), Math.round(xmax)];
+    setSelections((prev) =>
+      prev.map((s, i) =>
+        i === index ? { ...s, manual: s.manual.map((m) => (m.id === d.id ? { ...m, box: nb } : m)) } : s,
+      ),
+    );
+  };
+
+  const endBoxDrag = () => {
+    boxDragRef.current = null;
+  };
+
+  const boxDragProps = (id: number, mode: DragMode, box: Box) => ({
+    onPointerDown: (e: React.PointerEvent) => beginBoxDrag(e, id, mode, box),
+    onPointerMove: moveBoxDrag,
+    onPointerUp: endBoxDrag,
+    onPointerCancel: endBoxDrag,
+  });
 
   // ── Commit payload — only live (non-duplicate) sessions carry selections ───
   const buildSelections = useCallback((): PhotoCommitSelection[] => {
@@ -368,51 +466,84 @@ export function RegionSelector({
             // Overlay pinned to the CONTAINED image rect — boxes inside are pure %.
             <div className="absolute" style={{ left: ox, top: oy, width: dw, height: dh }}>
               {orderedRegions.map((r, zi) => {
+                // Converted to a manual box → hide the detected one (the manual box shows).
+                if (sel.adjusted.has(r.region_id)) return null;
                 const [ymin, xmin, ymax, xmax] = r.box_2d;
                 const isSel = sel.regionIds.has(r.region_id);
                 return (
-                  <button
+                  // Wrapper (no nested buttons): a fill toggle + a corner "adjust" control.
+                  <div
                     key={r.region_id}
-                    type="button"
-                    onClick={() => toggleRegion(r.region_id)}
-                    aria-pressed={isSel}
-                    aria-label={`${r.name} region`}
-                    className="absolute p-0 text-left transition-opacity duration-150"
+                    className="absolute"
                     style={{
                       left: pct(xmin),
                       top: pct(ymin),
                       width: pct(xmax - xmin),
                       height: pct(ymax - ymin),
                       zIndex: 10 + zi, // sorted big→small: smallest area paints on top
-                      border: isSel ? '2px solid var(--mint)' : '1.5px dashed rgba(255,255,255,0.35)',
-                      background: isSel ? 'rgba(75,226,214,0.10)' : 'transparent',
-                      borderRadius: 10,
-                      opacity: isSel ? 1 : 0.6,
-                      cursor: 'pointer',
-                      touchAction: 'manipulation',
                     }}
                   >
-                    <BoxLabel name={r.name} />
-                    {isSel && (
-                      <span
-                        aria-hidden
-                        className="absolute right-1 top-1 flex h-[18px] w-[18px] items-center justify-center rounded-full"
-                        style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
+                    <button
+                      type="button"
+                      onClick={() => toggleRegion(r.region_id)}
+                      aria-pressed={isSel}
+                      aria-label={`${r.name} region`}
+                      className="absolute inset-0 p-0 text-left transition-opacity duration-150"
+                      style={{
+                        border: isSel ? '2px solid var(--mint)' : '1.5px dashed rgba(255,255,255,0.35)',
+                        background: isSel ? 'rgba(75,226,214,0.10)' : 'transparent',
+                        borderRadius: 10,
+                        opacity: isSel ? 1 : 0.6,
+                        cursor: 'pointer',
+                        touchAction: 'manipulation',
+                      }}
+                    >
+                      <BoxLabel name={r.name} />
+                      {isSel && (
+                        <span
+                          aria-hidden
+                          className="absolute right-1 top-1 flex h-[18px] w-[18px] items-center justify-center rounded-full"
+                          style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
+                        >
+                          <Check size={12} strokeWidth={3} />
+                        </span>
+                      )}
+                    </button>
+                    {/* Adjust → convert this detected box into an editable manual box. */}
+                    {isSel && !committing && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          adjustRegion(r.region_id, r.box_2d, r.name);
+                        }}
+                        aria-label={`Adjust ${r.name} box`}
+                        className="absolute flex h-6 w-6 items-center justify-center rounded-full active:scale-90"
+                        style={{
+                          right: -9,
+                          bottom: -9,
+                          background: '#222',
+                          border: '1px solid var(--tr-20)',
+                          color: 'white',
+                          zIndex: 2,
+                        }}
                       >
-                        <Check size={12} strokeWidth={3} />
-                      </span>
+                        <Move size={12} />
+                      </button>
                     )}
-                  </button>
+                  </div>
                 );
               })}
 
-              {/* Hand-drawn boxes — always selected; × deletes. */}
+              {/* Hand-drawn / adjusted boxes — always selected. Drag body to move, corner
+                  handles to resize, inline input to name; × deletes. */}
               {sel.manual.map((m) => {
                 const [ymin, xmin, ymax, xmax] = m.box;
                 return (
                   <div
                     key={m.id}
                     className="absolute"
+                    {...boxDragProps(m.id, 'move', m.box)}
                     style={{
                       left: pct(xmin),
                       top: pct(ymin),
@@ -422,12 +553,28 @@ export function RegionSelector({
                       border: '2px solid var(--mint)',
                       background: 'rgba(75,226,214,0.10)',
                       borderRadius: 10,
+                      touchAction: 'none',
+                      cursor: committing ? 'default' : 'move',
                     }}
                   >
-                    <BoxLabel name="New item" />
+                    {/* Optional name — blank falls back to the server's auto-describe. */}
+                    <input
+                      value={m.name ?? ''}
+                      onChange={(e) => renameManual(m.id, e.target.value)}
+                      placeholder="Name (optional)"
+                      disabled={committing}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      className="absolute left-1 top-1 w-[74%] truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white outline-none placeholder:text-white/45"
+                      style={{ background: 'rgba(0,0,0,0.55)', border: '1px solid var(--tr-20)' }}
+                    />
                     <button
                       type="button"
-                      onClick={() => removeManual(m.id)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeManual(m.id);
+                      }}
                       aria-label="Remove drawn item"
                       className="absolute flex h-5 w-5 items-center justify-center rounded-full"
                       style={{
@@ -436,11 +583,34 @@ export function RegionSelector({
                         background: '#222',
                         border: '1px solid var(--tr-20)',
                         color: 'white',
-                        zIndex: 61,
+                        zIndex: 62,
                       }}
                     >
                       <X size={11} />
                     </button>
+                    {/* Corner resize handles. */}
+                    {!committing &&
+                      (['nw', 'ne', 'sw', 'se'] as const).map((h) => (
+                        <span
+                          key={h}
+                          {...boxDragProps(m.id, h, m.box)}
+                          aria-hidden
+                          className="absolute h-3.5 w-3.5 rounded-full"
+                          style={{
+                            ...(h === 'nw'
+                              ? { left: -7, top: -7, cursor: 'nwse-resize' }
+                              : h === 'ne'
+                                ? { right: -7, top: -7, cursor: 'nesw-resize' }
+                                : h === 'sw'
+                                  ? { left: -7, bottom: -7, cursor: 'nesw-resize' }
+                                  : { right: -7, bottom: -7, cursor: 'nwse-resize' }),
+                            background: 'var(--mint)',
+                            border: '2px solid #222',
+                            zIndex: 62,
+                            touchAction: 'none',
+                          }}
+                        />
+                      ))}
                   </div>
                 );
               })}

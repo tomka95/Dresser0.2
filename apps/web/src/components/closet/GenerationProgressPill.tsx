@@ -10,12 +10,12 @@
  * review deck (scoped to this run), which itself streams the cards in. When the run
  * finishes (or every card is ready), the pill becomes a prominent "Review N items" CTA.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { ArrowRight, Sparkles } from 'lucide-react';
 
-import { getIngestStatus } from '@/lib/api/gmail';
+import { useGenerationRunStatus } from './useGenerationRunStatus';
 
 interface GenerationProgressPillProps {
   syncId: string;
@@ -31,52 +31,19 @@ interface GenerationProgressPillProps {
 
 export function GenerationProgressPill({ syncId, staged, onReview, onDone }: GenerationProgressPillProps) {
   const router = useRouter();
-  const [ready, setReady] = useState(0);
-  const [total, setTotal] = useState(staged);
-  const [done, setDone] = useState(false);
+  const { ready, total, done } = useGenerationRunStatus(syncId, staged);
 
-  const mountedRef = useRef(true);
-  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  // onDone via a ref so an inline callback prop doesn't restart the poll each render;
-  // doneFiredRef makes it fire exactly once.
+  // Fire onDone exactly once when the run finishes (via a ref so an inline prop doesn't
+  // re-trigger). The waiting screen uses it to auto-advance.
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
   const doneFiredRef = useRef(false);
-
   useEffect(() => {
-    mountedRef.current = true;
-    async function poll() {
-      if (!mountedRef.current) return;
-      try {
-        const st = await getIngestStatus(syncId);
-        if (!mountedRef.current) return;
-        const gt = st.progress.generation_total || 0;
-        const gr = st.progress.generation_ready || 0;
-        const gf = st.progress.generation_failed || 0;
-        setReady(gr);
-        if (gt > 0) setTotal(gt);
-        // Finished when the run leaves 'running', or every target has settled
-        // (ready + failed === total). Either way the deck is ready to open.
-        if (st.status !== 'running' || (gt > 0 && gr + gf >= gt)) {
-          setDone(true);
-          if (!doneFiredRef.current) {
-            doneFiredRef.current = true;
-            onDoneRef.current?.();
-          }
-          return; // stop polling
-        }
-      } catch {
-        /* transient — keep polling */
-      }
-      timersRef.current.push(setTimeout(poll, 1500));
+    if (done && !doneFiredRef.current) {
+      doneFiredRef.current = true;
+      onDoneRef.current?.();
     }
-    poll();
-    return () => {
-      mountedRef.current = false;
-      timersRef.current.forEach(clearTimeout);
-      timersRef.current = [];
-    };
-  }, [syncId]);
+  }, [done]);
 
   const goReview = useCallback(() => {
     onReview?.();
