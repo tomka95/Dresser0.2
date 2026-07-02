@@ -323,9 +323,14 @@ export function PhotoIngestUpload() {
             multiple
             className="hidden"
             onChange={(e) => {
-              const files = e.target.files;
-              e.currentTarget.value = ''; // reset synchronously (event is pooled)
-              void addFiles(files);
+              // Snapshot into a REAL, DETACHED array as the very first line — before
+              // any state update or reset. e.target.files is a LIVE FileList tied to
+              // the input element: resetting e.currentTarget.value clears that SAME
+              // FileList in place, so reading it after the reset (or after any await)
+              // sees length 0. Array.from() copies it out while it's still live.
+              const fileArray = Array.from(e.target.files ?? []);
+              e.currentTarget.value = ''; // safe now — snapshot already taken
+              void addFiles(fileArray);
             }}
           />
           <input
@@ -335,9 +340,10 @@ export function PhotoIngestUpload() {
             capture="environment"
             className="hidden"
             onChange={(e) => {
-              const files = e.target.files;
-              e.currentTarget.value = ''; // reset synchronously (event is pooled)
-              void addFiles(files);
+              // Same snapshot-before-reset fix as the gallery input above.
+              const fileArray = Array.from(e.target.files ?? []);
+              e.currentTarget.value = ''; // safe now — snapshot already taken
+              void addFiles(fileArray);
             }}
           />
 
