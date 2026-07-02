@@ -176,6 +176,54 @@ describe('PhotoIngestUpload', () => {
     expect(push).toHaveBeenCalledWith('/review?sync_id=run-9');
   });
 
+  it('auto-advances to /review when the run finishes while waiting on the preparing screen', async () => {
+    const file = jpeg('a.jpg');
+    detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
+    commitPhotoIngest.mockResolvedValue({
+      sync_id: 'run-7', images_processed: 1, staged: 2, duplicates: 0,
+      held_multi_person: 0, message: null,
+    });
+    // The run is already done on the first poll → the pill fires onDone → auto-advance.
+    getIngestStatus.mockResolvedValue({
+      sync_id: 'run-7', status: 'completed',
+      progress: {
+        fetched: 0, filtered: 0, extracted: 0, total_estimate: null,
+        generation_total: 2, generation_ready: 2, generation_failed: 0,
+      },
+      started_at: null, finished_at: null,
+    });
+
+    render(<PhotoIngestUpload />);
+    pickFiles([file]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Find clothes in 1 photo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add 2 items' }));
+
+    await waitFor(() => expect(commitPhotoIngest).toHaveBeenCalledTimes(1));
+    // No tap: waiting on the screen auto-forwards to the run-scoped deck.
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/review?sync_id=run-7'));
+  });
+
+  it('"Tailor in the background" leaves for home and keeps the run pending for the notice', async () => {
+    const file = jpeg('a.jpg');
+    detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
+    commitPhotoIngest.mockResolvedValue({
+      sync_id: 'run-5', images_processed: 1, staged: 2, duplicates: 0,
+      held_multi_person: 0, message: null,
+    });
+    // Default status is 'running' (beforeEach) → no auto-advance.
+
+    render(<PhotoIngestUpload />);
+    pickFiles([file]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Find clothes in 1 photo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add 2 items' }));
+
+    const bg = await screen.findByRole('button', { name: 'Tailor in the background' });
+    fireEvent.click(bg);
+    expect(push).toHaveBeenCalledWith('/home');
+    // The run stays stashed so the global notice can bring the user back when ready.
+    expect(useGenerationStore.getState().pending).toEqual({ syncId: 'run-5', staged: 2 });
+  });
+
   it('toggling a region off before commit changes the payload', async () => {
     const file = jpeg('a.jpg');
     detectPhotoIngest.mockResolvedValue({ sessions: [session()] });

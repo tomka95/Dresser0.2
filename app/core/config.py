@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     GENERATION_TIMEOUT_SECONDS: float = 90.0
     # Per-run cost guard: at most this many generation calls per run (bake-off).
     GENERATION_MAX_PER_RUN: int = 50
+    # Max candidates generated CONCURRENTLY per run (bounded worker pool). Caps parallel
+    # provider calls so a big batch doesn't hammer the provider APIs / hit rate limits: a
+    # typical (<=6-garment) photo finishes in ~1 slow item (~15s), not the sum, while a
+    # 50-item batch still runs 6-at-a-time. Shared GenerationBudget / VerifyBudget cap
+    # total calls across the concurrent set.
+    GENERATION_MAX_CONCURRENCY: int = 6
     # Editable per-IMAGE USD rates (same idea as the per-1M token rates above):
     # GenerationResult.cost_usd reads straight from these; bump on price change.
     FLUX_KONTEXT_USD_PER_IMAGE: float = 0.04

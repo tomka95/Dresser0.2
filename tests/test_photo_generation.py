@@ -276,6 +276,56 @@ def test_budget_cap_leaves_residue(db, user, monkeypatch):
     assert run.status == "completed" and run.generation_total == 1 and run.generation_ready == 0
 
 
+# --- concurrency -------------------------------------------------------------
+
+def test_concurrent_all_ready_counts_are_race_safe(db, user, monkeypatch):
+    """4 candidates generate CONCURRENTLY; every one lands 'ready' and the atomic
+    generation_ready counter is exactly 4 (no lost increments across workers)."""
+    _seams(monkeypatch)
+    sync = uuid4(); _run_row(db, user, sync)
+    cands = [_stage(db, user, sync, source_line_key=f"slk{i}", name=f"Item{i}") for i in range(4)]
+    nano = _FakeProvider("nano_banana", _result("nano_banana"))
+    flux = _FakeProvider("flux_kontext", _result("flux_kontext"))
+    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": flux})
+    _verify(monkeypatch, lambda **k: _ok())
+
+    stats = gen.run_photo_generation(user.id, db, sync)
+
+    assert stats.ready == 4 and stats.held == 0
+    for c in cands:
+        db.refresh(c)
+        assert c.generation_status == "ready"
+        assert c.generated_image_url == "https://blob/gen.png"
+        assert c.image_url == "https://blob/cut.jpg"   # crop never overwritten
+    assert flux.calls == 0                              # nano passed every one
+    run = _run(db, sync)
+    assert run.status == "completed"
+    assert (run.generation_total, run.generation_ready, run.generation_failed) == (4, 4, 0)
+
+
+def test_concurrent_budget_is_shared_across_workers(db, user, monkeypatch):
+    """A budget of 2 caps the CONCURRENT set to 2 generations total (not per worker):
+    exactly 2 land 'ready', the other 2 are left untouched as residue."""
+    _seams(monkeypatch)
+    monkeypatch.setattr(gen.settings, "GENERATION_MAX_PER_RUN", 2)  # 2 generations, 4 targets
+    sync = uuid4(); _run_row(db, user, sync)
+    cands = [_stage(db, user, sync, source_line_key=f"b{i}") for i in range(4)]
+    nano = _FakeProvider("nano_banana", _result("nano_banana"))
+    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": _FakeProvider("flux_kontext", None)})
+    _verify(monkeypatch, lambda **k: _ok())
+
+    stats = gen.run_photo_generation(user.id, db, sync)
+
+    assert stats.ready == 2 and stats.budget_stopped is True
+    for c in cands:
+        db.refresh(c)
+    ready = [c for c in cands if c.generation_status == "ready"]
+    residue = [c for c in cands if c.generation_status is None]
+    assert len(ready) == 2 and len(residue) == 2       # budget-denied left for a later run
+    run = _run(db, sync)
+    assert run.generation_ready == 2 and run.generation_total == 4
+
+
 # --- generation_armed gate ---------------------------------------------------
 
 def test_generation_armed_true_with_gemini(monkeypatch):

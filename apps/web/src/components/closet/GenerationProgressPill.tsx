@@ -24,9 +24,12 @@ interface GenerationProgressPillProps {
   /** Fired just before routing to the deck — e.g. the background-return pill clears its
    *  store entry so it doesn't linger once the user is reviewing. */
   onReview?: () => void;
+  /** Fired ONCE when the run finishes. The waiting (preparing) screen uses this to
+   *  auto-advance to the deck without a tap; the away notice omits it (shows a CTA). */
+  onDone?: () => void;
 }
 
-export function GenerationProgressPill({ syncId, staged, onReview }: GenerationProgressPillProps) {
+export function GenerationProgressPill({ syncId, staged, onReview, onDone }: GenerationProgressPillProps) {
   const router = useRouter();
   const [ready, setReady] = useState(0);
   const [total, setTotal] = useState(staged);
@@ -34,6 +37,11 @@ export function GenerationProgressPill({ syncId, staged, onReview }: GenerationP
 
   const mountedRef = useRef(true);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // onDone via a ref so an inline callback prop doesn't restart the poll each render;
+  // doneFiredRef makes it fire exactly once.
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+  const doneFiredRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -51,6 +59,10 @@ export function GenerationProgressPill({ syncId, staged, onReview }: GenerationP
         // (ready + failed === total). Either way the deck is ready to open.
         if (st.status !== 'running' || (gt > 0 && gr + gf >= gt)) {
           setDone(true);
+          if (!doneFiredRef.current) {
+            doneFiredRef.current = true;
+            onDoneRef.current?.();
+          }
           return; // stop polling
         }
       } catch {

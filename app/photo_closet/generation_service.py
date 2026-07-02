@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -195,6 +196,13 @@ def _select_targets(db: Session, user_id: UUID, sync_id: UUID) -> List[IngestCan
     )
 
 
+@dataclass
+class _CandidateOutcome:
+    """What one worker did with its candidate — aggregated into GenerationStats."""
+    outcome: str            # ready | held | download_error | budget | skipped
+    cost_usd: float = 0.0
+
+
 def run_photo_generation(
     user_id: UUID,
     db: Session,
@@ -202,11 +210,17 @@ def run_photo_generation(
     *,
     storage_client=None,
     provider_ladder: Optional[Sequence[str]] = None,
+    max_concurrency: Optional[int] = None,
 ) -> GenerationStats:
     """Generate + verify + store a product card for each staged photo candidate.
 
-    Finalizes the run to 'completed' when the pass ends (commit deliberately left it
-    'running' so /status reports generation-in-flight). Best-effort throughout."""
+    Candidates are generated CONCURRENTLY in a bounded thread pool (each worker owns its
+    own DB session), so a multi-item photo finishes in ~the slowest single item, not the
+    sum. Each worker still streams its own state (generating -> ready/pending_retry) via
+    per-candidate commits, and bumps the run counters with ATOMIC SQL increments so
+    concurrent updates never race. Shared Generation/Verify budgets cap total calls
+    across the whole set. Finalizes the run to 'completed' once all workers finish
+    (commit deliberately left it 'running'). Best-effort throughout."""
     ladder = tuple(provider_ladder or _GENERATION_LADDER)
     stats = GenerationStats(user_id=user_id, sync_id=sync_id)
     run = (
@@ -217,6 +231,9 @@ def run_photo_generation(
     try:
         targets = _select_targets(db, user_id, sync_id)
         stats.targets = len(targets)
+        # Capture ids only: each worker re-loads its candidate in its OWN session (the
+        # passed-in Session is not shared across threads).
+        target_ids = [c.id for c in targets]
         # Publish the denominator up front so the add-photo pill can show "0 / N".
         if run is not None:
             run.generation_total = len(targets)
@@ -227,22 +244,43 @@ def run_photo_generation(
         if storage_client is None:
             storage_client = _storage_from_env()
 
+        # Budgets + usage are thread-safe (lock-guarded) and SHARED across all workers,
+        # so the caps apply to the whole concurrent set, not per worker.
         gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
         verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
         usage = UsageAccumulator()
 
-        for cand in targets:
-            # Gate on the dedup seam: only unique survivors generate (stub: always
-            # unique — wires the seam so the real matcher drops in with no change).
-            if dedup_check(db, user_id, cand).verdict != "unique":
-                continue
-            if not gen_budget.take():
-                stats.budget_stopped = True
-                logger.info("generation sync=%s: budget cap hit, residue left", sync_id)
-                break
-            _generate_one(
-                db, cand, run, storage_client, ladder, verify_budget, usage, stats
-            )
+        if target_ids:
+            cap = max(1, int(max_concurrency or settings.GENERATION_MAX_CONCURRENCY))
+            workers = min(cap, len(target_ids))
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="photogen"
+            ) as pool:
+                futures = [
+                    pool.submit(
+                        _generate_candidate, cid, user_id, sync_id, storage_client,
+                        ladder, gen_budget, verify_budget, usage,
+                    )
+                    for cid in target_ids
+                ]
+                for fut in futures:
+                    r = fut.result()  # workers catch their own errors — never raise
+                    if r.outcome == "ready":
+                        stats.ready += 1
+                        stats.cost_usd += r.cost_usd
+                    elif r.outcome == "download_error":
+                        stats.held += 1
+                        stats.download_errors += 1
+                    elif r.outcome == "held":
+                        stats.held += 1
+                    elif r.outcome == "budget":
+                        stats.budget_stopped = True
+                    # "skipped" (dedup / vanished row) -> no counter, no stat
+
+        # Pull the workers' committed counter increments into the passed-in session so
+        # record_fill_usage / _finalize_run and any caller reading `run` see final values.
+        if run is not None:
+            db.refresh(run)
 
         # Roll the pair-pass verify cost onto the run (per-model priced).
         record_fill_usage(db, sync_id, usage)
@@ -260,91 +298,132 @@ def run_photo_generation(
     return stats
 
 
-def _generate_one(
-    db: Session,
-    cand: IngestCandidate,
-    run: Optional[IngestRun],
+def _generate_candidate(
+    candidate_id,
+    user_id: UUID,
+    sync_id: UUID,
     storage_client,
     ladder: Tuple[str, ...],
+    gen_budget: GenerationBudget,
     verify_budget: VerifyBudget,
     usage: UsageAccumulator,
-    stats: GenerationStats,
-) -> None:
-    """Run the ladder for ONE candidate; commit its terminal state (stream per item)."""
-    # Mark 'generating' and stream it (the deck can render a progress state).
-    cand.generation_status = "generating"
-    db.commit()
+) -> _CandidateOutcome:
+    """Run the ladder for ONE candidate in its OWN DB session (a pool worker).
 
-    dl = _download_bytes(cand.image_url)
-    if dl is None:
-        stats.download_errors += 1
-        _hold_for_retry(db, cand, run, stats)
-        return
-    ref_bytes, ref_ct = dl
+    Streams state via per-candidate commits and bumps the run counters atomically. Never
+    raises — any failure holds the candidate for a later retry sweep."""
+    from app.db import SessionLocal  # late import: worker-owned, thread-safe session
 
-    for provider_name in ladder:
-        provider = get_generation_provider(provider_name)
-        result = provider.generate(
-            GenerationRequest(
-                image_bytes=ref_bytes,
-                content_type=ref_ct,
-                name=cand.name,
+    db = SessionLocal()
+    try:
+        cand = (
+            db.query(IngestCandidate)
+            .filter(
+                IngestCandidate.id == candidate_id,
+                IngestCandidate.user_id == user_id,
+            )
+            .first()
+        )
+        if cand is None:
+            return _CandidateOutcome("skipped")
+
+        # Gate on the dedup seam: only unique survivors generate (stub: always unique —
+        # wires the seam so the real matcher drops in with no change).
+        if dedup_check(db, user_id, cand).verdict != "unique":
+            return _CandidateOutcome("skipped")
+
+        # Shared budget across all workers (thread-safe). Deny -> leave the candidate
+        # untouched (null) as residue for a later run; never mark it 'generating'.
+        if not gen_budget.take():
+            return _CandidateOutcome("budget")
+
+        # Mark 'generating' and stream it immediately (the deck renders the loading state).
+        cand.generation_status = "generating"
+        db.commit()
+
+        dl = _download_bytes(cand.image_url)
+        if dl is None:
+            _hold(db, cand, sync_id)
+            return _CandidateOutcome("download_error")
+        ref_bytes, ref_ct = dl
+
+        for provider_name in ladder:
+            provider = get_generation_provider(provider_name)
+            result = provider.generate(
+                GenerationRequest(
+                    image_bytes=ref_bytes,
+                    content_type=ref_ct,
+                    name=cand.name,
+                    category=cand.category,
+                    color=cand.color,
+                    pattern=None,  # no pattern column on ingest_candidates
+                    brand=cand.brand,
+                )
+            )
+            if result is None:
+                continue  # provider failure / unavailable -> next rung
+
+            verdict = verify_generated_image(
+                reference_bytes=ref_bytes,
+                reference_content_type=ref_ct,
+                candidate_bytes=result.image_bytes,
+                candidate_content_type=result.content_type,
                 category=cand.category,
                 color=cand.color,
-                pattern=None,  # no pattern column on ingest_candidates
-                brand=cand.brand,
+                pattern=None,
+                name=cand.name,
+                budget=verify_budget,
+                usage=usage,
             )
+            # MANDATORY gate: a skipped/disabled verify is NOT a pass — never store it.
+            if not verdict.matches:
+                continue
+
+            url = _store_generated(
+                storage_client, cand.user_id, result.image_bytes, result.content_type
+            )
+            if not url:
+                # Passed verify but storage is down — can't persist a card; hold + retry.
+                break
+
+            # Candidate write + atomic counter increment in ONE transaction. The
+            # `generation_ready = generation_ready + 1` runs as a single SQL UPDATE, so
+            # concurrent workers can't lose an increment (row-level lock serializes them).
+            cand.generated_image_url = url
+            cand.generation_status = "ready"
+            db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
+                {IngestRun.generation_ready: IngestRun.generation_ready + 1},
+                synchronize_session=False,
+            )
+            db.commit()
+            return _CandidateOutcome("ready", float(result.cost_usd or 0.0))
+
+        # Ladder exhausted (or storage down after a pass): hold for a later sweep.
+        _hold(db, cand, sync_id)
+        return _CandidateOutcome("held")
+    except Exception as exc:
+        logger.warning(
+            "generation candidate sync=%s: %s", sync_id, type(exc).__name__
         )
-        if result is None:
-            continue  # provider failure / unavailable -> next rung
-
-        verdict = verify_generated_image(
-            reference_bytes=ref_bytes,
-            reference_content_type=ref_ct,
-            candidate_bytes=result.image_bytes,
-            candidate_content_type=result.content_type,
-            category=cand.category,
-            color=cand.color,
-            pattern=None,
-            name=cand.name,
-            budget=verify_budget,
-            usage=usage,
-        )
-        # MANDATORY gate: a skipped/disabled verify is NOT a pass — never store it.
-        if not verdict.matches:
-            continue
-
-        url = _store_generated(
-            storage_client, cand.user_id, result.image_bytes, result.content_type
-        )
-        if not url:
-            # Passed verify but storage is down — can't persist a card; hold + retry.
-            break
-
-        cand.generated_image_url = url
-        cand.generation_status = "ready"
-        stats.ready += 1
-        stats.cost_usd += float(result.cost_usd or 0.0)
-        if run is not None:
-            run.generation_ready = (run.generation_ready or 0) + 1
-        db.commit()
-        return
-
-    # Ladder exhausted (or storage down after a pass): hold for a later sweep.
-    _hold_for_retry(db, cand, run, stats)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return _CandidateOutcome("held")
+    finally:
+        db.close()
 
 
-def _hold_for_retry(
-    db: Session, cand: IngestCandidate, run: Optional[IngestRun], stats: GenerationStats
-) -> None:
-    """No verified card this pass: mark 'pending_retry', leave generated_image_url NULL.
+def _hold(db: Session, cand: IngestCandidate, sync_id: UUID) -> None:
+    """Mark 'pending_retry' + atomically bump generation_failed, in one transaction.
 
-    image_url (the crop) is deliberately untouched — the deck must not show the raw
-    cutout as the finished product card."""
+    generated_image_url is left NULL and image_url (the crop) untouched — the deck must
+    not show the raw cutout as the finished product card."""
     cand.generation_status = "pending_retry"
-    stats.held += 1
-    if run is not None:
-        run.generation_failed = (run.generation_failed or 0) + 1
+    db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
+        {IngestRun.generation_failed: IngestRun.generation_failed + 1},
+        synchronize_session=False,
+    )
     db.commit()
 
 

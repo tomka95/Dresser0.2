@@ -10,7 +10,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Camera, Check, Mail, Pencil, Sparkles, X } from 'lucide-react';
+import { Camera, Check, Mail, Pencil, X } from 'lucide-react';
 
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
@@ -571,21 +571,6 @@ export default function ReviewPage() {
   const showPreviewTag = isPhotoCard && (genStatus === 'pending_retry' || genStatus === 'failed');
   const cardSrc = generatedReady ? current.generated_image_url : current.image_url;
 
-  // True while this run is still generating product cards — gates the non-blocking
-  // "Tailor in the background" escape below.
-  const deckGenerating =
-    runGenerating || candidates.some((c) => c.generation_status === 'generating');
-
-  // Escape hatch: leave the blocking deck while generation continues server-side. Stash
-  // this run so the GenerationProgressPill can resurface on /add-photo and pop the deck
-  // back up (/review?sync_id=…) the moment it's ready. Only meaningful for a scoped run.
-  function handleReviewInBackground() {
-    const syncId = scopeSyncIdRef.current;
-    if (!syncId) return;
-    useGenerationStore.getState().setPending({ syncId, staged: candidates.length });
-    router.push('/add-photo');
-  }
-
   // Alternating stack tilt: even cards lean left (−2°), odd cards lean right (+2°), so a
   // card and the one peeking behind it lean opposite ways.
   const baseRot = index % 2 === 0 ? -2 : 2;
@@ -655,25 +640,6 @@ export default function ReviewPage() {
               {scanCount > 0 ? ` · ${scanCount} found` : ''}
             </span>
           </div>
-        )}
-
-        {/* Non-blocking escape while product cards are still being tailored: leave the
-            deck and get pulled back by the progress pill the moment they're ready. */}
-        {deckGenerating && (
-          <button
-            type="button"
-            onClick={handleReviewInBackground}
-            className="mt-3 inline-flex items-center gap-2 self-start rounded-full px-3.5 py-2 text-[12.5px] font-semibold active:scale-95"
-            style={{
-              background: 'var(--tr-10)',
-              border: '1px solid var(--tr-20)',
-              color: 'rgba(255,255,255,0.85)',
-              transition: 'transform 120ms var(--ease-out)',
-            }}
-          >
-            <Sparkles size={14} style={{ color: 'var(--mint)' }} />
-            Tailor in the background
-          </button>
         )}
 
         {/* Card area */}
@@ -777,15 +743,24 @@ export default function ReviewPage() {
                 // wrong image.
                 <div className="absolute inset-0 animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
               ) : (
-                // Shared render path: opaque neutral backing + absolute-fill <img>. contain
-                // shows the WHOLE card (cover would crop it). cardSrc is the generated
-                // product card when ready, else the crop fallback.
-                <ItemImage key={current.candidate_id} src={cardSrc} alt={name} fit="contain" emptyLabel="No image" />
+                // Shared render path: absolute-fill <img>, contain shows the WHOLE card
+                // (cover would crop it). cardSrc is the generated product card when ready,
+                // else the crop fallback. For the generated card we SAMPLE its own bg so
+                // the contain letterbox matches the image → seamless full-bleed, no bars.
+                <ItemImage
+                  key={current.candidate_id}
+                  src={cardSrc}
+                  alt={name}
+                  fit="contain"
+                  emptyLabel="No image"
+                  sampleBackground={generatedReady}
+                />
               )}
               {/* Gradient fade: blends a real image's bottom into the dark info panel
-                  (#222). Gated OFF the generating state — over the loading panel it only
-                  darkened the copy (part of the "black card" bug). */}
-              {!showGenerating && (
+                  (#222). Gated OFF the generating state (it darkened the loading panel)
+                  AND the generated card (its sampled pale bg must stay seamless — a dark
+                  fade would smudge it). Kept for Gmail images / crop previews. */}
+              {!showGenerating && !generatedReady && (
                 <div
                   className="pointer-events-none absolute inset-0"
                   style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent 55%)' }}

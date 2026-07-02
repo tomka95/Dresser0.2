@@ -17,6 +17,7 @@
  * straight to detection. Object URLs are revoked on reset and on unmount.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Camera, ImagePlus, X } from 'lucide-react';
 
 import {
@@ -53,6 +54,7 @@ interface Picked {
 let pickedSeq = 0;
 
 export function PhotoIngestUpload() {
+  const router = useRouter();
   const [picked, setPicked] = useState<Picked[]>([]);
   const [step, setStep] = useState<Step>('pick');
   const [error, setError] = useState<string | null>(null);
@@ -347,28 +349,28 @@ export function PhotoIngestUpload() {
             <span style={{ fontSize: 34 }}>✨</span>
             <p className="m-0 text-[16px] font-semibold text-white">Tailoring your items</p>
             <p className="mt-1 max-w-[260px] text-[13px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
-              We&rsquo;re pressing clean product shots. This keeps going in the
-              background — review whenever you&rsquo;re ready.
+              We&rsquo;re pressing clean product shots. Wait here and your review opens
+              the moment they&rsquo;re ready.
             </p>
           </div>
+          {/* Waiting on this screen → auto-advance to the deck when the run finishes (no
+              tap). Tapping the pill early still works; onReview clears the stashed run. */}
           <GenerationProgressPill
             syncId={genRun.syncId}
             staged={genRun.staged}
             onReview={() => useGenerationStore.getState().clear()}
+            onDone={() => {
+              useGenerationStore.getState().clear();
+              router.push(`/review?sync_id=${encodeURIComponent(genRun.syncId)}`);
+            }}
           />
           <button
             type="button"
-            onClick={() => {
-              // Give up the return pill and start a fresh pick.
-              useGenerationStore.getState().clear();
-              setGenRun(null);
-              setNotice(null);
-              setStep('pick');
-            }}
+            onClick={() => router.push('/home')}
             className="text-[13px] underline"
             style={{ color: 'rgba(255,255,255,0.5)' }}
           >
-            Add more photos
+            Tailor in the background
           </button>
         </div>
       )}
