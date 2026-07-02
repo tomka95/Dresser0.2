@@ -6,8 +6,10 @@ Real usage from each provider, attributed to the ingest_run (sync) and thus the 
   * Gemini EXTRACTION (base Flash-Lite + Flash escalation) — input/output token counts
     from each call's usage_metadata, summed in the extractor and written by the
     extraction service.
-  * Gemini VISION-VERIFY (Flash-Lite) — input/output tokens from each verify call's
-    usage_metadata, accumulated in the background image-fill pass.
+  * Gemini VISION-VERIFY — input/output tokens from each verify call's usage_metadata,
+    accumulated in the background image-fill pass. The single-image pass runs Flash-Lite;
+    the generated-image reference-vs-candidate PAIR pass runs the pricier
+    GENERATION_VERIFY_MODEL (Flash), and each call is priced at the model that ran it.
   * SERPER shopping search — one credit per ISSUED query, counted in shopping_search.
 
 Dollars are computed from those recorded units × the editable per-unit rates in
@@ -66,11 +68,6 @@ def gemini_flash_lite_cost(input_tokens: int, output_tokens: int) -> float:
     )
 
 
-def verify_cost(input_tokens: int, output_tokens: int) -> float:
-    """USD for vision-verify tokens, at the configured verify model's rate."""
-    return gemini_cost(settings.GMAIL_VERIFY_MODEL, input_tokens, output_tokens)
-
-
 def serper_cost(credits: int) -> float:
     """USD for ``credits`` issued Serper queries."""
     return float(credits) * float(settings.SERPER_USD_PER_CREDIT)
@@ -108,12 +105,28 @@ class UsageAccumulator:
         self._lock = threading.Lock()
         self.verify_input_tokens = 0
         self.verify_output_tokens = 0
+        # Cost accrued PER MODEL at add time (not recomputed from token totals):
+        # the single-image pass runs Flash-Lite, the generated-image pair pass runs
+        # the pricier GENERATION_VERIFY_MODEL (Flash). Pricing at add time keeps a
+        # mix of the two correct — token totals alone can't be repriced.
+        self._verify_cost = 0.0
         self.serper_credits = 0
 
-    def add_verify(self, input_tokens: int, output_tokens: int) -> None:
+    def add_verify(
+        self, input_tokens: int, output_tokens: int, model: Optional[str] = None
+    ) -> None:
+        """Record one verify call's tokens, priced at the MODEL THAT RAN IT.
+
+        Token totals accumulate for the count columns; cost accrues per-model so
+        the generated-image pair pass (GENERATION_VERIFY_MODEL = Flash) is billed
+        at Flash, not under-reported at the single-image Flash-Lite rate. ``model``
+        defaults to the single-image verify model (GMAIL_VERIFY_MODEL).
+        """
         with self._lock:
-            self.verify_input_tokens += int(input_tokens or 0)
-            self.verify_output_tokens += int(output_tokens or 0)
+            it, ot = int(input_tokens or 0), int(output_tokens or 0)
+            self.verify_input_tokens += it
+            self.verify_output_tokens += ot
+            self._verify_cost += gemini_cost(model or settings.GMAIL_VERIFY_MODEL, it, ot)
 
     def add_serper(self, credits: int = 1) -> None:
         with self._lock:
@@ -121,7 +134,9 @@ class UsageAccumulator:
 
     @property
     def verify_cost_usd(self) -> float:
-        return verify_cost(self.verify_input_tokens, self.verify_output_tokens)
+        """Sum of each verify call's cost at the model that ran it (per-model priced)."""
+        with self._lock:
+            return self._verify_cost
 
     @property
     def search_cost_usd(self) -> float:
@@ -196,7 +211,11 @@ def record_fill_usage(db, sync_id: Optional[UUID], acc: UsageAccumulator) -> Non
         run.verify_input_tokens = (run.verify_input_tokens or 0) + acc.verify_input_tokens
         run.verify_output_tokens = (run.verify_output_tokens or 0) + acc.verify_output_tokens
         run.serper_credits = (run.serper_credits or 0) + acc.serper_credits
-        run.verify_cost_usd = verify_cost(run.verify_input_tokens, run.verify_output_tokens)
+        # ADD the accumulator's per-model-priced cost (do NOT reprice token totals
+        # at one rate — that would under-bill the Flash pair pass). Identical to the
+        # old recompute when every verify ran on one model (the Gmail single-image
+        # path today), and correct once the Flash pair pass also records here.
+        run.verify_cost_usd = float(run.verify_cost_usd or 0) + acc.verify_cost_usd
         run.search_cost_usd = serper_cost(run.serper_credits)
         _recompute_total(run)
         db.commit()

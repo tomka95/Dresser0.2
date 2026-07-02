@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     GMAIL_VERIFY_MAX_PER_RUN: int = 200
 
     # --- Generation verify (Wave 2) -----------------------------------------
+    # Model for the TWO-image reference-vs-generated verify pass
+    # (image_verify.verify_generated_image). Stronger than the single-image
+    # GMAIL_VERIFY_MODEL on purpose: the flash-lite tier canNOT judge logo
+    # fidelity (count/placement) — it passed a duplicated-and-relocated swoosh
+    # even at HIGH resolution, while gemini-2.5-flash catches it at medium. The
+    # single-image color/garment pass stays on the cheaper flash-lite.
+    GENERATION_VERIFY_MODEL: str = "gemini-2.5-flash"
     # Media resolution for the TWO-image reference-vs-generated verify pass
     # (image_verify.verify_generated_image). "low" | "medium" | "high".
     # Default medium: LOW is too coarse to judge logo/text presence reliably.

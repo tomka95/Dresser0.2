@@ -138,26 +138,32 @@ def test_budget_never_negative():
 
 def test_prompt_contains_invariants():
     prompt = build_generation_prompt(REQ)
-    assert "Preserve the garment EXACTLY" in prompt
+    # ISOLATE: extract only the target garment, drop person/scene/other garments.
+    assert "Extract ONLY the single target garment" in prompt
+    assert "REMOVE the person" in prompt
+    assert "Preserve the target garment EXACTLY" in prompt
     assert "Do NOT add any logo, text, brand mark" in prompt
     assert "No person, no mannequin" in prompt
 
 
 def test_prompt_appends_attribute_hints():
-    assert build_generation_prompt(REQ).endswith("The garment is a black striped top.")
+    # category/color/pattern build the descriptor; name disambiguates the garment.
+    assert build_generation_prompt(REQ).endswith(
+        'The target garment is the black striped top ("EZwear Halter Top").'
+    )
 
 
-def test_prompt_never_includes_name_or_brand():
-    """NO-ADD invariant: naming a brand invites the model to paint its logo."""
+def test_prompt_includes_name_excludes_brand():
+    """Name is included to pick WHICH garment; brand stays out (logo-paint risk)."""
     prompt = build_generation_prompt(REQ)
-    assert "SHEIN" not in prompt
-    assert "EZwear" not in prompt
+    assert "EZwear Halter Top" in prompt   # name conditions the isolation
+    assert "SHEIN" not in prompt           # brand never enters the prompt
 
 
-def test_prompt_without_attributes_has_no_hint():
+def test_prompt_without_attributes_has_no_target_descriptor():
     bare = GenerationRequest(image_bytes=PNG, content_type="image/png")
     prompt = build_generation_prompt(bare)
-    assert "The garment is" not in prompt
+    assert "The target garment is" not in prompt
 
 
 def test_prompt_is_deterministic():

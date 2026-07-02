@@ -459,6 +459,7 @@ def run_photo_commit(
     *,
     provider=None,
     describe=None,
+    defer_completion: bool = False,
 ) -> PhotoCommitResult:
     """Stage the user's SELECTED regions (+ manual boxes) from re-uploaded photos.
 
@@ -571,9 +572,15 @@ def run_photo_commit(
             result.images_processed += 1
             result.staged += staged_here
 
-        run.status = "completed"
         run.extracted_count = result.staged
-        run.finished_at = _utc_now()
+        if defer_completion and result.staged > 0:
+            # Generation will run in the background and OWNS finalization: the run stays
+            # 'running' so GET /ingest/status reports generation-in-flight, and
+            # generation_service._finalize_run flips it to 'completed' when done.
+            run.status = "running"
+        else:
+            run.status = "completed"
+            run.finished_at = _utc_now()
         db.commit()
     except Exception:
         db.rollback()

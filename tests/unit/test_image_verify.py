@@ -144,17 +144,24 @@ class _ExplodingProvider:
 
 def _stub_pair_model(
     monkeypatch, *, garment_ok=True, color_ok=True, pattern_ok=True,
-    logo_text_ok=True, matches=None, score=0.9,
+    logo_text_ok=True, logo_present_parity=True, logo_count_ok=True,
+    logo_placement_ok=True, logo_identity_ok=True, matches=None, score=0.9,
 ) -> _CapturingProvider:
-    """Canned pair verdict. `matches` defaults to the AND of the four oks; pass an
+    """Canned pair verdict. `matches` defaults to the AND of all the oks; pass an
     explicit (lying) value to prove verify_generated_image recomputes in code."""
     verdict = _VerdictSchema(
         garment_ok=garment_ok,
         color_ok=color_ok,
         pattern_ok=pattern_ok,
         logo_text_ok=logo_text_ok,
+        logo_present_parity=logo_present_parity,
+        logo_count_ok=logo_count_ok,
+        logo_placement_ok=logo_placement_ok,
+        logo_identity_ok=logo_identity_ok,
         matches=(
-            bool(garment_ok and color_ok and pattern_ok and logo_text_ok)
+            bool(garment_ok and color_ok and pattern_ok and logo_text_ok
+                 and logo_present_parity and logo_count_ok and logo_placement_ok
+                 and logo_identity_ok)
             if matches is None else matches
         ),
         score=score,
@@ -213,6 +220,76 @@ def test_pair_pattern_fail_blocks_even_with_high_score(monkeypatch):
     assert v.matches is False
     assert v.pattern_ok is False
     assert v.skipped is False
+
+
+# --- Logo FIDELITY (count / placement / presence-parity / identity) -----------
+# The four cases the bake-off exposed: a duplicated/relocated/invented mark must
+# FAIL even at a high score; a faithful single mark (or clean plain garment) PASS.
+
+def test_pair_duplicated_logo_fails_even_high_score(monkeypatch):
+    """nano's double-swoosh tee: reference has ONE chest swoosh, candidate has
+    chest + collar. logo_count_ok=false (and placement) -> FAIL at score 0.95,
+    even though the model's overall logo_text_ok is lax (lies true)."""
+    _stub_pair_model(
+        monkeypatch, logo_text_ok=True, logo_count_ok=False,
+        logo_placement_ok=False, matches=True, score=0.95,
+    )
+    v = _call_pair()
+    assert v.matches is False
+    assert v.logo_text_ok is False   # composite reflects the fidelity failure
+
+
+def test_pair_relocated_logo_fails(monkeypatch):
+    """A single mark MOVED to a different region (lower-left -> center) -> FAIL."""
+    _stub_pair_model(monkeypatch, logo_placement_ok=False, matches=True, score=0.9)
+    v = _call_pair()
+    assert v.matches is False
+    assert v.logo_text_ok is False
+
+
+def test_pair_invented_logo_on_plain_garment_fails(monkeypatch):
+    """Reference is a plain (logo-less) garment; candidate adds a mark ->
+    logo_present_parity=false -> FAIL."""
+    _stub_pair_model(monkeypatch, logo_present_parity=False, matches=True, score=0.92)
+    v = _call_pair()
+    assert v.matches is False
+    assert v.logo_text_ok is False
+
+
+def test_pair_wrong_identity_logo_fails(monkeypatch):
+    """A different/garbled brand mark -> logo_identity_ok=false -> FAIL."""
+    _stub_pair_model(monkeypatch, logo_identity_ok=False, matches=True, score=0.9)
+    v = _call_pair()
+    assert v.matches is False
+    assert v.logo_text_ok is False
+
+
+def test_pair_faithful_single_logo_passes(monkeypatch):
+    """flux's single-correct-swoosh tee: all logo sub-criteria true -> PASS."""
+    _stub_pair_model(monkeypatch, score=0.9)  # all sub-criteria default True
+    v = _call_pair()
+    assert v.matches is True
+    assert v.logo_text_ok is True
+    assert v.skipped is False
+
+
+def test_pair_clean_plain_garment_passes(monkeypatch):
+    """Plain garment rendered clean (no marks either side) -> PASS."""
+    _stub_pair_model(
+        monkeypatch, logo_present_parity=True, logo_count_ok=True,
+        logo_placement_ok=True, logo_identity_ok=True, score=0.88,
+    )
+    v = _call_pair()
+    assert v.matches is True
+    assert v.logo_text_ok is True
+
+
+def test_pair_logo_subcriterion_overrides_lax_overall_flag(monkeypatch):
+    """Fail-closed fold: model sets overall logo_text_ok=true but a sub-criterion
+    false -> the composite (and matches) is false. Proves the AND is in code."""
+    _stub_pair_model(monkeypatch, logo_text_ok=True, logo_count_ok=False,
+                     matches=True, score=0.99)
+    assert _call_pair().matches is False
 
 
 def test_pair_threshold_fold(monkeypatch):

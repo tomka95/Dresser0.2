@@ -272,6 +272,42 @@ def test_commit_stages_only_selected_regions(db, user):
     assert db.query(PhotoDetectSession).one().status == "committed"
 
 
+def test_commit_defers_completion_for_generation(db, user):
+    """defer_completion + staged>0: the run stays 'running' so the background
+    generation job (not the commit) finalizes it — the deck's generation-in-flight
+    signal. extracted_count is still recorded; finished_at is left null."""
+    img = _sanitized()
+    detection = DetectionResult(person_count=1, garments=[
+        _garment("Red Tee", "top", (50, 50, 500, 600)),
+    ])
+    out = _detect_one(db, user, img, detection)
+    res = ingest_service.run_photo_commit(
+        db, user.id, None, {img.sha256: img},
+        [PhotoSelection(session_id=out.session_id, selected_region_ids=[0])],
+        defer_completion=True,
+    )
+    assert res.staged == 1
+    run = db.query(IngestRun).filter(IngestRun.sync_id == res.sync_id).one()
+    assert run.status == "running"        # deferred — generation owns finalization
+    assert run.finished_at is None
+    assert run.extracted_count == 1
+
+
+def test_commit_defer_but_nothing_staged_completes(db, user):
+    """defer_completion is moot when nothing stages (all deselected): with no
+    generation job to run, the commit finalizes the run itself."""
+    img = _sanitized()
+    out = _detect_one(db, user, img, _two_garment_detection())
+    res = ingest_service.run_photo_commit(
+        db, user.id, None, {img.sha256: img},
+        [PhotoSelection(session_id=out.session_id, selected_region_ids=[])],
+        defer_completion=True,
+    )
+    assert res.staged == 0
+    run = db.query(IngestRun).filter(IngestRun.sync_id == res.sync_id).one()
+    assert run.status == "completed" and run.finished_at is not None
+
+
 def test_commit_same_session_twice_conflicts(db, user):
     img = _sanitized()
     out = _detect_one(db, user, img, _two_garment_detection())

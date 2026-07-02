@@ -28,7 +28,15 @@ import json
 import logging
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -213,6 +221,7 @@ def detect_photo_regions(
 
 @router.post("/commit", response_model=PhotoIngestStartResponse)
 def commit_photo_selection(
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     selections: str = Form(...),
     current_user: User = Depends(get_current_user),
@@ -239,9 +248,17 @@ def commit_photo_selection(
     except Exception as exc:  # missing S3 env / client init failure
         logger.warning("photo commit: storage unavailable, staging without images: %s", exc)
 
+    # Only run background generation when it CAN complete: storage to persist the card
+    # AND a provider + verify key configured. Otherwise finalize the run at commit and
+    # leave candidates as raw cutouts (unchanged behavior when generation isn't set up).
+    from app.photo_closet.generation_service import generate_background, generation_armed
+
+    will_generate = storage_client is not None and generation_armed()
+
     try:
         result = run_photo_commit(
             db, current_user.id, storage_client, sanitized_by_sha, parsed_selections,
+            defer_completion=will_generate,
         )
     except PhotoSessionNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -251,6 +268,14 @@ def commit_photo_selection(
         raise HTTPException(status_code=409, detail=str(exc))
     except PhotoSelectionInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # Kick the background generation job (own DB session; Starlette threadpool). Gated on
+    # staged>0 to match run_photo_commit's defer condition, so the run is never left
+    # 'running' with no job to finalize it. Returns immediately with sync_id.
+    if will_generate and result.staged > 0:
+        background_tasks.add_task(
+            generate_background, str(current_user.id), result.sync_id,
+        )
 
     message = None
     if result.staged == 0 and result.duplicates:

@@ -448,7 +448,7 @@ def render_markdown(
     verify_str = (
         "SKIPPED (--skip-verify)"
         if run_info["skip_verify"]
-        else f"two-image pass ({settings.GMAIL_VERIFY_MODEL})"
+        else f"two-image pass ({settings.GENERATION_VERIFY_MODEL})"
     )
     lines = [
         "# Generation bake-off report",
@@ -530,7 +530,7 @@ def settings_snapshot(provider_names: List[str]) -> dict:
         },
         "verify": {
             "enabled": bool(settings.GMAIL_VERIFY_ENABLED),
-            "model": settings.GMAIL_VERIFY_MODEL,
+            "model": settings.GENERATION_VERIFY_MODEL,
             "score_threshold": float(settings.GMAIL_VERIFY_SCORE_THRESHOLD),
             "media_resolution": settings.GENERATION_VERIFY_MEDIA_RESOLUTION,
             "est_usd_per_pair": VERIFY_USD_PER_PAIR,

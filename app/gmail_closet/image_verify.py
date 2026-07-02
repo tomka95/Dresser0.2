@@ -48,7 +48,15 @@ class _VerdictSchema(BaseModel):
     garment_ok: bool
     color_ok: bool
     pattern_ok: bool = True    # pair pass only: same pattern/print/graphic structure
-    logo_text_ok: bool = True  # pair pass only: no added/removed/altered logo or text
+    logo_text_ok: bool = True  # pair pass only: overall "no added/removed/altered mark"
+    # Logo FIDELITY sub-criteria (pair pass only). Each defaults True so the
+    # single-image schema/prompt keeps parsing unchanged. verify_generated_image
+    # ANDs all of them (plus logo_text_ok) in code — a mark that is duplicated,
+    # relocated, or wrong-identity fails even if the model's overall flag is lax.
+    logo_present_parity: bool = True  # logo iff reference has one (added OR removed -> False)
+    logo_count_ok: bool = True        # no duplicated/extra marks vs the reference count
+    logo_placement_ok: bool = True    # mark(s) in the same region as the reference
+    logo_identity_ok: bool = True     # same brand/mark, not a different or garbled one
     matches: bool
     score: float          # 0..1 confidence the image IS the expected item
     reason: str           # <= 12 words, no text copied from the image
@@ -147,13 +155,29 @@ _PAIR_SYSTEM_INSTRUCTION = (
     "structure as the reference — a solid garment must stay solid, a striped one "
     "striped, a graphic print must keep the same graphic. Be LENIENT on sharpness "
     "and rendering quality, STRICT on the presence, absence, or type of pattern.\n"
-    "- logo_text_ok — THE CRITICAL CHECK, be STRICT: set logo_text_ok=FALSE if the "
-    "candidate shows ANY logo, brand text, lettering, label, or graphic mark that is "
-    "NOT visible on the reference garment; also FALSE if a clearly visible prominent "
-    "logo/text on the reference is missing or materially altered on the candidate. "
-    "Small print that is illegible in both images is ok. Do NOT perform OCR or "
-    "transcription — judge presence, shape, and placement of marks, do not read them.\n"
-    "- matches: true ONLY if garment_ok AND color_ok AND pattern_ok AND logo_text_ok.\n"
+    "LOGO / TEXT FIDELITY — THE CRITICAL CHECK. First COUNT the distinct logos, "
+    "brand marks, lettering, labels, or graphic marks on the REFERENCE garment and "
+    "note WHERE each sits (e.g. lower-left chest, center, collar, sleeve). Then do the "
+    "same for the CANDIDATE and compare. Set these flags, being STRICT:\n"
+    "- logo_present_parity: FALSE if the candidate ADDS a mark where the reference "
+    "has none, OR DROPS a clearly visible prominent mark the reference has. (Reference "
+    "with no logo + candidate with any logo -> FALSE. Reference with a logo + "
+    "logo-less candidate -> FALSE.)\n"
+    "- logo_count_ok: FALSE if the candidate has MORE marks than the reference — any "
+    "duplicated or extra copy of a mark (e.g. reference has ONE chest swoosh, "
+    "candidate has a chest AND a collar swoosh -> FALSE).\n"
+    "- logo_placement_ok: FALSE if a mark is MOVED to a different region than on the "
+    "reference (e.g. reference swoosh on lower-left chest, candidate swoosh at the "
+    "center or collar -> FALSE).\n"
+    "- logo_identity_ok: FALSE if a mark is a DIFFERENT brand/logo or a garbled / "
+    "malformed version of the reference mark.\n"
+    "- logo_text_ok: your overall logo/text judgement — FALSE if ANY of the above is "
+    "violated. Small print illegible in BOTH images is ok. Do NOT perform OCR or "
+    "transcription — judge count, placement, shape, and identity of marks, do not "
+    "read them.\n"
+    "- matches: true ONLY if garment_ok AND color_ok AND pattern_ok AND logo_text_ok "
+    "AND logo_present_parity AND logo_count_ok AND logo_placement_ok AND "
+    "logo_identity_ok.\n"
     "- score: your 0..1 confidence that the candidate faithfully depicts the "
     "reference garment.\n"
     "- reason: at most 12 words; do NOT copy any text seen in the images.\n"
@@ -287,7 +311,7 @@ def verify_image(
                 from app.gmail_closet.usage import usage_tokens
 
                 in_tok, out_tok = usage_tokens(resp)
-                usage.add_verify(in_tok, out_tok)
+                usage.add_verify(in_tok, out_tok, model=model)  # single-image = Flash-Lite
             except Exception:
                 pass  # cost capture is best-effort, never affects verification
     except Exception as exc:  # API/network/parse — never fatal to resolution
@@ -353,8 +377,11 @@ def verify_generated_image(
     Same semantics as verify_image: gated by GMAIL_VERIFY_ENABLED, VerifyBudget
     compatible, NEVER raises — any disabled/budget/error condition returns
     matches=false with skipped=true. ``usage`` records real token counts via
-    add_verify. Logs category + verdict only (never names/bytes)."""
-    model = settings.GMAIL_VERIFY_MODEL
+    add_verify. Logs category + verdict only (never names/bytes).
+
+    Uses GENERATION_VERIFY_MODEL (stronger than the single-image GMAIL_VERIFY_MODEL)
+    because logo-fidelity count/placement judgement needs it — see config."""
+    model = settings.GENERATION_VERIFY_MODEL
 
     if not settings.GMAIL_VERIFY_ENABLED:
         return VerifyVerdict(
@@ -403,7 +430,7 @@ def verify_generated_image(
                 from app.gmail_closet.usage import usage_tokens
 
                 in_tok, out_tok = usage_tokens(resp)
-                usage.add_verify(in_tok, out_tok)
+                usage.add_verify(in_tok, out_tok, model=model)  # pair = GENERATION_VERIFY_MODEL (Flash)
             except Exception:
                 pass  # cost capture is best-effort, never affects verification
     except Exception as exc:  # API/network/parse — never fatal to generation
@@ -423,6 +450,19 @@ def verify_generated_image(
 
     threshold = settings.GMAIL_VERIFY_SCORE_THRESHOLD
     score = float(v.score or 0.0)
+    # Logo FIDELITY (not just presence): the mark must match the reference on
+    # presence-parity, count (no duplicates), placement, and identity. Fold every
+    # sub-criterion in code (AND) so a lax overall logo_text_ok cannot rescue a
+    # duplicated/relocated/invented mark. Any sub-flag the model leaves unset
+    # defaults True — the strictness comes from the model actively flagging a
+    # violation; the composite is what blocks the card.
+    logo_ok = bool(
+        v.logo_text_ok
+        and v.logo_present_parity
+        and v.logo_count_ok
+        and v.logo_placement_ok
+        and v.logo_identity_ok
+    )
     # Recompute the decision in code — never trust the model's raw `matches` alone.
     # The reference image is always present, so (unlike verify_image) color is always
     # judgeable and gets no absent-attribute override.
@@ -431,13 +471,16 @@ def verify_generated_image(
         and v.garment_ok
         and v.color_ok
         and v.pattern_ok
-        and v.logo_text_ok
+        and logo_ok
         and score >= threshold
     )
     logger.info(
         "generated-verify category=%s -> trusted=%s garment_ok=%s color_ok=%s "
-        "pattern_ok=%s logo_text_ok=%s score=%.2f",
-        category, trusted, v.garment_ok, v.color_ok, v.pattern_ok, v.logo_text_ok, score,
+        "pattern_ok=%s logo_ok=%s (parity=%s count=%s place=%s ident=%s raw_logo=%s) "
+        "score=%.2f",
+        category, trusted, v.garment_ok, v.color_ok, v.pattern_ok, logo_ok,
+        v.logo_present_parity, v.logo_count_ok, v.logo_placement_ok,
+        v.logo_identity_ok, v.logo_text_ok, score,
     )
     return VerifyVerdict(
         matches=trusted,
@@ -447,7 +490,9 @@ def verify_generated_image(
         reason=(v.reason or "")[:120],
         model=model,
         pattern_ok=bool(v.pattern_ok),
-        logo_text_ok=bool(v.logo_text_ok),
+        # Report the COMPOSITE logo fidelity result (not just the model's overall
+        # flag) so downstream + the bake-off's logo_violations reflect fidelity.
+        logo_text_ok=logo_ok,
     )
 
 
