@@ -105,8 +105,12 @@ export function ItemImage({
   }, [src, sampleBackground]);
 
   // In sampling mode the backing is the image's own bg (sampled, else off-white) so a
-  // `contain` image shows no bars; otherwise the opaque neutral panel.
-  const background = sampleBackground ? sampledBg ?? FALLBACK_OFFWHITE : NEUTRAL_BG;
+  // `contain` image shows no bars — BUT only switch to that pale backing once the <img>
+  // has actually painted. Before load we keep the opaque neutral (dark) panel, so a
+  // not-yet-decoded generated card shows the dark card surface, never a white/off-white
+  // flash (the bug: the pale panel was painted for ~1s before the image arrived).
+  const background =
+    sampleBackground && loaded ? sampledBg ?? FALLBACK_OFFWHITE : NEUTRAL_BG;
 
   return (
     <div

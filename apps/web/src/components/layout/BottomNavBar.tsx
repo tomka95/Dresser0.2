@@ -57,8 +57,8 @@ export function BottomNavBar({ activeRoute }: BottomNavBarProps) {
           style={{
             top: -16, // bar padding offset: center sits on the bar's top edge
             transform: 'translate(-50%, -50%)',
-            width: 76,
-            height: 76,
+            width: 90,
+            height: 90,
             border: '4px solid var(--app-nav-bg)',
             background: 'var(--grad-teal)',
             boxShadow: '0 8px 20px rgba(10,54,51,0.5)',
@@ -67,7 +67,7 @@ export function BottomNavBar({ activeRoute }: BottomNavBarProps) {
           {/* Brand hanger line-art (generous transparent padding — sized up so the
               visible glyph reads ~32px). */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/9.png" alt="" className="pointer-events-none h-16 w-16 object-contain" aria-hidden />
+          <img src="/9.png" alt="" className="pointer-events-none w-full h-full object-contain scale-150 -translate-y-2" aria-hidden />
         </Link>
 
         <Tab {...TABS[2]} />

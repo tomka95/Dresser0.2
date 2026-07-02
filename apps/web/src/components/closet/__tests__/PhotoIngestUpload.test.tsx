@@ -260,7 +260,7 @@ describe('PhotoIngestUpload', () => {
 
     expect(await screen.findByText(/already added/i)).toBeInTheDocument();
     // Back at pick with the queue cleared — no select step, no commit.
-    expect(screen.getByRole('button', { name: 'Select photos to continue' })).toBeDisabled();
+    expect(screen.getByText('Take photo')).toBeInTheDocument();
     expect(commitPhotoIngest).not.toHaveBeenCalled();
   });
 
@@ -295,7 +295,7 @@ describe('PhotoIngestUpload', () => {
 
     expect(await screen.findByText(/held for review/i)).toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Select photos to continue' })).toBeDisabled();
+    expect(screen.getByText('Take photo')).toBeInTheDocument();
   });
 
   it('detect failure surfaces the error and stays recoverable at pick', async () => {
@@ -353,7 +353,7 @@ describe('PhotoIngestUpload', () => {
 
     expect(await screen.findByText(/couldn't read that heic/i)).toBeInTheDocument();
     // Nothing picked, no detect — recoverable.
-    expect(screen.getByRole('button', { name: 'Select photos to continue' })).toBeDisabled();
+    expect(screen.getByText('Take photo')).toBeInTheDocument();
     expect(detectPhotoIngest).not.toHaveBeenCalled();
   });
 });

@@ -74,22 +74,60 @@ function CountdownRing({ seconds, children }: { seconds: number; children: React
   );
 }
 
-// Warm the browser cache for the image each card WILL show (generated card once ready,
-// else the crop) so the visible <img> decodes instantly — no white flash on the first
-// card or on advance. The bg-sampling probe is separate and never gates this render.
+// The URL a card WILL paint into its <img>, or null if the card shows a non-image state
+// (still-generating "tailoring" placeholder / resolving shimmer) and so needs no warming.
+function cardImageUrl(c: IngestCandidate | undefined): string | null {
+  if (!c) return null;
+  if (c.generation_status === 'ready' && c.generated_image_url) return c.generated_image_url;
+  // Photo cards mid-generation show the placeholder, not the raw crop — nothing to warm.
+  if (c.source_type === 'photo' && (c.generation_status === 'generating' || c.generation_status == null)) {
+    return null;
+  }
+  // Gmail cards / exhausted photo cards paint image_url (once resolved).
+  return c.image_status === 'pending' ? null : c.image_url ?? null;
+}
+
+// URLs already handed to the browser this session — warming the same one twice is wasted
+// work (and re-creating an Image can even evict a fresh decode on some browsers).
+const warmed = new Set<string>();
+
+// Warm the browser cache AND decode the image each card WILL show, so the visible <img>
+// paints instantly — no white flash on the first card or on advance. `img.decode()`
+// pulls the bytes AND rasterizes them off-thread; a plain `img.src =` (the prior attempt)
+// only primed the HTTP cache, so the visible <img> still had to decode on the main thread
+// at paint time and flashed the panel meanwhile. The bg-sampling probe is separate.
 function warmCardImages(cands: IngestCandidate[], from: number, to: number) {
   if (typeof window === 'undefined') return;
   for (let i = Math.max(0, from); i <= to; i++) {
-    const c = cands[i];
-    const url =
-      c?.generation_status === 'ready' && c.generated_image_url
-        ? c.generated_image_url
-        : c?.image_url;
-    if (url) {
-      const img = new window.Image();
-      img.src = url;
-    }
+    const url = cardImageUrl(cands[i]);
+    if (!url || warmed.has(url)) continue;
+    warmed.add(url);
+    const img = new window.Image();
+    img.src = url;
+    void img.decode?.().catch(() => {});
   }
+}
+
+// Fully decode `url` before resolving, capped so a slow/broken image can never hang the
+// deck reveal. Used to hold the loading spinner until the FIRST card's image is ready to
+// paint — the deck then appears with its image already on screen instead of white.
+function decodeUrl(url: string, capMs = 600): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') return resolve();
+    const img = new window.Image();
+    const cap = setTimeout(resolve, capMs);
+    const done = () => {
+      clearTimeout(cap);
+      resolve();
+    };
+    img.src = url;
+    if (img.decode) img.decode().then(done, done);
+    else {
+      img.onload = done;
+      img.onerror = done;
+    }
+    warmed.add(url);
+  });
 }
 
 // A bordered "Label Value" pill (Option A). Label muted, value bold. Only rendered by
@@ -296,11 +334,18 @@ export default function ReviewPage() {
       .then((s) => mountedRef.current && setGmailConnected(s.connected))
       .catch(() => mountedRef.current && setGmailConnected(null));
     getIngestCandidates(scopeSyncIdRef.current)
-      .then((cands) => {
+      .then(async (cands) => {
         if (!mountedRef.current) return;
-        // Warm the first cards' images the instant we have URLs (a tick before React
-        // commits the <img>), so returning to the deck shows the first card immediately.
-        warmCardImages(cands, 0, 1);
+        // Warm the first cards' images now, then HOLD the loading spinner until the very
+        // first card's image has fully decoded — so the deck's first paint already carries
+        // its image instead of flashing the panel while the <img> loads. Capped inside
+        // decodeUrl so a slow/absent image can't stall the deck. This is why the earlier
+        // "warm the cache" attempt didn't help: it ran in the same commit as the render,
+        // giving the visible <img> zero head start.
+        warmCardImages(cands, 0, 2);
+        const firstUrl = cardImageUrl(cands[0]);
+        if (firstUrl) await decodeUrl(firstUrl);
+        if (!mountedRef.current) return;
         setCandidates(cands);
         setLoading(false);
         // Poll when images are still resolving, a card is generating, OR this is a
@@ -377,7 +422,11 @@ export default function ReviewPage() {
       // This run's batch is decided — drop any pending "review in background" pill.
       useGenerationStore.getState().clear();
       setResult(res);
-      router.refresh();
+      // NOTE: no router.refresh() here. It re-ran the route at the exact moment `result`
+      // was set — re-validating auth (a transient `status:'loading'` blanks the page) and
+      // churning the tree — which is why the countdown/success screen never reliably
+      // painted live. The closet store's invalidate() above already refreshes the closet
+      // when we land there via the auto-advance below.
     } catch (err) {
       setConfirmError(err instanceof Error ? err.message : 'Failed to add items.');
     } finally {
@@ -419,6 +468,45 @@ export default function ReviewPage() {
           <LightButton onClick={() => router.push('/home')} style={{ height: 48, padding: '0 26px' }}>
             Back to home
           </LightButton>
+        </div>
+      </AppShell>
+    );
+  }
+
+  // Confirmed → the post-confirm success screen with a VISIBLE countdown ring, hoisted
+  // ABOVE every other branch (empty deck / still-scanning / deck) so nothing can preempt
+  // it once the batch is committed. The auto-advance effect drives the 2.5s navigate; the
+  // card is tappable to go now. (Previously this lived deep inside the `index >= total`
+  // block, after the `total === 0` and `scanning` guards — a post-confirm re-render that
+  // landed in one of those branches hid it entirely, so it "never worked" live.)
+  if (result) {
+    return (
+      <AppShell scroll={false}>
+        <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+          <motion.button
+            type="button"
+            onClick={() => router.push('/closet')}
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.3, ease: 'easeOut' }}
+            className="flex flex-col items-center"
+            aria-label="Go to your closet now"
+          >
+            <div className="mb-5">
+              <CountdownRing seconds={2.5}>
+                <Check size={30} color="var(--success)" />
+              </CountdownRing>
+            </div>
+            <h1 className="m-0 text-[22px] font-bold text-white">
+              Added {result.inserted_count} to closet
+            </h1>
+            <p className="mt-2 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              {result.inserted_count} new · {result.updated_count} updated · {result.rejected_count} skipped
+            </p>
+            <span className="mt-6 text-[13px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+              Taking you to your closet… <span style={{ color: 'var(--mint)' }}>tap to go now</span>
+            </span>
+          </motion.button>
         </div>
       </AppShell>
     );
@@ -530,63 +618,31 @@ export default function ReviewPage() {
     return (
       <AppShell scroll={false}>
         <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-          {result ? (
-            // Tappable to go NOW; otherwise the countdown ring auto-advances at 2.5s.
-            <motion.button
+          <h1 className="m-0 text-[22px] font-bold text-white">Review complete</h1>
+          <p className="mt-2 mb-7 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+            {accepted.length} to add · {rejected.length} skipped
+          </p>
+          {confirmError && (
+            <p className="mb-4 text-[13px]" style={{ color: 'var(--danger)' }}>
+              {confirmError}
+            </p>
+          )}
+          <LightButton
+            onClick={handleConfirm}
+            disabled={confirming || accepted.length === 0}
+            style={{ height: 48, padding: '0 26px' }}
+          >
+            {confirming ? 'Adding…' : `Add ${accepted.length} to closet`}
+          </LightButton>
+          {accepted.length === 0 && (
+            <button
               type="button"
               onClick={() => router.push('/closet')}
-              initial={{ opacity: 0, scale: 0.96 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.3, ease: 'easeOut' }}
-              className="flex flex-col items-center"
-              aria-label="Go to your closet now"
+              className="mt-4 text-[13px] underline"
+              style={{ color: 'rgba(255,255,255,0.5)' }}
             >
-              <div className="mb-5">
-                <CountdownRing seconds={2.5}>
-                  <Check size={30} color="var(--success)" />
-                </CountdownRing>
-              </div>
-              <h1 className="m-0 text-[22px] font-bold text-white">
-                Added {result.inserted_count} to closet
-              </h1>
-              <p className="mt-2 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                {result.inserted_count} new · {result.updated_count} updated · {result.rejected_count} skipped
-              </p>
-              <span className="mt-6 text-[13px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
-                Taking you to your closet… <span style={{ color: 'var(--mint)' }}>tap to go now</span>
-              </span>
-            </motion.button>
-          ) : (
-            <>
-              <h1 className="m-0 text-[22px] font-bold text-white">Review complete</h1>
-              <p className="mt-2 mb-7 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                {accepted.length} to add · {rejected.length} skipped
-              </p>
-              {confirmError && (
-                <p className="mb-4 text-[13px]" style={{ color: 'var(--danger)' }}>
-                  {confirmError}
-                </p>
-              )}
-              <LightButton
-                onClick={handleConfirm}
-                disabled={confirming || accepted.length === 0}
-                style={{ height: 48, padding: '0 26px' }}
-              >
-                {confirming
-                  ? 'Adding…'
-                  : `Add ${accepted.length} to closet`}
-              </LightButton>
-              {accepted.length === 0 && (
-                <button
-                  type="button"
-                  onClick={() => router.push('/closet')}
-                  className="mt-4 text-[13px] underline"
-                  style={{ color: 'rgba(255,255,255,0.5)' }}
-                >
-                  Nothing to add — go to closet
-                </button>
-              )}
-            </>
+              Nothing to add — go to closet
+            </button>
           )}
         </div>
       </AppShell>

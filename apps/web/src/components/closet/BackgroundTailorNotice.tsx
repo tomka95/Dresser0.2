@@ -16,13 +16,31 @@
  * preserved throughout. Hidden on /review (already there) and /add-photo (the preparing
  * screen owns the pill), so only one poller is ever live.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useMotionValue } from 'framer-motion';
 import { ArrowRight, Minus, Sparkles, X } from 'lucide-react';
 
 import { useGenerationStore, type PendingGeneration } from '@/stores/useGenerationStore';
 import { useGenerationRunStatus } from './useGenerationRunStatus';
+
+// Session-persisted drag offset (relative to the bottom-right anchor). Kept for the tab
+// session so repositioning the control survives navigations and reloads, but never leaks
+// into a later session. Read once on mount, written on drag end.
+const POS_KEY = 'tailor:bgNoticePos';
+function readStoredPos(): { x: number; y: number } {
+  if (typeof window === 'undefined') return { x: 0, y: 0 };
+  try {
+    const raw = window.sessionStorage.getItem(POS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (typeof p?.x === 'number' && typeof p?.y === 'number') return p;
+    }
+  } catch {
+    /* ignore */
+  }
+  return { x: 0, y: 0 };
+}
 
 export function BackgroundTailorNotice() {
   const pathname = usePathname();
@@ -42,19 +60,41 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
   const clear = useGenerationStore((s) => s.clear);
   const { ready, total, done } = useGenerationRunStatus(pending.syncId, pending.staged);
   const [expanded, setExpanded] = useState(true);
+  // The ready reveal must fire EXACTLY ONCE. `revealed` latches on the first `done` so the
+  // one-shot pop keyframe isn't re-applied by later re-renders (the prior bug used an
+  // `repeat: Infinity` pulse that looked like the control opening and closing forever).
+  const [revealed, setRevealed] = useState(false);
+
+  // Drag: a session-persisted offset from the bottom-right anchor so the user can move the
+  // control off any content it covers, and it stays put across navigations/reloads.
+  const constraintsRef = useRef<HTMLDivElement>(null);
+  const startPos = useRef(readStoredPos());
+  const x = useMotionValue(startPos.current.x);
+  const y = useMotionValue(startPos.current.y);
+  const persistPos = () => {
+    try {
+      window.sessionStorage.setItem(POS_KEY, JSON.stringify({ x: x.get(), y: y.get() }));
+    } catch {
+      /* ignore */
+    }
+  };
 
   // Auto-minimize to the side dock a few seconds after appearing — but only while still
-  // running (a finished run stays open so its attention animation is seen).
+  // running (a finished run stays open so its attention reveal is seen).
   useEffect(() => {
     if (done) return;
     const t = setTimeout(() => setExpanded(false), 4000);
     return () => clearTimeout(t);
   }, [done]);
 
-  // Finished → pop back open (attention-grabbing, below).
+  // Finished → pop back open ONCE and latch `revealed` so the attention keyframe plays a
+  // single time and then the control simply stays open (no loop).
   useEffect(() => {
-    if (done) setExpanded(true);
-  }, [done]);
+    if (done && !revealed) {
+      setExpanded(true);
+      setRevealed(true);
+    }
+  }, [done, revealed]);
 
   const goReview = () => {
     clear();
@@ -63,7 +103,16 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
   const noun = `item${total === 1 ? '' : 's'}`;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-24 z-50 flex justify-end px-4">
+    <div ref={constraintsRef} className="pointer-events-none fixed inset-0 z-50">
+      <motion.div
+        drag
+        dragMomentum={false}
+        dragElastic={0.12}
+        dragConstraints={constraintsRef}
+        onDragEnd={persistPos}
+        style={{ x, y, position: 'absolute', right: 16, bottom: 96, touchAction: 'none' }}
+        className="pointer-events-auto"
+      >
       <AnimatePresence mode="wait" initial={false}>
         {expanded ? (
           <motion.div
@@ -71,25 +120,13 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
             initial={{ opacity: 0, scale: 0.8, x: 24 }}
             animate={
               done
-                ? {
-                    opacity: 1,
-                    x: 0,
-                    scale: [1, 1.06, 1],
-                    boxShadow: [
-                      '0 8px 24px rgba(75,226,214,0.25)',
-                      '0 0 28px 4px rgba(75,226,214,0.65)',
-                      '0 8px 24px rgba(75,226,214,0.25)',
-                    ],
-                  }
+                ? { opacity: 1, x: 0, scale: [0.9, 1.08, 1] }
                 : { opacity: 1, scale: 1, x: 0 }
             }
             exit={{ opacity: 0, scale: 0.8, x: 24 }}
-            transition={
-              done
-                ? { duration: 1.3, repeat: Infinity, ease: 'easeInOut' }
-                : { duration: 0.25, ease: 'easeOut' }
-            }
-            className="pointer-events-auto flex items-center gap-2 rounded-full"
+            // One-shot: the done keyframe has NO repeat, so the reveal pops once and holds.
+            transition={{ duration: done ? 0.5 : 0.25, ease: 'easeOut' }}
+            className="flex items-center gap-2 rounded-full"
           >
             <button
               type="button"
@@ -98,7 +135,15 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
               className="inline-flex items-center gap-2.5 rounded-full font-semibold"
               style={
                 done
-                  ? { background: 'var(--mint)', color: 'var(--brand-teal)', padding: '12px 22px', fontSize: 15 }
+                  ? {
+                      background: 'var(--mint)',
+                      color: 'var(--brand-teal)',
+                      padding: '12px 22px',
+                      fontSize: 15,
+                      // Settled attention glow — stays lit (the reveal pop is the one-shot
+                      // motion; this steady halo keeps it noticeable without looping).
+                      boxShadow: '0 0 26px 3px rgba(75,226,214,0.55)',
+                    }
                   : {
                       background: 'var(--tr-10)',
                       border: '1px solid var(--tr-20)',
@@ -184,6 +229,7 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
           </motion.button>
         )}
       </AnimatePresence>
+      </motion.div>
     </div>
   );
 }
