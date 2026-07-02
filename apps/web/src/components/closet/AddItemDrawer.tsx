@@ -4,17 +4,18 @@
  * AddItemDrawer — light bottom sheet (30px top radius, drag handle) with the three
  * ingestion options from the design: Take photo / Upload photo / Import from Gmail.
  *
- * Photo options post straight to the photo-ingest pipeline (POST /photo/ingest/start)
- * and land on the /review deck scoped to that run. Gmail hands off to the caller
- * (closet routes to /review, where the scan CTA lives).
+ * Photo options no longer auto-stage anything: picked Files are stashed in
+ * usePhotoPickStore (Files can't cross a navigation via URL) and we route to
+ * /add-photo, where detection + region selection happen before anything is
+ * committed. Gmail hands off to the caller (closet routes to /review, where the
+ * scan CTA lives).
  */
 
 import { Camera, ChevronRight, Image as ImageIcon } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sheet, GmailGlyph } from '@/components/ds';
-import { startPhotoIngest } from '@/lib/api/gmail';
-import { useClosetStore } from '@/stores/useClosetStore';
+import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
 
 interface AddItemDrawerProps {
   open: boolean;
@@ -65,7 +66,6 @@ function OptRow({ icon, title, sub, accent = 'var(--brand-teal)', disabled, onCl
 
 export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawerProps) {
   const router = useRouter();
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -79,7 +79,7 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
     return null;
   };
 
-  const handleFiles = async (fileList: FileList | null) => {
+  const handleFiles = (fileList: FileList | null) => {
     const files = Array.from(fileList ?? []);
     if (files.length === 0) return;
     const validationError = validate(files);
@@ -88,28 +88,17 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
       return;
     }
     setError(null);
-    setUploading(true);
-    try {
-      const res = await startPhotoIngest(files);
-      useClosetStore.getState().invalidate();
-      if (res.staged > 0) {
-        onOpenChange(false);
-        // Scope the deck to THIS run so only these garments show.
-        router.push(`/review?sync_id=${encodeURIComponent(res.sync_id)}`);
-        return;
-      }
-      setError(res.message ?? 'No new items detected in those photos.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to process photos.');
-    } finally {
-      setUploading(false);
-      if (galleryRef.current) galleryRef.current.value = '';
-      if (cameraRef.current) cameraRef.current.value = '';
-    }
+    // Hand the Files to /add-photo in memory — detection and region selection
+    // happen there; nothing is uploaded or staged from the drawer anymore.
+    usePhotoPickStore.getState().setFiles(files);
+    if (galleryRef.current) galleryRef.current.value = '';
+    if (cameraRef.current) cameraRef.current.value = '';
+    onOpenChange(false);
+    router.push('/add-photo');
   };
 
   return (
-    <Sheet open={open} onClose={() => !uploading && onOpenChange(false)} tone="light">
+    <Sheet open={open} onClose={() => onOpenChange(false)} tone="light">
       <h3 className="m-0 mb-1 text-[21px] font-bold" style={{ color: 'var(--text-strong)' }}>
         Add to closet
       </h3>
@@ -124,7 +113,6 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
         accept={ACCEPTED_TYPES.join(',')}
         capture="environment"
         onChange={(e) => handleFiles(e.target.files)}
-        disabled={uploading}
         className="hidden"
       />
       <input
@@ -133,7 +121,6 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
         accept={ACCEPTED_TYPES.join(',')}
         multiple
         onChange={(e) => handleFiles(e.target.files)}
-        disabled={uploading}
         className="hidden"
       />
 
@@ -146,29 +133,11 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
         </div>
       )}
 
-      {uploading && (
-        <div
-          className="mb-3 flex items-center justify-center gap-2 rounded-[10px] px-3 py-2.5 text-[13.5px]"
-          style={{ background: 'var(--surface-sunken)', color: 'var(--text-body)' }}
-        >
-          <span
-            className="inline-block h-4 w-4 rounded-full border-2"
-            style={{
-              borderColor: 'var(--brand-teal)',
-              borderTopColor: 'transparent',
-              animation: 'tailor-spin 0.8s linear infinite',
-            }}
-          />
-          Finding your clothes… this can take a moment
-        </div>
-      )}
-
       <div className="flex flex-col gap-3">
         <OptRow
           icon={<Camera size={22} />}
           title="Take photo"
           sub="Snap an item or your outfit"
-          disabled={uploading}
           onClick={() => cameraRef.current?.click()}
         />
         <OptRow
@@ -176,7 +145,6 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
           title="Upload photo"
           sub="Choose from your library"
           accent="var(--teal-600)"
-          disabled={uploading}
           onClick={() => galleryRef.current?.click()}
         />
         <OptRow
@@ -184,7 +152,6 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
           title="Import from Gmail"
           sub="Pull items from email receipts"
           accent="var(--teal-500)"
-          disabled={uploading}
           onClick={() => {
             onOpenChange(false);
             onGmailClick();
