@@ -188,6 +188,53 @@ def test_skip_verify_cells_are_unscored_not_skipped():
     assert s["pass_rate"] is None
 
 
+def _account_skip_cell(provider, idx=0, category="top",
+                       reason="no balance — top up at fal.ai/dashboard/billing"):
+    # The shape _run_matrix records when a provider flags account unavailability.
+    return bakeoff.make_cell(
+        crop_index=idx, label="X", slug="x", category=category, provider=provider,
+        generated=False, model=None, latency_s=None, cost_usd=None,
+        output_file=None, detail=f"skipped: {reason}", verify=None, skip_reason=reason,
+    )
+
+
+def test_account_skip_is_not_generation_failure():
+    # One pass + one account skip: the skip must NOT count as a gen-fail and must
+    # NOT drag the pass-rate (a locked account is a billing state, not a result).
+    cells = [
+        _cell("p", idx=0, verify=_verify(matches=True, score=0.9)),
+        _account_skip_cell("p", idx=1),
+    ]
+    s = bakeoff.provider_stats(cells)
+    assert s["attempts"] == 2
+    assert s["generated"] == 1
+    assert s["gen_fail"] == 0            # account skip is NOT a generation failure
+    assert s["provider_skipped"] == 1
+    assert s["scored"] == 1
+    assert abs(s["pass_rate"] - 1.0) < 1e-9   # 1/1, skip excluded from denominator
+
+
+def test_account_skip_distinct_from_gen_fail_in_totals():
+    # A real gen-fail and an account skip land in different buckets.
+    cells = [
+        _cell("p", idx=0, generated=False),   # honest generation failure
+        _account_skip_cell("p", idx=1),       # account unavailable
+    ]
+    s = bakeoff.provider_stats(cells)
+    assert s["gen_fail"] == 1
+    assert s["provider_skipped"] == 1
+    assert s["pass_rate"] is None         # nothing scored
+
+
+def test_fully_account_skipped_provider_never_recommended():
+    cells = [
+        _account_skip_cell("a", idx=0),   # a: only account-skipped -> not eligible
+        _cell("b", idx=0, verify=_verify(matches=False, score=0.3)),  # b: scored
+    ]
+    rec = bakeoff.recommend_defaults(cells, RATES, ["a", "b"])
+    assert rec["overall"]["provider"] == "b"
+
+
 def test_aggregate_categories_groups_none_as_unknown():
     cells = [
         _cell("p", idx=0, category="top", verify=_verify(score=0.8)),

@@ -40,6 +40,13 @@ FAILURE HONESTY: a skipped verify (disabled / budget / error) is INCONCLUSIVE �
 counted separately, never as a pass or a fail. A provider with zero scored
 verifies is never recommended; if every verify skipped, the run says the
 scoring is inconclusive and recommends nothing.
+
+An ACCOUNT skip is distinct from a generation failure: when a provider is
+unavailable at account level (e.g. fal returns 403 "exhausted balance" — it flags
+this via unavailable_reason, see base.py), the cell is bucketed as SKIPPED
+(ASKIP column), excluded from gen-fail totals and from the pass-rate, and named
+in the summary ("seedream: SKIPPED (no balance ...)") — same treatment as a
+missing key. An account lock is a billing state, not a model result.
 """
 from __future__ import annotations
 
@@ -214,11 +221,15 @@ def make_cell(
     output_file: Optional[str] = None,
     detail: str = "",
     verify: Optional[dict] = None,
+    skip_reason: Optional[str] = None,
 ) -> dict:
     """One crop x provider record — results.json, the aggregates and the tests
     all share this shape. verify=None means verification was never attempted
     (--skip-verify, or generation failed); verify['skipped']=True means it was
-    attempted but did not run (disabled / budget / error) — inconclusive."""
+    attempted but did not run (disabled / budget / error) — inconclusive.
+    skip_reason set (with generated=False) means the provider was UNAVAILABLE at
+    account level (e.g. fal balance exhausted) — an account SKIP, NOT a
+    generation failure: excluded from gen-fail totals and from the pass-rate."""
     return {
         "crop_index": crop_index,
         "label": label,
@@ -232,6 +243,7 @@ def make_cell(
         "output_file": output_file,
         "detail": detail,
         "verify": verify,
+        "skip_reason": skip_reason,
     }
 
 
@@ -239,13 +251,18 @@ def provider_stats(cells: List[dict]) -> dict:
     """Aggregate one provider's cells.
 
     Honesty rules: a cell whose verify was skipped (or never attempted) is
-    INCONCLUSIVE — excluded from pass/fail and from mean score. pass_rate =
-    passes / (scored + generation failures): generation failures count against
-    the provider, inconclusive cells never do. pass_rate/mean_score are None
-    when NOTHING was scored (no evidence -> no verdict)."""
+    INCONCLUSIVE — excluded from pass/fail and from mean score. A cell with a
+    skip_reason is an ACCOUNT skip (provider unavailable — e.g. no balance):
+    excluded from gen-fail and from the pass-rate, exactly like a missing key.
+    pass_rate = passes / (scored + generation failures): generation failures
+    count against the provider, inconclusive/account-skipped cells never do.
+    pass_rate/mean_score are None when NOTHING was scored (no evidence -> no
+    verdict)."""
     attempts = len(cells)
+    provider_skipped = [c for c in cells if c.get("skip_reason")]
     generated = [c for c in cells if c["generated"]]
-    gen_fail = attempts - len(generated)
+    # Account skips are neither generated nor failures — carve them out of gen_fail.
+    gen_fail = attempts - len(generated) - len(provider_skipped)
     scored = [c for c in cells if c["verify"] and not c["verify"]["skipped"]]
     skipped = [c for c in cells if c["verify"] and c["verify"]["skipped"]]
     passes = [c for c in scored if c["verify"]["matches"]]
@@ -259,6 +276,7 @@ def provider_stats(cells: List[dict]) -> dict:
         "attempts": attempts,
         "generated": len(generated),
         "gen_fail": gen_fail,
+        "provider_skipped": len(provider_skipped),
         "scored": len(scored),
         "verified_pass": len(passes),
         "verified_fail": len(fails),
@@ -355,7 +373,7 @@ def _fmt(value, spec: str, none: str = "—") -> str:
 
 def render_provider_table(agg: Dict[str, dict]) -> List[str]:
     header = (
-        f"{'PROVIDER':<14}{'ATT':>5}{'GEN':>5}{'GFAIL':>7}{'PASS':>6}{'FAIL':>6}"
+        f"{'PROVIDER':<14}{'ATT':>5}{'GEN':>5}{'GFAIL':>7}{'ASKIP':>7}{'PASS':>6}{'FAIL':>6}"
         f"{'SKIP':>6}{'LOGO!':>7}{'PAT!':>6}{'P-RATE':>8}{'SCORE':>7}"
         f"{'LAT(s)':>8}{'COST($)':>9}"
     )
@@ -363,6 +381,7 @@ def render_provider_table(agg: Dict[str, dict]) -> List[str]:
     for name, s in agg.items():
         lines.append(
             f"{name:<14}{s['attempts']:>5}{s['generated']:>5}{s['gen_fail']:>7}"
+            f"{s['provider_skipped']:>7}"
             f"{s['verified_pass']:>6}{s['verified_fail']:>6}{s['verify_skipped']:>6}"
             f"{s['logo_violations']:>7}{s['pattern_fails']:>6}"
             f"{_fmt(s['pass_rate'], '.0%'):>8}{_fmt(s['mean_score'], '.2f'):>7}"
@@ -444,13 +463,14 @@ def render_markdown(
         "",
         "## Per-provider results",
         "",
-        "| provider | attempts | generated | gen-fail | pass | fail | skipped "
+        "| provider | attempts | generated | gen-fail | acct-skip | pass | fail | skipped "
         "| logo! | pattern! | pass-rate | mean score | mean latency (s) | gen cost ($) |",
-        "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
+        "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
     ]
     for name, s in agg.items():
         lines.append(
             f"| {name} | {s['attempts']} | {s['generated']} | {s['gen_fail']} "
+            f"| {s['provider_skipped']} "
             f"| {s['verified_pass']} | {s['verified_fail']} | {s['verify_skipped']} "
             f"| {s['logo_violations']} | {s['pattern_fails']} "
             f"| {_fmt(s['pass_rate'], '.0%')} | {_fmt(s['mean_score'], '.2f')} "
@@ -658,6 +678,9 @@ def _progress_line(cell: dict) -> str:
     """One redaction-safe line per crop x provider cell (never bytes/prompts)."""
     tag = f"{cell['crop_index']:02d}_{cell['slug']}"
     if not cell["generated"]:
+        if cell.get("skip_reason"):
+            # Account skip (provider unavailable) — not a generation failure.
+            return f"  [{cell['provider']:<12}] {tag:<44} gen=SKIP ({cell['skip_reason']})"
         return (
             f"  [{cell['provider']:<12}] {tag:<44} gen=FAIL "
             f"({cell['detail'] or 'no result'})"
@@ -722,7 +745,17 @@ def _run_matrix(
                 )
             )
             if result is None:
-                cell = make_cell(generated=False, detail="generation failed", **base)
+                # A provider MAY flag account-level unavailability (e.g. fal
+                # balance exhausted) via a sticky unavailable_reason — that is a
+                # SKIP, not a gen-fail (see GenerationProvider in base.py).
+                skip_reason = getattr(provider, "unavailable_reason", None)
+                if skip_reason:
+                    cell = make_cell(
+                        generated=False, detail=f"skipped: {skip_reason}",
+                        skip_reason=skip_reason, **base,
+                    )
+                else:
+                    cell = make_cell(generated=False, detail="generation failed", **base)
                 cells.append(cell)
                 print(_progress_line(cell))
                 continue
@@ -902,6 +935,13 @@ def main() -> None:
         actual_gen_cost = round(sum(s["total_cost_usd"] for s in agg.values()), 6)
         scored_total = sum(s["scored"] for s in agg.values())
         skipped_total = sum(s["verify_skipped"] for s in agg.values())
+        provider_skipped_total = sum(s["provider_skipped"] for s in agg.values())
+        # provider -> first account-skip reason seen (e.g. fal "no balance").
+        skip_notes: Dict[str, str] = {}
+        for c in cells:
+            reason = c.get("skip_reason")
+            if reason and c["provider"] not in skip_notes:
+                skip_notes[c["provider"]] = reason
 
         run_info = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -954,6 +994,11 @@ def main() -> None:
         print(f"  cells (crop x prov):   {len(cells)}")
         print(f"  generated:             {sum(s['generated'] for s in agg.values())}")
         print(f"  generation failures:   {sum(s['gen_fail'] for s in agg.values())}")
+        if provider_skipped_total:
+            print(f"  provider skipped:      {provider_skipped_total} cell(s) "
+                  f"(account state — NOT a generation failure)")
+            for prov, reason in skip_notes.items():
+                print(f"    {prov}: SKIPPED ({reason})")
         if args.skip_verify:
             print("  verify:                SKIPPED (--skip-verify) — scoring inconclusive")
         else:

@@ -373,6 +373,51 @@ def test_seedream_empty_images_returns_none(monkeypatch):
     assert SeedreamProvider().generate(REQ) is None
 
 
+def test_seedream_balance_403_sets_sticky_account_skip(monkeypatch):
+    """fal 403 'exhausted balance' is an ACCOUNT skip, not a gen failure: the
+    provider records unavailable_reason and short-circuits later calls."""
+    _configure(monkeypatch)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(
+            403,
+            json={"detail": "User is locked. Reason: Exhausted balance. "
+                            "Top up your balance at fal.ai/dashboard/billing."},
+        )
+
+    _use_seedream_transport(monkeypatch, httpx.MockTransport(handler))
+    provider = SeedreamProvider()
+    assert provider.unavailable_reason is None
+    assert provider.generate(REQ) is None
+    assert provider.unavailable_reason == "no balance — top up at fal.ai/dashboard/billing"
+    # Second call must NOT hit fal again (sticky short-circuit).
+    assert provider.generate(REQ) is None
+    assert calls["n"] == 1
+
+
+def test_seedream_non_balance_4xx_is_plain_failure(monkeypatch):
+    """A non-account 4xx (e.g. 422 bad request) is a normal generation failure —
+    it must NOT set unavailable_reason (would mis-bucket as a skip)."""
+    _configure(monkeypatch)
+
+    def handler(request):
+        return httpx.Response(422, json={"detail": "validation error"})
+
+    _use_seedream_transport(monkeypatch, httpx.MockTransport(handler))
+    provider = SeedreamProvider()
+    assert provider.generate(REQ) is None
+    assert provider.unavailable_reason is None
+
+
+def test_seedream_is_account_locked_predicate():
+    assert seedream_module._is_account_locked(403, '{"detail": "Exhausted balance."}')
+    assert seedream_module._is_account_locked(403, "User is locked.")
+    assert not seedream_module._is_account_locked(422, "Exhausted balance.")
+    assert not seedream_module._is_account_locked(403, "moderation triggered")
+
+
 def test_seedream_missing_key_returns_none(monkeypatch):
     _configure(monkeypatch, FAL_API_KEY=None)
     assert SeedreamProvider().generate(REQ) is None

@@ -97,6 +97,14 @@ class GenerationProvider(Protocol):
         MAX_GENERATED_BYTES size cap before returning them;
       * call only their fixed https API hosts (never caller-supplied URLs);
       * never log prompt or image contents — provider + status + latency only.
+
+    OPTIONAL account-skip convention: a provider MAY expose a sticky
+    ``unavailable_reason: Optional[str]`` attribute, set when the FAILURE is an
+    account state (exhausted balance, locked account) rather than a model/request
+    failure. generate() still returns None, but tools that tally per-provider
+    stats (the bake-off) read this via getattr() to bucket the miss as SKIPPED —
+    like a missing key — instead of counting it as a generation failure that
+    would drag the pass-rate. Absent/None means "no account-level skip".
     """
 
     name: str

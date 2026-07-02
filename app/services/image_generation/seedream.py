@@ -44,6 +44,22 @@ _IMAGE_SIZE = {"width": 1024, "height": 1024}
 # Apex domains whose https result URLs we will fetch (fal's result CDN family).
 _ALLOWED_APEX_DOMAINS = ("fal.media", "fal.run", "fal.ai")
 
+# fal rejects on ACCOUNT STATE (not the request) with 403 + a body naming a
+# balance/lock condition, e.g. {"detail": "User is locked. Reason: Exhausted
+# balance. Top up your balance at fal.ai/dashboard/billing."}. That is NOT a
+# generation failure — the account, not the model, is unavailable. Callers that
+# tally per-provider stats (the bake-off) treat it as SKIPPED, like a missing key.
+_ACCOUNT_LOCK_REASON = "no balance — top up at fal.ai/dashboard/billing"
+
+
+def _is_account_locked(status_code: int, body: str) -> bool:
+    """True when a fal 403 names an account-state reason (exhausted balance /
+    locked user) rather than a request problem — an account skip, not a gen-fail."""
+    if status_code != 403:
+        return False
+    low = body.lower()
+    return "locked" in low or "balance" in low
+
 
 def _is_allowed_url(url: str) -> bool:
     """True only for https URLs on the fixed fal family (result CDN)."""
@@ -78,9 +94,20 @@ class SeedreamProvider:
 
     name = "seedream"
 
+    def __init__(self) -> None:
+        # Sticky account-level skip reason (fal balance exhausted / account
+        # locked). Set on the first lock-403; once set, generate() short-circuits
+        # so a locked account is not hammered with doomed calls. Distinct from a
+        # per-image generation failure — the bake-off buckets it as SKIPPED (like
+        # a missing key), NOT as a gen-fail that would drag the pass-rate.
+        self.unavailable_reason: Optional[str] = None
+
     def generate(self, req: GenerationRequest) -> Optional[GenerationResult]:
         if not settings.FAL_API_KEY:
             logger.info("generation [seedream] skipped: FAL_API_KEY not set")
+            return None
+        if self.unavailable_reason:
+            # Account already known locked this run — skip without calling fal.
             return None
 
         prompt = build_generation_prompt(req)
@@ -88,6 +115,24 @@ class SeedreamProvider:
         try:
             with _client() as http:
                 image_bytes, content_type = self._run(http, prompt, req)
+        except httpx.HTTPStatusError as exc:
+            # fal returns a JSON {"detail": ...} explaining the failure (bad key,
+            # exhausted balance, moderation, schema). Surface it — it is fal's own
+            # error text, not caller data, and is the only way to diagnose 4xx/5xx.
+            status = exc.response.status_code
+            body = exc.response.text[:300]
+            if _is_account_locked(status, body):
+                # Account state, not a generation result — record a sticky skip.
+                self.unavailable_reason = _ACCOUNT_LOCK_REASON
+                logger.warning(
+                    "generation [seedream] account unavailable (http %d): %s", status, body
+                )
+            else:
+                logger.warning(
+                    "generation [seedream] http %d: %s (latency=%.1fs)",
+                    status, body, time.monotonic() - started,
+                )
+            return None
         except Exception as exc:
             logger.warning(
                 "generation [seedream] error (%s) latency=%.1fs",
