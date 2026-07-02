@@ -142,7 +142,7 @@ def list_pending_candidates(
     user_id filter (the owner-role connection bypasses RLS — see module docstring).
 
     ``sync_id`` scopes the deck to a SINGLE run. The photo flow passes the run created
-    by /photo/ingest/start so its deck shows only that upload's garments — never stale
+    by /photo/ingest/commit so its deck shows only that upload's garments — never stale
     pending candidates from an earlier (Gmail or photo) run. When None (the Gmail deck),
     behavior is unchanged: all of the user's pending candidates. status='pending' is
     always enforced, so already accepted/rejected candidates never reappear either way.

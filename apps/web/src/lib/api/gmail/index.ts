@@ -258,10 +258,55 @@ export async function getIngestCandidates(syncId?: string): Promise<IngestCandid
   return response.json();
 }
 
-// ─── Photo ingest (Wave 1) ──────────────────────────────────────────────────
+// ─── Photo ingest (Wave 1.5: detect → select → commit) ──────────────────────
 // A SECOND ingestion source that feeds the SAME candidates/confirm/status spine as
-// Gmail. Only the start call differs (a multipart photo upload instead of a Gmail
-// sync); everything downstream is shared.
+// Gmail. Upload is now two-phase: /photo/ingest/detect returns the garment regions
+// found in each photo; the user toggles regions (and can draw missed ones) in the
+// RegionSelector; /photo/ingest/commit re-uploads the SAME File objects (the server
+// matches them to detect sessions by content hash) plus those selections, and only
+// then stages candidates for the shared review deck.
+
+/** One detected garment region within a photo. */
+export interface PhotoRegion {
+  region_id: number;
+  /** [ymin, xmin, ymax, xmax] — ints 0..1000 normalized to the photo. */
+  box_2d: [number, number, number, number];
+  name: string;
+  category: string;
+  color: string | null;
+  pattern: string | null;
+  material: string | null;
+  fit: string | null;
+  brand: string | null;
+  confidence_overall: number | null;
+  confidence: Record<string, number | null>;
+}
+
+/** Per-photo detect result. `duplicate: true` means the photo is already in the
+ *  closet pipeline → session_id is null and regions is empty. */
+export interface PhotoDetectSession {
+  session_id: string | null;
+  filename: string;
+  image_sha256: string;
+  width: number;
+  height: number;
+  duplicate: boolean;
+  person_count: number;
+  regions: PhotoRegion[];
+}
+
+/** Response of POST /photo/ingest/detect — sessions[] is in file order. */
+export interface PhotoDetectResponse {
+  sessions: PhotoDetectSession[];
+}
+
+/** Per-session selection sent to /photo/ingest/commit. Manual boxes use the same
+ *  [ymin, xmin, ymax, xmax] 0..1000 photo coordinates as detected regions (max 8). */
+export interface PhotoCommitSelection {
+  session_id: string;
+  selected_region_ids: number[];
+  manual_boxes: [number, number, number, number][];
+}
 
 export interface PhotoIngestResponse {
   sync_id: string;
@@ -272,16 +317,25 @@ export interface PhotoIngestResponse {
   message: string | null;
 }
 
-/** Upload one or more photos; each garment is detected, cut out, and staged as a
- *  pending candidate for the shared review deck. Processing is inline (no polling). */
-export async function startPhotoIngest(files: File[]): Promise<PhotoIngestResponse> {
+/** Thrown when commit hits a 410 — the detect session TTL'd out server-side.
+ *  Callers should transparently re-run detect on the same files. */
+export class PhotoSessionExpiredError extends Error {
+  constructor(message = 'Session expired — re-detect') {
+    super(message);
+    this.name = 'PhotoSessionExpiredError';
+  }
+}
+
+/** Phase 1: upload photos for garment-region detection. Nothing is staged yet —
+ *  the response describes what was found so the user can choose what to keep. */
+export async function detectPhotoIngest(files: File[]): Promise<PhotoDetectResponse> {
   const token = await getAccessToken();
   if (!token) throw new Error('Not authenticated. Please sign in first.');
 
   const formData = new FormData();
   for (const f of files) formData.append('files', f);
 
-  const response = await fetch(`${API_BASE_URL}/photo/ingest/start`, {
+  const response = await fetch(`${API_BASE_URL}/photo/ingest/detect`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: formData,
@@ -293,7 +347,43 @@ export async function startPhotoIngest(files: File[]): Promise<PhotoIngestRespon
       throw new Error(error.detail.map((e: any) => e.msg).join(', '));
     }
     throw new Error(
-      typeof error.detail === 'string' ? error.detail : 'Failed to process photos.',
+      typeof error.detail === 'string' ? error.detail : 'Failed to scan photos.',
+    );
+  }
+
+  return response.json();
+}
+
+/** Phase 2: re-upload the SAME File objects (matched to sessions by content hash)
+ *  with the user's region selections; the chosen garments are cut out and staged
+ *  as pending candidates for the shared review deck. */
+export async function commitPhotoIngest(
+  files: File[],
+  selections: PhotoCommitSelection[],
+): Promise<PhotoIngestResponse> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const formData = new FormData();
+  for (const f of files) formData.append('files', f);
+  formData.append('selections', JSON.stringify(selections));
+
+  const response = await fetch(`${API_BASE_URL}/photo/ingest/commit`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    if (response.status === 410) {
+      throw new PhotoSessionExpiredError();
+    }
+    const error = await response.json().catch(() => ({}));
+    if (Array.isArray(error.detail)) {
+      throw new Error(error.detail.map((e: any) => e.msg).join(', '));
+    }
+    throw new Error(
+      typeof error.detail === 'string' ? error.detail : 'Failed to add the selected items.',
     );
   }
 

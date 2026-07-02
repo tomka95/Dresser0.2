@@ -1,11 +1,12 @@
 'use client';
 
 /**
- * /add-photo — photo -> closet ingestion entry (Wave 1, mobile-web).
+ * /add-photo — photo -> closet ingestion entry (Wave 1.5, mobile-web).
  *
- * Pick/capture photos of yourself; the backend detects each garment and stages it.
- * On success this routes to /review, the existing swipe deck, where the staged
- * photo candidates are reviewed and confirmed exactly like Gmail imports.
+ * Pick/capture photos of yourself; the backend detects garment regions, the user
+ * chooses which to keep (and can draw missed ones) in the RegionSelector, and the
+ * commit routes to /review — the existing swipe deck — where the staged photo
+ * candidates are reviewed and confirmed exactly like Gmail imports.
  */
 import { useRouter } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
@@ -40,7 +41,7 @@ export default function AddPhotoPage() {
         </button>
         <h1 className="m-0 text-[20px] font-bold text-white">Add from a photo</h1>
         <p className="mt-1 mb-6 text-[13.5px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-          We&rsquo;ll find the clothes you&rsquo;re wearing and add them to your closet.
+          We&rsquo;ll spot your clothes — you choose what to add.
         </p>
         <PhotoIngestUpload />
       </div>

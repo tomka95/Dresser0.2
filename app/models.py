@@ -486,6 +486,69 @@ class ProcessedUpload(Base):
     processed_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 
+class PhotoDetectSession(Base):
+    """Transient detect -> select -> commit handoff for photo ingest (Wave 1.5).
+
+    Wave 1.5 splits the photo pipeline into two requests: POST /photo/ingest/detect
+    runs Gemini detection and returns the regions for the user to pick from; POST
+    /photo/ingest/commit re-receives the SAME files and stages only the selected
+    regions. The source photo is NEVER persisted to storage (unchanged from Wave 1),
+    so this row is the only server-side state between the two steps: the detection
+    output (boxes + optional model masks + attributes, as JSON) keyed by the photo's
+    sha256, which is how commit binds a re-uploaded file back to its session.
+
+    Transient by design: expires_at (config PHOTO_SESSION_TTL_HOURS) bounds the row's
+    life; detect opportunistically sweeps the caller's expired 'pending' rows; commit
+    flips status to 'committed'. No image bytes live here — hashes, dimensions, boxes,
+    and mask PNGs (model output scoped to a box) only.
+
+    Per-user RLS (auth.uid() = user_id) applied in migration 0015. user_id is
+    server-pinned from the JWT, never the request body; every query filters on it.
+    """
+
+    __tablename__ = "photo_detect_sessions"
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','committed','expired')", name="status"),
+        Index("idx_photo_detect_sessions_user_id", "user_id"),
+        # Commit + upsert both look sessions up by (user, photo hash).
+        Index("idx_photo_detect_sessions_user_sha", "user_id", "image_sha256"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # sha256 hex of the ORIGINAL uploaded bytes — how commit re-binds the re-received
+    # file to this session (the photo itself is never stored).
+    image_sha256 = Column(Text, nullable=False)
+
+    # Perceptual dHash, carried through to the processed_uploads row at commit.
+    phash = Column(Text, nullable=True)
+
+    # Sanitized-image pixel dimensions, so the client can map 0..1000 boxes to pixels.
+    width = Column(Integer, nullable=False)
+    height = Column(Integer, nullable=False)
+
+    # Distinct people the detector saw. Stored, surfaced to the client — Wave 1.5 no
+    # longer holds multi-person photos (the user disambiguates by selecting regions).
+    person_count = Column(Integer, nullable=False, default=0)
+
+    # [{region_id, box_2d[4], mask|null, name, category, color, pattern, material,
+    #   fit, brand, confidence_overall, confidence{per-field}}]. Masks live ONLY here
+    # (never in API responses); commit reads them back for the cutout.
+    regions = Column(_jsonb(), nullable=False, default=list)
+
+    # pending | committed | expired (CHECK above).
+    status = Column(Text, nullable=False, default="pending")
+
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+    # Hard TTL: commit refuses (410) past this; detect sweeps expired pending rows.
+    expires_at = Column(_tstz(), nullable=False)
+
+
 class ImageBlob(Base):
     """Content-addressed dedup ledger for stored images (Wave 0 of the image system).
 

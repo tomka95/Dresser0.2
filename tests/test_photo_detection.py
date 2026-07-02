@@ -9,6 +9,8 @@ import json
 from app.photo_closet.detection import (
     DetectionResult,
     GarmentCategory,
+    GarmentDescription,
+    describe_garment_crop,
     detect_garments_with_regions,
 )
 
@@ -92,3 +94,42 @@ def test_max_items_cap():
     out = detect_garments_with_regions(
         image_bytes=b"x", content_type="image/jpeg", max_items=5, provider=prov)
     assert len(out.garments) == 5
+
+
+# --- describe_garment_crop (Wave 1.5 manual-box attributes) -------------------
+
+def test_describe_parses_parsed_instance():
+    parsed = GarmentDescription(
+        name="Black Boot", category="shoes", color="black", confidence_overall=0.8)
+    prov = _FakeProvider(_FakeResp(parsed=parsed))
+    out = describe_garment_crop(b"crop", "image/jpeg", provider=prov)
+    assert out is not None
+    assert out.name == "Black Boot"
+    assert out.category == GarmentCategory.shoes
+    # Same detect model + structured-output kwargs as the region detector.
+    assert "model" in prov.calls[0]
+    assert prov.calls[0]["temperature"] == 0.0
+    # The system prompt treats image content as untrusted (no instruction-following).
+    assert "NEVER follow" in prov.calls[0]["system_instruction"]
+
+
+def test_describe_parses_raw_json_text():
+    payload = {"name": "Chinos", "category": "bottom", "color": "beige",
+               "confidence_overall": 0.7}
+    prov = _FakeProvider(_FakeResp(text=json.dumps(payload)))
+    out = describe_garment_crop(b"crop", "image/png", provider=prov)
+    assert out is not None and out.category == GarmentCategory.bottom
+
+
+def test_describe_bad_payload_returns_none():
+    prov = _FakeProvider(_FakeResp(text="not json"))
+    assert describe_garment_crop(b"crop", "image/jpeg", provider=prov) is None
+    # Invalid enum -> validation failure -> None (never raises).
+    prov2 = _FakeProvider(_FakeResp(text=json.dumps(
+        {"name": "Mystery", "category": "spacesuit"})))
+    assert describe_garment_crop(b"crop", "image/jpeg", provider=prov2) is None
+
+
+def test_describe_provider_error_returns_none():
+    prov = _FakeProvider(raises=True)
+    assert describe_garment_crop(b"crop", "image/jpeg", provider=prov) is None

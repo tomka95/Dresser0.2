@@ -226,7 +226,7 @@ def get_ingest_candidates(
     pending. low_confidence_fields flags weak/null fields for inline edit.
 
     Optional ``sync_id`` scopes the deck to a single run: the photo flow passes the run
-    from /photo/ingest/start so its deck shows only that upload's garments (no stale
+    from /photo/ingest/commit so its deck shows only that upload's garments (no stale
     pending candidates from a prior run). Omitted -> all pending (the Gmail deck,
     unchanged).
     """

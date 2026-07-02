@@ -27,10 +27,15 @@ class Settings(BaseSettings):
     GMAIL_EXTRACT_MAX_BODY_CHARS: int = 12000
     
     # --- Photo -> closet garment detection (Wave 1) ------------------------
-    # The schema-first detector behind /photo/ingest/start. Returns per-garment
+    # The schema-first detector behind /photo/ingest/detect. Returns per-garment
     # box_2d (+ optional mask) via Gemini structured output. Flash (not flash-lite)
     # for stronger spatial grounding; box/mask quality matters for the cutout.
     GEMINI_DETECT_MODEL: str = "gemini-2.5-flash"
+    # How long a photo_detect_sessions row (detected regions awaiting the user's
+    # selection, Wave 1.5) stays committable. Past this, commit returns 410 and the
+    # row is swept on the user's next detect. Sessions hold hashes + boxes, never
+    # the photo itself, so a generous default costs nothing sensitive.
+    PHOTO_SESSION_TTL_HOURS: int = 24
 
     IMAGE_API_BASE_URL: str = ""
     IMAGE_API_MODEL: str = ""
