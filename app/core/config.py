@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     # further images are left image_status='pending' for a later run to verify.
     GMAIL_VERIFY_MAX_PER_RUN: int = 200
 
+    # --- Generation verify (Wave 2) -----------------------------------------
+    # Media resolution for the TWO-image reference-vs-generated verify pass
+    # (image_verify.verify_generated_image). "low" | "medium" | "high".
+    # Default medium: LOW is too coarse to judge logo/text presence reliably.
+    # Unknown values fall back to medium (with a warning).
+    GENERATION_VERIFY_MEDIA_RESOLUTION: str = "medium"
+
     # --- Long-tail shopping search (Wave 2c) -------------------------------
     # When the cache + email + og tiers all miss, query DataForSEO Google Shopping
     # (Merchant API, Standard async queue) by brand+name+color to find retailer
@@ -111,6 +118,31 @@ class Settings(BaseSettings):
     # changes. Feed images route through the SAME guarded-fetch + vision-verify +
     # cache-seed path as every other untrusted-web tier (verify is mandatory).
     GMAIL_FEED_ENABLED: bool = False
+
+    # --- Image generation (Wave 2) ------------------------------------------
+    # The generation seam (app/services/image_generation) turns a user photo
+    # cutout into a clean product-card CANDIDATE image via an image-editing
+    # model. Candidates are NEVER trusted directly — the vision-verify gate
+    # decides whether one is shown. Ships disabled with a NullGenerationProvider;
+    # nothing in the product flow calls the seam yet (the bake-off script does).
+    GENERATION_ENABLED: bool = False
+    # Which provider get_generation_provider() dispatches to:
+    # 'flux_kontext' (BFL, the default) | 'seedream' (fal.ai) | 'nano_banana'
+    # (Gemini image gen, reuses GEMINI_API_KEY). Unknown/keyless -> Null.
+    GENERATION_PROVIDER: str = "flux_kontext"
+    BFL_API_KEY: Optional[str] = None
+    FAL_API_KEY: Optional[str] = None
+    # Gemini image model behind the nano_banana provider ("Nano Banana Pro").
+    NANO_BANANA_MODEL: str = "gemini-3-pro-image-preview"
+    # Total wall-clock budget per generation call (submit + poll + download).
+    GENERATION_TIMEOUT_SECONDS: float = 90.0
+    # Per-run cost guard: at most this many generation calls per run (bake-off).
+    GENERATION_MAX_PER_RUN: int = 50
+    # Editable per-IMAGE USD rates (same idea as the per-1M token rates above):
+    # GenerationResult.cost_usd reads straight from these; bump on price change.
+    FLUX_KONTEXT_USD_PER_IMAGE: float = 0.04
+    SEEDREAM_USD_PER_IMAGE: float = 0.03
+    NANO_BANANA_USD_PER_IMAGE: float = 0.134
 
     # --- Background image fill + self-heal (Phase 4) -----------------------
     # The slow image tiers (og:image / feed / search) and the cross-user self-heal
