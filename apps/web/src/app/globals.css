@@ -8,64 +8,117 @@
     --background: 0 0% 96%;
     /* Foreground - #1F2020 */
     --foreground: 0 0% 12%;
-    
+
     /* Card - White or Background */
     --card: 0 0% 100%;
     --card-foreground: 0 0% 12%;
-    
+
     /* Popover */
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 12%;
-    
+
     /* Primary - #084B4D */
     --primary: 180 85% 16%;
     --primary-foreground: 0 0% 100%;
-    
+
     /* Secondary - #EEEDEA */
     --secondary: 40 10% 93%;
     /* Secondary Foreground - #1F2020 */
     --secondary-foreground: 0 0% 12%;
-    
+
     /* Muted - #F4F4F4 */
     --muted: 0 0% 96%;
     /* Muted Foreground - #7F7F7F */
     --muted-foreground: 0 0% 50%;
-    
+
     /* Accent - same as secondary for now */
     --accent: 40 10% 93%;
     --accent-foreground: 0 0% 12%;
-    
+
     /* Destructive - kept standard */
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    
+
     /* Border - #BABABA */
     --border: 0 0% 73%;
     /* Input - #BABABA */
     --input: 0 0% 73%;
-    
+
     /* Ring - Primary */
     --ring: 180 85% 16%;
-    
+
     /* Radius - 10px for buttons/inputs */
     --radius: 0.625rem;
     /* Badge radius - 30px */
     --radius-badge: 1.875rem;
 
-    /* ── Dark "Tailor" deck tokens — scoped re-add for the /review Gmail-ingest
-       deck and its leaf components (AppShell/LightButton/EmptyState/ConfidenceDot).
-       Additive only; nothing above is changed. ── */
-    --brand-teal: #084b4d;
-    --mint: #4be2d6;
+    /* ════════════════════════════════════════════════════════════════════
+       Tailor design-system tokens (tokens/colors.css + effects.css +
+       spacing.css + typography.css from the Claude Design project).
+       The dark glassmorphic app shell and the light DS surface both
+       read from here. ════════════════════════════════════════════════════ */
+
+    /* ---- Brand / base palette ---- */
+    --brand-teal: #084b4d;      /* deep teal — primary actions, selected, brand mark */
+    --pure-white: #ffffff;
+    --pure-black: #000000;
+
+    /* ---- Grays ---- */
+    --gray-1: #424343;
+    --gray-2: #a1a1a1;
+    --grey: #bababa;
+    --grey-dark-1: #7f7f7f;
+
+    /* ---- Extended teal ramp ---- */
+    --teal-900: #0a3633;        /* gradient top — closet FAB, deep panels */
+    --teal-700: #0a6266;        /* gradient bottom */
+    --teal-600: #147f74;        /* avatar / accent fill */
+    --teal-500: #1e8878;        /* solid info card */
+    --mint: #4be2d6;            /* cyan-mint spark — AI accent */
+    --mint-soft: #46ecd5;
+
+    /* ---- Translucency (app glass) ---- */
     --tr-10: rgba(255, 255, 255, 0.1);
     --tr-20: rgba(255, 255, 255, 0.2);
+    --scrim: rgba(0, 0, 0, 0.22);
+
+    /* ---- Semantic ---- */
     --danger: #fb2c36;
     --success: #0acf83;
     --amber: #f0a23b;
+
+    /* ---- Semantic aliases (light DS surface) ---- */
+    --surface-card: var(--pure-white);
+    --surface-sunken: #eeedea;
+    --text-strong: #1f2020;
+    --text-body: var(--gray-1);
+    --text-muted: var(--grey-dark-1);
+    --text-faint: var(--gray-2);
+
+    /* ---- App (dark glass) context ---- */
     --app-bg: #1e1e1e;
-    --grad-scrim: linear-gradient(180deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.6) 50%, rgba(0, 0, 0, 0.9) 100%);
+    --app-nav-bg: var(--pure-black);
+
+    /* ---- Effects ---- */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12);
     --shadow-lg: 0 25px 25px rgba(0, 0, 0, 0.25);
-    --font-accent: 'DM Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.15);
+    --blur-glass: 12px;
+    --blur-sm: 6px;
+    --grad-teal: linear-gradient(180deg, #0a3633 0%, #0a6266 100%);
+    --grad-ai: linear-gradient(90deg, rgba(0, 186, 166, 0.4) 0%, rgba(8, 74, 77, 0.4) 100%);
+    --grad-glass: linear-gradient(180deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.05) 100%);
+    --grad-scrim: linear-gradient(180deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.6) 50%, rgba(0, 0, 0, 0.9) 100%);
+    --grad-photo-fade: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.2) 50%, transparent 100%);
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    --dur-fast: 150ms;
+    --dur-base: 250ms;
+
+    /* ---- Typography ---- */
+    --font-sans: var(--font-inter), 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-accent: var(--font-dm-sans), 'DM Sans', var(--font-inter), 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   }
 
   /* Single theme - Dark mode uses SAME values per request */
@@ -100,6 +153,7 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
   }
 }
 
@@ -120,5 +174,26 @@
 @keyframes tailor-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* Bottom-sheet entrance (tailwindcss-animate is not installed; plain keyframes). */
+@keyframes tailor-slide-up {
+  from {
+    transform: translateY(32px);
+    opacity: 0.4;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes tailor-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }

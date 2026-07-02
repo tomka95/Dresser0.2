@@ -7,9 +7,9 @@ import { AuthHeader } from "@/components/auth/AuthHeader";
 import { AuthField } from "@/components/auth/AuthField";
 import { AuthProviderButtons } from "@/components/auth/AuthProviderButtons";
 import { AuthFooter } from "@/components/auth/AuthFooter";
-import { Button } from "@/components/ui/button";
+import { DSButton } from "@/components/ds";
 import { Mail, Lock, User } from "lucide-react";
-import { signUpWithPassword, signInWithProvider } from "@/lib/auth";
+import { signUpWithPassword, signInWithProvider, resendSignUpEmail } from "@/lib/auth";
 import type { AuthProviderId } from "@/config/authProviders";
 
 export default function SignUpPage() {
@@ -22,6 +22,7 @@ export default function SignUpPage() {
   const [pendingProvider, setPendingProvider] = useState<AuthProviderId | null>(null);
   // Set once a confirmation email has been sent (email confirmation is ON).
   const [confirmationSent, setConfirmationSent] = useState(false);
+  const [resendState, setResendState] = useState<"idle" | "sending" | "sent" | "error">("idle");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,37 +66,64 @@ export default function SignUpPage() {
     }
   };
 
+  const handleResend = async () => {
+    if (resendState === "sending") return;
+    setResendState("sending");
+    try {
+      await resendSignUpEmail(email);
+      setResendState("sent");
+    } catch {
+      setResendState("error");
+    }
+  };
+
+  // ── "Check your email" — inline state on the same route (design spec) ──
   if (confirmationSent) {
     return (
       <AuthGlassCard>
-        <AuthHeader title="Check your email" subtitle="One more step" />
-        <div className="space-y-4 text-center">
-          <Mail className="mx-auto text-white/80" size={40} />
-          <p className="text-sm text-white/80">
-            We sent a confirmation link to{" "}
-            <span className="font-medium text-white">{email}</span>. Click it to
-            activate your account, then sign in.
-          </p>
-          <p className="text-xs text-white/50">
-            Didn&apos;t get it? Check your spam folder, or try signing up again.
-          </p>
+        <div
+          className="mx-auto mb-4 mt-1 flex items-center justify-center rounded-full"
+          style={{ width: 56, height: 56, background: "rgba(75,226,214,0.16)", color: "var(--mint)" }}
+        >
+          <Mail size={26} />
         </div>
-        <AuthFooter text="Already confirmed?" linkText="Sign In" href="/sign-in" />
+        <h2 className="m-0 mb-2 text-center text-[22px] font-bold text-white">Check your email</h2>
+        <p className="mx-auto mb-5 max-w-[280px] text-center text-sm leading-relaxed text-white/[0.65]">
+          We sent a confirmation link to <span className="font-semibold text-white">{email}</span>.
+          Tap it to finish setting up.
+        </p>
+        <a href={`mailto:${email}`} className="block">
+          <DSButton variant="light" fullWidth pill>
+            Open email app
+          </DSButton>
+        </a>
+        <p className="mb-0 mt-4 text-center text-[13px] text-white/60">
+          Didn&rsquo;t get it?{" "}
+          <button type="button" onClick={handleResend} className="font-semibold text-white hover:underline">
+            {resendState === "sending" ? "Sending…" : resendState === "sent" ? "Sent again ✓" : "Resend"}
+          </button>
+        </p>
+        {resendState === "error" && (
+          <p className="mb-0 mt-2 text-center text-xs" style={{ color: "var(--danger)" }}>
+            Couldn&rsquo;t resend right now — try again in a minute.
+          </p>
+        )}
+        <AuthFooter text="Already confirmed?" linkText="Sign in" href="/sign-in" />
       </AuthGlassCard>
     );
   }
 
   return (
     <AuthGlassCard>
-      <AuthHeader title="Create Account" subtitle="Sign up to get started" />
+      <AuthHeader title="Create account" subtitle="Sign up to get started" />
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-3">
         <AuthField
-          placeholder="Full Name"
+          placeholder="Full name"
           type="text"
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
-          startIcon={<User className="text-white/50" size={20} />}
+          startIcon={<User className="text-white/50" size={18} />}
         />
         <AuthField
           placeholder="Email"
@@ -103,7 +131,7 @@ export default function SignUpPage() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
-          startIcon={<Mail className="text-white/50" size={20} />}
+          startIcon={<Mail className="text-white/50" size={18} />}
         />
         <AuthField
           placeholder="Password"
@@ -111,37 +139,38 @@ export default function SignUpPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
-          startIcon={<Lock className="text-white/50" size={20} />}
+          startIcon={<Lock className="text-white/50" size={18} />}
         />
 
         {error && (
-          <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/50 text-red-400 text-sm text-center">
+          <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-center text-sm text-red-400">
             {error}
           </div>
         )}
 
-        <Button
-          type="submit"
-          disabled={loading || pendingProvider !== null}
-          className="w-full h-[46px] rounded-full bg-white text-primary hover:bg-white/90 font-medium mt-2 disabled:opacity-50"
-        >
-          {loading ? "Creating account..." : "Sign Up"}
-        </Button>
+        <div className="pt-1.5">
+          <DSButton
+            type="submit"
+            variant="light"
+            fullWidth
+            pill
+            loading={loading}
+            disabled={loading || pendingProvider !== null}
+          >
+            {loading ? "Creating account…" : "Sign up"}
+          </DSButton>
+        </div>
       </form>
 
-      <div className="my-6 flex items-center gap-4">
-        <div className="h-px bg-white/20 flex-1" />
-        <span className="text-xs text-white/50 uppercase">Or</span>
-        <div className="h-px bg-white/20 flex-1" />
+      <div className="my-4 flex items-center gap-3">
+        <div className="h-px flex-1" style={{ background: "var(--tr-20)" }} />
+        <span className="text-[11px] uppercase tracking-[0.5px] text-white/50">Or</span>
+        <div className="h-px flex-1" style={{ background: "var(--tr-20)" }} />
       </div>
 
-      <AuthProviderButtons
-        onSelect={handleProvider}
-        disabled={loading}
-        pendingProvider={pendingProvider}
-      />
+      <AuthProviderButtons onSelect={handleProvider} disabled={loading} pendingProvider={pendingProvider} />
 
-      <AuthFooter text="Already have an account?" linkText="Sign In" href="/sign-in" />
+      <AuthFooter text="Already have an account?" linkText="Sign in" href="/sign-in" />
     </AuthGlassCard>
   );
 }

@@ -25,6 +25,9 @@ vi.mock('@/lib/api/gmail', () => ({
   getIngestStatus: vi.fn(),
   startIngest: vi.fn(),
   confirmCandidates: vi.fn(),
+  // Read-only connection context for the empty state; resolved as connected here.
+  fetchGmailConnectionStatus: vi.fn().mockResolvedValue({ connected: true, scope: null, connected_at: null }),
+  startGmailConnect: vi.fn(),
 }));
 
 import ReviewPage from '@/app/review/page';

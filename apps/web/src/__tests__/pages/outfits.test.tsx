@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import OutfitsPage from '@/app/outfits/page';
 import { useOutfitsStore } from '@/stores/useOutfitsStore';
@@ -15,6 +15,12 @@ type ClosetStoreSlice = {
   isLoading: boolean;
   fetchItems: () => void;
 };
+
+// The redesigned page navigates (outfit cards → /outfits/[id]).
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
+  usePathname: () => '/outfits',
+}));
 
 // Mock the stores
 vi.mock('@/stores/useOutfitsStore', () => ({
@@ -57,7 +63,8 @@ describe('OutfitsPage', () => {
   it('should render empty state when no outfits', () => {
     render(<OutfitsPage />);
 
-    expect(screen.getByText('No outfit suggestions yet')).toBeInTheDocument();
+    expect(screen.getByText('No outfits yet')).toBeInTheDocument();
+    expect(screen.getByText('Generate outfits')).toBeInTheDocument();
   });
 
   it('should render loading state', () => {
@@ -116,6 +123,7 @@ describe('OutfitsPage', () => {
         userId: 'user-1',
         name: 'Blue Shirt',
         category: 'top',
+        imageUrl: 'https://example.com/shirt.jpg',
         createdAt: '2024-01-01T00:00:00Z',
         updatedAt: '2024-01-01T00:00:00Z',
       },
@@ -141,8 +149,9 @@ describe('OutfitsPage', () => {
     render(<OutfitsPage />);
 
     expect(screen.getByText('Weekend Look')).toBeInTheDocument();
-    expect(screen.getByText('Occasion: Casual')).toBeInTheDocument();
-    expect(screen.getByText('Blue Shirt')).toBeInTheDocument();
+    expect(screen.getByText('Casual')).toBeInTheDocument();
+    // Item previews render as image thumbnails (alt = item name).
+    expect(screen.getByAltText('Blue Shirt')).toBeInTheDocument();
   });
 
   it('should call fetchOutfits on mount when outfits are empty', () => {
@@ -176,7 +185,7 @@ describe('OutfitsPage', () => {
 
     render(<OutfitsPage />);
 
-    const likeButton = screen.getByText('☆ Like');
+    const likeButton = screen.getByRole('button', { name: 'Like outfit' });
     const user = userEvent.setup();
     await user.click(likeButton);
 
@@ -208,7 +217,7 @@ describe('OutfitsPage', () => {
 
     render(<OutfitsPage />);
 
-    expect(screen.getByText('★ Liked')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unlike outfit' })).toBeInTheDocument();
   });
 
   it('should handle regenerate button click', async () => {
@@ -216,7 +225,7 @@ describe('OutfitsPage', () => {
 
     render(<OutfitsPage />);
 
-    const regenerateButton = screen.getByText('Generate Outfit');
+    const regenerateButton = screen.getByRole('button', { name: /Regenerate/ });
     await user.click(regenerateButton);
 
     expect(mockFetchOutfits).toHaveBeenCalledWith({ limit: 3 });
@@ -250,16 +259,7 @@ describe('OutfitsPage', () => {
 
     render(<OutfitsPage />);
 
-    expect(screen.getByText('Recommended additions')).toBeInTheDocument();
-    expect(screen.getByText('Recommended Shoe')).toBeInTheDocument();
-    // The reason renders inside a <span> as "– {reason}" (prefix + text node),
-    // so the text is split. Match with a regex rather than an exact string.
-    expect(screen.getByText(/Completes the look/)).toBeInTheDocument();
+    // The AI strip renders "Add {name} to finish this look".
+    expect(screen.getByText(/recommended shoe/i)).toBeInTheDocument();
   });
 });
-
-
-
-
-
-

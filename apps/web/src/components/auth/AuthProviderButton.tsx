@@ -1,5 +1,4 @@
 import React from "react";
-import { Button } from "@/components/ui/button";
 import { GoogleIcon } from "@/components/icons/GoogleIcon";
 import { AppleIcon } from "@/components/icons/AppleIcon";
 import { cn } from "@/lib/utils";
@@ -17,30 +16,41 @@ interface AuthProviderButtonProps extends React.ButtonHTMLAttributes<HTMLButtonE
 }
 
 /**
- * A single OAuth provider button. Generic over provider id so the same component
- * renders Google today and Apple later with no change (icon is looked up by id).
+ * A single OAuth provider button — design spec: transparent pill, hairline
+ * white border, white label, 48px tall. Generic over provider id so the same
+ * component renders Google today and Apple later (icon looked up by id).
  */
 export function AuthProviderButton({
   providerId,
   label,
   className,
   loading,
+  disabled,
   ...props
 }: AuthProviderButtonProps) {
   const Icon = ICONS[providerId];
   return (
-    <Button
+    <button
       type="button"
-      variant="default"
+      disabled={disabled || loading}
       className={cn(
-        "w-full h-[46px] rounded-full bg-primary text-white hover:bg-primary/90",
+        "flex h-12 w-full items-center justify-center gap-2.5 rounded-full bg-transparent",
+        "text-[15px] font-semibold text-white transition-colors hover:bg-white/5",
+        "disabled:cursor-not-allowed disabled:opacity-50",
         className
       )}
-      loading={loading}
+      style={{ border: "1px solid var(--tr-20)", fontFamily: "var(--font-sans)" }}
       {...props}
     >
-      {Icon ? <Icon className="mr-2 h-5 w-5" /> : null}
+      {loading ? (
+        <span
+          className="inline-block h-4 w-4 rounded-full border-2 border-white"
+          style={{ borderTopColor: "transparent", animation: "tailor-spin 0.7s linear infinite" }}
+        />
+      ) : Icon ? (
+        <Icon className="h-[18px] w-[18px]" />
+      ) : null}
       {label}
-    </Button>
+    </button>
   );
 }

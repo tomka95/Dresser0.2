@@ -1,18 +1,34 @@
 'use client';
 
-// STATUS: implements Closet screen matching Figma node 26-1122
+// Closet — real /closet items with search, category chips, item grid, FAB + drawer.
 
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useRequireAuth } from '@/lib/auth/useRequireAuth';
-import { BottomNavBar } from '@/components/layout/BottomNavBar';
-import { useClosetStore } from '@/stores/useClosetStore';
-import { ClosetHeader } from '@/components/closet/ClosetHeader';
-import { ClosetSearchBar } from '@/components/closet/ClosetSearchBar';
-import { CategoryFilters } from '@/components/closet/CategoryFilters';
-import { ClosetGrid } from '@/components/closet/ClosetGrid';
-import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
 import { Plus } from 'lucide-react';
+import { useRequireAuth } from '@/lib/auth/useRequireAuth';
+import { useClosetStore } from '@/stores/useClosetStore';
+import { AppShell } from '@/components/layout/AppShell';
+import { BottomNavBar } from '@/components/layout/BottomNavBar';
+import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
+import {
+  CategoryChips,
+  DSButton,
+  DSSearchBar,
+  HangerImg,
+  ItemTile,
+  type CategoryChipItem,
+} from '@/components/ds';
+
+const CATEGORIES: CategoryChipItem[] = [
+  { id: 'all', label: 'All' },
+  { id: 'top', label: 'Tops' },
+  { id: 'bottom', label: 'Bottoms' },
+  { id: 'dress', label: 'Dresses' },
+  { id: 'outerwear', label: 'Outerwear' },
+  { id: 'shoes', label: 'Shoes' },
+  { id: 'accessories', label: 'Accessories' },
+  { id: 'other', label: 'Other' },
+];
 
 export default function ClosetPage() {
   const router = useRouter();
@@ -22,10 +38,10 @@ export default function ClosetPage() {
   const isAuth = !!session;
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  
-  // Drawer state
   const [drawerOpen, setDrawerOpen] = useState(false);
-  
+  // Favorites are LOCAL-ONLY (no backend endpoint yet) — a visual affordance.
+  const [faves, setFaves] = useState<Record<string, boolean>>({});
+
   const items = useClosetStore((state) => state.items);
   const fetchItems = useClosetStore((state) => state.fetchItems);
   const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
@@ -33,7 +49,6 @@ export default function ClosetPage() {
   const error = useClosetStore((state) => state.error);
 
   useEffect(() => {
-    // Fetch items if authenticated and not yet fetched
     if (isAuth && !hasFetchedItems) {
       fetchItems();
     }
@@ -43,13 +58,9 @@ export default function ClosetPage() {
   // empty result renders the empty state below, never placeholder cards.
   const filteredItems = useMemo(() => {
     let filtered = items;
-
-    // Filter by category
     if (selectedCategory !== 'all') {
       filtered = filtered.filter((item) => item.category === selectedCategory);
     }
-
-    // Filter by search query
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(
@@ -59,53 +70,27 @@ export default function ClosetPage() {
           item.category.toLowerCase().includes(query)
       );
     }
-
     return filtered;
   }, [items, selectedCategory, searchQuery]);
 
-  if (checkingAuth) {
-    return null; // Or a loading spinner
-  }
-
-  if (!isAuth) {
+  if (checkingAuth || !isAuth) {
     return null;
   }
 
+  const closetIsEmpty = hasFetchedItems && !isLoading && !error && items.length === 0;
+
   return (
-    <div className="min-h-full bg-[#1E1E1E] relative pb-24">
-      {/* Background Layers */}
-      <div className="fixed top-0 bottom-0 left-0 right-0 z-0 w-full max-w-[430px] mx-auto pointer-events-none">
-        {/* Layer 1: decorative closet backdrop over the --app-bg fallback */}
-        <div
-          className="absolute inset-0"
-          style={{
-            background: 'var(--app-bg)',
-            backgroundImage: "url('/images/closet-background-blur.jpg')",
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-          }}
-        />
+    <AppShell>
+      <div style={{ padding: '52px 24px 120px' }}>
+        <h1 className="m-0 mb-[18px] text-[34px] font-bold tracking-[-0.5px] text-white">My Closet</h1>
+        <div className="mb-[18px]">
+          <DSSearchBar dark placeholder="Search your closet" value={searchQuery} onChange={setSearchQuery} />
+        </div>
+        <div className="mb-5">
+          <CategoryChips dark items={CATEGORIES} value={selectedCategory} onChange={setSelectedCategory} />
+        </div>
 
-        {/* Layer 2: Dark Gradient Overlay */}
-        <div 
-          className="absolute inset-0"
-          style={{
-            background: 'linear-gradient(180deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.6) 50%, rgba(0,0,0,0.9) 100%)'
-          }}
-        />
-      </div>
-
-      {/* Main Content */}
-      <div className="relative z-10 px-6 pt-12">
-        <ClosetHeader />
-        <ClosetSearchBar value={searchQuery} onChange={setSearchQuery} />
-        <CategoryFilters
-          selectedCategory={selectedCategory}
-          onSelectCategory={setSelectedCategory}
-        />
-        {/* First load: show a spinner rather than flashing the empty state before
-            the /closet fetch resolves. On error, offer a retry. Otherwise hand the
-            REAL items to the grid, which renders its own empty state when there are none. */}
+        {/* First load: spinner instead of flashing the empty state. On error, retry. */}
         {!hasFetchedItems && isLoading ? (
           <div className="flex justify-center py-16">
             <div
@@ -119,45 +104,80 @@ export default function ClosetPage() {
           </div>
         ) : error ? (
           <div className="py-12 text-center">
-            <p className="text-white/60 text-sm">Couldn&rsquo;t load your closet.</p>
-            <button
-              type="button"
-              onClick={() => fetchItems()}
-              className="mt-2 text-sm underline text-white/80"
-            >
+            <p className="text-sm text-white/60">Couldn&rsquo;t load your closet.</p>
+            <button type="button" onClick={() => fetchItems()} className="mt-2 text-sm text-white/80 underline">
               Retry
             </button>
           </div>
+        ) : closetIsEmpty ? (
+          // Empty closet — hanger mark + CTA (keeps the header and nav around it).
+          <div className="flex flex-col items-center px-4 pb-6 pt-14 text-center">
+            <HangerImg w={190} className="mb-4 opacity-90" />
+            <h2 className="m-0 mb-2.5 text-[22px] font-bold tracking-[-0.3px] text-white">
+              Your closet is empty
+            </h2>
+            <p className="mx-auto mb-6 max-w-[280px] text-[14.5px] leading-relaxed text-white/[0.65]">
+              Add your first piece and Tailor starts building looks for you.
+            </p>
+            <DSButton
+              variant="light"
+              pill
+              leftIcon={<Plus size={18} strokeWidth={2.6} />}
+              style={{ height: 48, padding: '0 26px' }}
+              onClick={() => setDrawerOpen(true)}
+            >
+              Add an item
+            </DSButton>
+          </div>
+        ) : filteredItems.length === 0 ? (
+          <div className="py-12 text-center">
+            <p className="text-sm text-white/60">No matches in your closet.</p>
+          </div>
         ) : (
-          <ClosetGrid items={filteredItems} />
+          <div className="grid grid-cols-2 gap-3.5">
+            {filteredItems.map((it) => (
+              <ItemTile
+                key={it.id}
+                name={it.name}
+                brand={it.brand}
+                imageUrl={it.imageUrl}
+                faved={!!faves[it.id]}
+                onFav={() => setFaves((f) => ({ ...f, [it.id]: !f[it.id] }))}
+                onClick={() => router.push(`/closet/${it.id}`)}
+              />
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Floating Action Button */}
-      <div className="fixed bottom-20 left-0 right-0 z-40 max-w-[430px] mx-auto px-6 pointer-events-none flex justify-end">
+      {/* Floating Action Button — teal gradient, opens the AddItemDrawer. */}
+      <div className="pointer-events-none fixed bottom-[104px] left-0 right-0 z-40 mx-auto flex max-w-[430px] justify-end px-6">
         <button
+          type="button"
+          aria-label="Add to closet"
           onClick={() => setDrawerOpen(true)}
-          className="w-14 h-14 rounded-full bg-white flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95 pointer-events-auto"
+          className="pointer-events-auto flex items-center justify-center rounded-full text-white transition-transform hover:scale-105 active:scale-95"
+          style={{
+            width: 56,
+            height: 56,
+            background: 'var(--grad-teal)',
+            boxShadow: '0 10px 24px rgba(0,0,0,0.4)',
+          }}
         >
-          <Plus className="w-7 h-7 text-[rgb(10,54,51)]" strokeWidth={3} />
+          <Plus size={26} strokeWidth={2.6} />
         </button>
       </div>
 
-      {/* Add Item Drawer (Bottom Sheet) */}
-      <AddItemDrawer 
-        open={drawerOpen} 
+      <AddItemDrawer
+        open={drawerOpen}
         onOpenChange={setDrawerOpen}
         onGmailClick={() => {
           setDrawerOpen(false);
           router.push('/review');
         }}
-        onPhotoClick={() => {
-          setDrawerOpen(false);
-          router.push('/add-photo');
-        }}
       />
 
       <BottomNavBar activeRoute={pathname} />
-    </div>
+    </AppShell>
   );
 }

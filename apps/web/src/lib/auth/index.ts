@@ -23,9 +23,10 @@ import { getSupabaseClient } from '@/lib/supabase/client';
 import { providerToSupabase, type AuthProviderId } from '@/config/authProviders';
 
 /** Where OAuth + email-confirmation links return to (must be an allowed redirect URL). */
-function authCallbackUrl(): string | undefined {
+function authCallbackUrl(next?: string): string | undefined {
   if (typeof window === 'undefined') return undefined;
-  return `${window.location.origin}/auth/callback`;
+  const base = `${window.location.origin}/auth/callback`;
+  return next ? `${base}?next=${encodeURIComponent(next)}` : base;
 }
 
 export async function getSession(): Promise<Session | null> {
@@ -75,7 +76,8 @@ export async function signUpWithPassword({
     password,
     options: {
       data: fullName ? { full_name: fullName } : undefined,
-      emailRedirectTo: authCallbackUrl(),
+      // Land email confirmations on the celebratory /confirmed screen.
+      emailRedirectTo: authCallbackUrl('/confirmed'),
     },
   });
   if (error) throw new Error(error.message);
@@ -100,6 +102,42 @@ export async function signInWithProvider(id: AuthProviderId): Promise<void> {
     provider: providerToSupabase(id),
     options: { redirectTo: authCallbackUrl() },
   });
+  if (error) throw new Error(error.message);
+}
+
+/** Re-send the sign-up confirmation email (the "Didn't get it? Resend" action). */
+export async function resendSignUpEmail(email: string): Promise<void> {
+  const { error } = await getSupabaseClient().auth.resend({
+    type: 'signup',
+    email,
+    options: { emailRedirectTo: authCallbackUrl('/confirmed') },
+  });
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Send a password-reset link. The link lands on /reset-password with a recovery
+ * session, where updatePassword() completes the flow.
+ */
+export async function resetPasswordForEmail(email: string): Promise<void> {
+  const redirectTo =
+    typeof window === 'undefined' ? undefined : `${window.location.origin}/reset-password`;
+  const { error } = await getSupabaseClient().auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Set a new password for the signed-in user (normal session OR the recovery
+ * session created by a reset link).
+ */
+export async function updatePassword(password: string): Promise<void> {
+  const { error } = await getSupabaseClient().auth.updateUser({ password });
+  if (error) throw new Error(error.message);
+}
+
+/** Update profile metadata (currently the display/full name). */
+export async function updateProfileName(fullName: string): Promise<void> {
+  const { error } = await getSupabaseClient().auth.updateUser({ data: { full_name: fullName } });
   if (error) throw new Error(error.message);
 }
 

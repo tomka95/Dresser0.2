@@ -8,7 +8,7 @@ import { AuthHeader } from "@/components/auth/AuthHeader";
 import { AuthField } from "@/components/auth/AuthField";
 import { AuthProviderButtons } from "@/components/auth/AuthProviderButtons";
 import { AuthFooter } from "@/components/auth/AuthFooter";
-import { Button } from "@/components/ui/button";
+import { DSButton } from "@/components/ds";
 import { Mail, Lock } from "lucide-react";
 import { signInWithPassword, signInWithProvider } from "@/lib/auth";
 import type { AuthProviderId } from "@/config/authProviders";
@@ -65,16 +65,16 @@ export default function SignInPage() {
 
   return (
     <AuthGlassCard>
-      <AuthHeader title="Welcome Back" subtitle="Sign in to continue" />
+      <AuthHeader title="Welcome back" subtitle="Sign in to your closet" />
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-3">
         <AuthField
           placeholder="Email"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
-          startIcon={<Mail className="text-white/50" size={20} />}
+          startIcon={<Mail className="text-white/50" size={18} />}
         />
         <AuthField
           placeholder="Password"
@@ -82,43 +82,37 @@ export default function SignInPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
-          startIcon={<Lock className="text-white/50" size={20} />}
+          startIcon={<Lock className="text-white/50" size={18} />}
         />
 
-        <div className="flex justify-end">
-          <Link href="/forgot-password" className="text-xs text-white/70 hover:text-white transition-colors">
+        <div className="flex justify-end pt-0.5">
+          <Link href="/forgot-password" className="text-[13px] text-white/70 transition-colors hover:text-white">
             Forgot password?
           </Link>
         </div>
 
         {error && (
-          <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/50 text-red-400 text-sm text-center">
+          <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-center text-sm text-red-400">
             {error}
           </div>
         )}
 
-        <Button
-          type="submit"
-          disabled={isSubmitDisabled}
-          className="w-full h-[46px] rounded-full bg-white text-primary hover:bg-white/90 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {loading ? "Signing in..." : "Sign In"}
-        </Button>
+        <div className="pt-1">
+          <DSButton type="submit" variant="light" fullWidth pill loading={loading} disabled={isSubmitDisabled}>
+            {loading ? "Signing in…" : "Sign in"}
+          </DSButton>
+        </div>
       </form>
 
-      <div className="my-6 flex items-center gap-4">
-        <div className="h-px bg-white/20 flex-1" />
-        <span className="text-xs text-white/50 uppercase">Or</span>
-        <div className="h-px bg-white/20 flex-1" />
+      <div className="my-4 flex items-center gap-3">
+        <div className="h-px flex-1" style={{ background: "var(--tr-20)" }} />
+        <span className="text-[11px] uppercase tracking-[0.5px] text-white/50">Or</span>
+        <div className="h-px flex-1" style={{ background: "var(--tr-20)" }} />
       </div>
 
-      <AuthProviderButtons
-        onSelect={handleProvider}
-        disabled={loading}
-        pendingProvider={pendingProvider}
-      />
+      <AuthProviderButtons onSelect={handleProvider} disabled={loading} pendingProvider={pendingProvider} />
 
-      <AuthFooter text="Don't have an account?" linkText="Sign Up" href="/sign-up" />
+      <AuthFooter text="New here?" linkText="Create account" href="/sign-up" />
     </AuthGlassCard>
   );
 }

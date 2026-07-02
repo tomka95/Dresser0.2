@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ItemDetailsPage from '@/app/closet/[id]/page';
 import { useClosetStore } from '@/stores/useClosetStore';
-import type { ClosetItem } from '@tailor/contracts';
 
 // Mock next/navigation
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: vi.fn(),
     replace: vi.fn(),
+    back: vi.fn(),
   }),
 }));
 
@@ -42,6 +42,7 @@ describe('ItemDetailsPage', () => {
     mockFetchItem.mockResolvedValue({
       id: itemId,
       name: 'Test Item',
+      category: 'top',
       imageUrl: 'http://example.com/image.png',
     });
     mockUpdateItem.mockResolvedValue({
@@ -69,7 +70,7 @@ describe('ItemDetailsPage', () => {
 
   it('renders loading state', () => {
     vi.mocked(useClosetStore).mockImplementation((selector) => {
-      return selector({ 
+      return selector({
         items: [],
         isLoading: false,
         isItemLoading: { [itemId]: true },
@@ -85,16 +86,17 @@ describe('ItemDetailsPage', () => {
     });
 
     render(<ItemDetailsPage params={{ id: itemId }} />);
-    expect(screen.getByText('Loading item details...')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading item' })).toBeInTheDocument();
   });
 
   it('renders item details after loading', async () => {
     render(<ItemDetailsPage params={{ id: itemId }} />);
 
+    // Name renders as the hero title once the fetch resolves.
     await waitFor(() => {
-      expect(screen.getByDisplayValue('Test Item')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Test Item' })).toBeInTheDocument();
     });
-    
+
     expect(screen.getByAltText('Test Item')).toBeInTheDocument();
   });
 
@@ -108,10 +110,12 @@ describe('ItemDetailsPage', () => {
     render(<ItemDetailsPage params={{ id: itemId }} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('Test Item')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Test Item' })).toBeInTheDocument();
     });
 
-    const nameInput = screen.getByLabelText('Item Name');
+    // Inline edit: the pencil toggles the field row into an input.
+    await user.click(screen.getByRole('button', { name: 'Edit name' }));
+    const nameInput = screen.getByLabelText('Name');
     await user.clear(nameInput);
     await user.type(nameInput, 'Updated Name');
 
@@ -123,35 +127,37 @@ describe('ItemDetailsPage', () => {
     render(<ItemDetailsPage params={{ id: itemId }} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('Test Item')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Test Item' })).toBeInTheDocument();
     });
 
-    // Change name
-    const nameInput = screen.getByLabelText('Item Name');
+    // Change name via the inline editor
+    await user.click(screen.getByRole('button', { name: 'Edit name' }));
+    const nameInput = screen.getByLabelText('Name');
     await user.clear(nameInput);
     await user.type(nameInput, 'Updated Name');
 
     // Save
-    const saveButton = screen.getByText('Save Changes');
+    const saveButton = screen.getByText('Save changes');
     await user.click(saveButton);
 
-    expect(mockUpdateItem).toHaveBeenCalledWith(itemId, {
-      name: 'Updated Name',
-    });
+    expect(mockUpdateItem).toHaveBeenCalledWith(
+      itemId,
+      expect.objectContaining({ name: 'Updated Name' })
+    );
   });
 
   it('displays validation errors from store', async () => {
     const errorMsg = 'Validation failed';
     mockUpdateItem.mockRejectedValue(new Error(errorMsg));
-    
+
     const user = userEvent.setup();
     render(<ItemDetailsPage params={{ id: itemId }} />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue('Test Item')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Test Item' })).toBeInTheDocument();
     });
 
-    const saveButton = screen.getByText('Save Changes');
+    const saveButton = screen.getByText('Save changes');
     await user.click(saveButton);
 
     await waitFor(() => {
@@ -159,4 +165,3 @@ describe('ItemDetailsPage', () => {
     });
   });
 });
-

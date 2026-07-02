@@ -16,8 +16,10 @@ import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
 import {
   confirmCandidates,
+  fetchGmailConnectionStatus,
   getIngestCandidates,
   getIngestStatus,
+  startGmailConnect,
   startIngest,
   type ConfirmResponse,
   type IngestCandidate,
@@ -83,6 +85,9 @@ export default function ReviewPage() {
   const [scanCount, setScanCount] = useState(0);
   const [starting, setStarting] = useState(false);   // CTA tapped, startIngest in flight
   const [scanError, setScanError] = useState<string | null>(null);
+  // Gmail connection (drives the "Connect Gmail to begin" empty state).
+  const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
+  const [connectBusy, setConnectBusy] = useState(false);
 
   const mountedRef = useRef(true);
   // When the deck is opened for a specific run (the photo flow navigates to
@@ -207,6 +212,10 @@ export default function ReviewPage() {
     scopeSyncIdRef.current =
       new URLSearchParams(window.location.search).get('sync_id') ?? undefined;
     setLoading(true);
+    // Connection status is read-only context for the empty state — never a sync.
+    fetchGmailConnectionStatus()
+      .then((s) => mountedRef.current && setGmailConnected(s.connected))
+      .catch(() => mountedRef.current && setGmailConnected(null));
     getIngestCandidates(scopeSyncIdRef.current)
       .then((cands) => {
         if (!mountedRef.current) return;
@@ -339,6 +348,39 @@ export default function ReviewPage() {
                 ? `${scanCount} found so far — first cards appear in a moment`
                 : 'Finding clothing purchases in your receipts'}
             </p>
+          </div>
+        </AppShell>
+      );
+    }
+    // Gmail not connected yet — the designed "Connect Gmail to begin" prompt.
+    if (gmailConnected === false) {
+      return (
+        <AppShell scroll={false}>
+          <div className="flex h-full flex-col items-center justify-center px-2">
+            <EmptyState
+              icon={
+                <svg width="42" height="42" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <rect x="2.5" y="5" width="19" height="14" rx="2" fill="rgba(255,255,255,0.9)" />
+                  <path d="M3.5 6.5l8.5 6 8.5-6" stroke="#ea4335" strokeWidth="1.6" fill="none" />
+                </svg>
+              }
+              title="Connect Gmail to begin"
+              body="Tailor builds your closet from email receipts. Connect once and items appear automatically."
+              ctaLabel={connectBusy ? 'Opening Google…' : 'Connect Gmail'}
+              onCta={() => {
+                if (connectBusy) return;
+                setConnectBusy(true);
+                startGmailConnect().catch(() => setConnectBusy(false));
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => router.push('/closet')}
+              className="mt-3 text-[13px] underline"
+              style={{ color: 'rgba(255,255,255,0.5)' }}
+            >
+              Back to closet
+            </button>
           </div>
         </AppShell>
       );
@@ -637,9 +679,7 @@ export default function ReviewPage() {
                     <Camera size={13} /> From your photo
                   </>
                 ) : (
-                  <>
-                    <Mail size={13} /> Detected in Gmail
-                  </>
+                  <>✦ Detected in Gmail</>
                 )}
               </span>
 
@@ -749,7 +789,7 @@ export default function ReviewPage() {
               borderRadius: '50%',
               background: 'rgba(0,0,0,0.3)',
               border: '1px solid var(--tr-20)',
-              color: 'var(--danger)',
+              color: '#fff',
             }}
           >
             <X size={26} />
