@@ -7,8 +7,9 @@ from sqlalchemy import (
     SmallInteger, Float, Double, Numeric, REAL, UniqueConstraint, CheckConstraint,
     Table, Index, JSON, text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY as PG_ARRAY
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY as PG_ARRAY, UUID as PG_UUID
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 
 
 # Timestamp helper: the live DB uses `timestamp with time zone` for nearly every
@@ -33,6 +34,18 @@ def _jsonb():
 
 def _text_array():
     return PG_ARRAY(Text()).with_variant(JSON(), "sqlite")
+
+
+def _uuid_array():
+    # Postgres uuid[]; JSON fallback under the SQLite dev/test create_all() path.
+    return PG_ARRAY(PG_UUID(as_uuid=True)).with_variant(JSON(), "sqlite")
+
+
+# pgvector column (Postgres `vector(dim)`), with a portable SQLite fallback so the
+# LOCAL_DB=sqlite dev/test create_all() path doesn't choke on the vector type (tests
+# never read/write embeddings). dim is fixed at DDL time; see EMBEDDING_DIM in config.
+def _vector(dim):
+    return Vector(dim).with_variant(Text(), "sqlite")
 
 
 
@@ -95,12 +108,9 @@ class ClothingItem(Base):
         # text() so ORM metadata matches reflection and autogenerate stays clean.
         Index('idx_clothing_items_user_id_created_at', 'user_id', text('created_at DESC')),
         # GIN indexes present live. postgresql_using='gin' is honored on Postgres
-        # and ignored on SQLite (create_all emits a plain index there).
-        Index('clothing_items_tags_gin', 'tags', postgresql_using='gin'),
-        Index('clothing_items_colors_gin', 'colors', postgresql_using='gin'),
-        Index('idx_clothing_items_colors_gin', 'colors', postgresql_using='gin'),
+        # and ignored on SQLite (create_all emits a plain index there). The dead
+        # tags/colors/style_tags GINs were dropped with their columns in 0018.
         Index('clothing_items_analysis_raw_gin', 'analysis_raw', postgresql_using='gin'),
-        Index('idx_clothing_items_style_tags_gin', 'style_tags', postgresql_using='gin'),
         Index('idx_clothing_items_attributes_json_gin', 'attributes_json', postgresql_using='gin'),
         # --- Ingestion (phase 3a) -------------------------------------------
         # THE single dedup key: re-confirming the same receipt line never inserts
@@ -131,6 +141,41 @@ class ClothingItem(Base):
         # photo). Named CHECK (not diffed by autogenerate); server default 'gmail'
         # owned by migration 0014 backfills every legacy row.
         CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
+        # --- AI Stylist universal garment schema (Wave S0, migration 0018) --------
+        # Named CHECKs (not diffed by autogenerate). category is a SUPERSET: the
+        # canonical 12 + the legacy aliases ('shoes','accessories','other') that still
+        # live in the data / are emitted by the current 7-enum path (Branch B
+        # normalizes them; a later migration tightens to the 12). subcategory reuses
+        # the existing sub_category column (72 Fashionpedia-derived values).
+        CheckConstraint(
+            "category IS NULL OR category IN ("
+            "'top','bottom','dress','outerwear','footwear','bag','accessory',"
+            "'activewear','swim','lounge_underwear','suiting','jewelry',"
+            "'shoes','accessories','other')",
+            name='category'),
+        CheckConstraint(
+            "sub_category IS NULL OR sub_category IN ("
+            "'t_shirt','tank_top','blouse','shirt','polo','sweater','hoodie','cardigan',"
+            "'jeans','trousers','chinos','shorts','sweatpants','skirt_mini','skirt_midi','leggings',"
+            "'mini_dress','midi_dress','maxi_dress','gown','shirt_dress',"
+            "'jacket','denim_jacket','leather_jacket','blazer','coat','trench_coat','parka','vest',"
+            "'sneaker','boot','ankle_boot','heel','loafer','oxford','sandal','flat',"
+            "'tote_bag','crossbody_bag','shoulder_bag','backpack','clutch','belt_bag',"
+            "'belt','hat','cap','beanie','scarf','gloves','sunglasses','tie','watch',"
+            "'sports_bra','athletic_shorts','joggers','track_jacket',"
+            "'bikini','one_piece_swimsuit','swim_trunks',"
+            "'bra','underwear','boxers','pajamas','robe','lingerie',"
+            "'suit','suit_jacket','suit_trousers',"
+            "'necklace','bracelet','earrings','ring')",
+            name='sub_category'),
+        CheckConstraint('formality IS NULL OR (formality >= 1 AND formality <= 5)',
+                        name='formality'),
+        CheckConstraint('warmth IS NULL OR (warmth >= 1 AND warmth <= 3)',
+                        name='warmth'),
+        CheckConstraint(
+            "condition IS NULL OR condition IN "
+            "('new','like_new','good','fair','worn','damaged')",
+            name='condition'),
     )
 
 
@@ -208,23 +253,47 @@ class ClothingItem(Base):
 
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 
-    # Tagging / scoring columns that exist live in Supabase. Arrays default to []
-    # and attributes_json to {} (server defaults owned by the migration). Comments
-    # mirror the live column comments so autogenerate sees no difference.
-    tags = Column(_text_array(), nullable=False, default=list)
+    # --- AI Stylist universal garment schema (Wave S0, migration 0018) -----------
+    # Tier-1/2/4 attributes. All nullable / constant-default (no table rewrite). NOT
+    # populated by any Branch-A code path — Branch B (enrichment) writes these; the
+    # dead tags/colors/style_tags/tag_scores/color_scores columns were dropped in 0018.
+    # sub_category (defined above) is the canonical subcategory carrier (72-value CHECK).
+    #
+    # Tier-1:
+    color_primary_hex = Column(Text, nullable=True)
+    pattern = Column(Text, nullable=True)
+    material = Column(Text, nullable=True)
+    fit_silhouette = Column(Text, nullable=True)
+    fit_rise = Column(Text, nullable=True)
+    formality = Column(Integer, nullable=True)   # 1..5 (CHECK above)
+    warmth = Column(Integer, nullable=True)       # 1..3 (CHECK above)
+    seasons = Column(_text_array(), nullable=True)
+    occasions = Column(_text_array(), nullable=True)
+    # Tier-2:
+    length = Column(Text, nullable=True)
+    neckline = Column(Text, nullable=True)
+    sleeve_length = Column(Text, nullable=True)
+    heel_height = Column(Text, nullable=True)
+    # Tier-4 lifecycle:
+    acquired_date = Column(Date, nullable=True)
+    condition = Column(Text, nullable=True)       # CHECK above
+    is_favorite = Column(Boolean, nullable=False, default=False)
+    archived_at = Column(_tstz(), nullable=True)
+    wear_count = Column(Integer, nullable=False, default=0)
+    last_worn_at = Column(_tstz(), nullable=True)
 
-    colors = Column(_text_array(), nullable=False, default=list,
-                    comment='Array of color tags for filtering (e.g., ["black", "navy"])')
-
-    style_tags = Column(_text_array(), nullable=False, default=list,
-                        comment='Array of style tags for filtering (e.g., ["formal", "professional"])')
-
-    tag_scores = Column(_jsonb(), nullable=True)
-
-    color_scores = Column(_jsonb(), nullable=True)
-
-    attributes_json = Column(_jsonb(), nullable=False, default=dict,
-                             comment='JSONB object for future attributes (warmth, formality, modesty, fabric, etc.)')
+    # Per-field provenance+confidence carrier (Branch B populates; {} until then).
+    # Comment string is kept identical to the 0018 COMMENT ON COLUMN so `alembic
+    # check` sees no drift.
+    attributes_json = Column(
+        _jsonb(), nullable=False, default=dict,
+        comment=(
+            'Per-field provenance+confidence carrier (Branch B populates; empty {} '
+            'until then). Shape: {field: {value, confidence: 0..1, provenance: '
+            'extracted|user_edited|inferred|default}}. user_edited is never '
+            'overwritten by extraction/inference.'
+        ),
+    )
 
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
@@ -727,78 +796,176 @@ class IngestRun(Base):
 
 
 
+# --- AI Stylist substrate (Wave S0, migration 0018) --------------------------
+# Foundation tables the Stylist writes through in later branches (B: enrichment /
+# item_embeddings; C: style_events; S1: style_profiles distillation). All carry
+# UUID user_id -> users(id) and per-user RLS (auth.uid() = user_id), applied in the
+# migration (RLS is not expressible in the ORM). The legacy user_preferences /
+# user_preference_events (TEXT user_id, 0 rows, no live reader/writer) were dropped
+# in 0018 and are SUPERSEDED by style_preferences / preference_signals.
+
+class ItemEmbedding(Base):
+    """pgvector embedding for a clothing item.
+
+    Side table (not a column on clothing_items) so re-embedding / model-versioning
+    never touches the hot closet row and the ANN index lives on a dedicated relation.
+    Branch B populates rows and builds the hnsw/ivfflat index post-load; nothing in
+    Branch A writes here. user_id is denormalized from the parent item so RLS filters
+    without a join.
+    """
+
+    __tablename__ = "item_embeddings"
+
+    __table_args__ = (
+        UniqueConstraint("item_id", "model", "version",
+                         name="item_embeddings_item_id_model_version_key"),
+        Index("idx_item_embeddings_user_id", "user_id"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    item_id = Column(GUID(), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Dimension fixed at DDL time (config.EMBEDDING_DIM, default 768 = text-embedding-004).
+    # Changing the embedding model's dim requires re-migrating this one column.
+    embedding = Column(_vector(768), nullable=False)
+    model = Column(Text, nullable=False)
+    dim = Column(Integer, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class StyleEvent(Base):
+    """Interaction event log for the AI Stylist (Branch C writes).
+
+    Per-event detail (dwell_ms, reason_chips, feed_position, weather, occasion, ...)
+    lives under the `properties` jsonb — no dedicated columns for those.
+    """
+
+    __tablename__ = "style_events"
+
+    __table_args__ = (
+        # created_at DESC live (recent-first). text() keeps metadata == reflection.
+        Index("idx_style_events_user_created_at", "user_id", text("created_at DESC")),
+        Index("idx_style_events_user_event_type", "user_id", "event_type"),
+        Index("idx_style_events_item_id", "item_id"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    event_type = Column(Text, nullable=False)
+    # SET NULL: deleting an item must not erase the interaction history.
+    item_id = Column(GUID(), ForeignKey("clothing_items.id", ondelete="SET NULL"), nullable=True)
+    entity_type = Column(Text, nullable=True)
+    entity_id = Column(Text, nullable=True)
+    source = Column(Text, nullable=True)
+    properties = Column(_jsonb(), nullable=False, default=dict)
+    session_id = Column(GUID(), nullable=True)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+
+class StyleProfile(Base):
+    """Distilled per-user style profile (one row per user; S1 re-distills).
+
+    `facts` = L1 hard constraints/sizes (inviolable, cheaply + separately readable by
+    the outfit composer); `narrative_blob` = the distilled prose profile; `summary` =
+    short headline. Facts and narrative are distinct concerns -> distinct columns.
+    """
+
+    __tablename__ = "style_profiles"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", name="style_profiles_user_id_key"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    facts = Column(_jsonb(), nullable=False, default=dict)
+    narrative_blob = Column(_jsonb(), nullable=False, default=dict)
+    summary = Column(Text, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    distilled_at = Column(_tstz(), nullable=True)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class StylePreference(Base):
+    """Structured per-user style preference (supersedes user_preferences).
+
+    `dimension` = the preference axis (color/silhouette/formality/brand/...);
+    `polarity` = like|dislike|neutral; `evidence_count` / `example_item_ids` back the
+    preference with observed items; `evidence` is the free-text carrier flagged for
+    future field-level redaction. last_seen_at doubles as last_reinforced_at.
+    """
+
+    __tablename__ = "style_preferences"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "dimension", name="style_preferences_user_id_dimension_key"),
+        CheckConstraint("confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+                        name="confidence"),
+        CheckConstraint("polarity IS NULL OR polarity IN ('like','dislike','neutral')",
+                        name="polarity"),
+        CheckConstraint("source IN ('explicit','inferred','onboarding','imported')",
+                        name="source"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    dimension = Column(Text, nullable=False)
+    value = Column(_jsonb(), nullable=False, default=dict)
+    polarity = Column(Text, nullable=True)
+    confidence = Column(REAL, nullable=True)
+    weight = Column(REAL, nullable=True)
+    evidence_count = Column(Integer, nullable=False, default=0)
+    example_item_ids = Column(_uuid_array(), nullable=True)
+    source = Column(Text, nullable=False, default="explicit")
+    active = Column(Boolean, nullable=False, default=True)
+    evidence = Column(Text, nullable=True)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_seen_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+
+class PreferenceSignal(Base):
+    """Raw signal feeding preference distillation (append-only; supersedes
+    user_preference_events). May reference the style_event it derived from."""
+
+    __tablename__ = "preference_signals"
+
+    __table_args__ = (
+        Index("idx_preference_signals_user_created_at", "user_id", text("created_at DESC")),
+        Index("idx_preference_signals_user_signal_type", "user_id", "signal_type"),
+        Index("idx_preference_signals_event_id", "event_id"),
+        CheckConstraint("polarity IS NULL OR polarity IN ('like','dislike','neutral')",
+                        name="polarity"),
+        CheckConstraint(
+            "source IS NULL OR source IN "
+            "('onboarding','chat_explicit','chat_inferred','behavior','outfit_feedback')",
+            name="source"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    signal_type = Column(Text, nullable=False)
+    key = Column(Text, nullable=True)
+    value = Column(_jsonb(), nullable=True)
+    polarity = Column(Text, nullable=True)
+    item_id = Column(GUID(), ForeignKey("clothing_items.id", ondelete="SET NULL"), nullable=True)
+    event_id = Column(GUID(), ForeignKey("style_events.id", ondelete="SET NULL"), nullable=True)
+    # Freeform pointer to the signal's origin (message_id / event_id / 'onboarding').
+    evidence_ref = Column(Text, nullable=True)
+    weight = Column(REAL, nullable=True)   # signal strength
+    source = Column(Text, nullable=True)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+
+
+
 # --- Tables that exist live but were previously unmodeled in the ORM ---------
 # Modeled here so the ORM and the Alembic baseline agree with the real database.
 # These are not yet wired into any endpoint; they document the live schema and
-# unblock future features (preferences, weather caching, waitlist).
-
-class UserPreference(Base):
-
-    __tablename__ = "user_preferences"
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "key", name="user_preferences_user_id_key_unique"),
-        CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence"),
-        CheckConstraint("source IN ('chat', 'manual', 'inferred')", name="source"),
-        Index("idx_user_preferences_user_id", "user_id"),
-        Index("idx_user_preferences_user_id_key", "user_id", "key"),
-    )
-
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-
-    # NOTE: user_id is TEXT live (not a FK to users.id) -- modeled as-is.
-    user_id = Column(Text, nullable=False)
-
-    key = Column(Text, nullable=False)
-
-    value = Column(Text, nullable=False)
-
-    confidence = Column(REAL, nullable=False, default=0.6)
-
-    source = Column(Text, nullable=False, default="chat")
-
-    evidence_text = Column(Text, nullable=True)
-
-    last_seen_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-
-
-
-class UserPreferenceEvent(Base):
-
-    __tablename__ = "user_preference_events"
-
-    __table_args__ = (
-        CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence"),
-        CheckConstraint("source IN ('chat', 'manual', 'inferred')", name="source"),
-        # created_at DESC live (recent-first). text() keeps metadata == reflection.
-        Index("idx_user_preference_events_user_key_time", "user_id", "key", text("created_at DESC")),
-    )
-
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-
-    user_id = Column(Text, nullable=False)
-
-    key = Column(Text, nullable=False)
-
-    value = Column(Text, nullable=False)
-
-    confidence = Column(REAL, nullable=False)
-
-    source = Column(Text, nullable=False)
-
-    evidence_text = Column(Text, nullable=True)
-
-    message_id = Column(Text, nullable=True)
-
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-
-
-
+# unblock future features (weather caching, waitlist).
 
 class WeatherCache(Base):
 
