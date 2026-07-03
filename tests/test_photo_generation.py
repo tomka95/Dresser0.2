@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.db import Base, SessionLocal, engine
-from app.models import IngestCandidate, IngestRun, User
+from app.models import ClothingItem, IngestCandidate, IngestRun, User
 from app.gmail_closet.image_verify import VerifyVerdict
 from app.photo_closet import generation_service as gen
 from app.services.image_generation.base import GenerationResult
@@ -340,3 +340,124 @@ def test_generation_armed_false_without_keys(monkeypatch):
     monkeypatch.setattr(gen.settings, "BFL_API_KEY", None)
     monkeypatch.setattr(gen.settings, "FAL_API_KEY", None)
     assert gen.generation_armed() is False
+
+
+# --- self-heal sweep (run_generation_self_heal) ------------------------------
+
+def _item(db, user, **over):
+    """A confirmed photo clothing_item whose card fell back to the raw crop."""
+    fields = dict(
+        user_id=user.id, name="Tee", category="top", color_primary="red",
+        source_type="photo", image_url="https://blob/cut.jpg",
+        image_status="user_uploaded", generation_status="pending_retry",
+    )
+    fields.update(over)
+    it = ClothingItem(**fields)
+    db.add(it); db.commit(); db.refresh(it)
+    return it
+
+
+def test_self_heal_candidate_regenerates(db, user, monkeypatch):
+    _seams(monkeypatch)
+    sync = uuid4()
+    c = _stage(db, user, sync, generation_status="pending_retry")
+    _providers(monkeypatch, {
+        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
+        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
+    })
+    _verify(monkeypatch, lambda **k: _ok())
+
+    stats = gen.run_generation_self_heal(user.id, db)
+
+    db.refresh(c)
+    assert c.generation_status == "ready"
+    assert c.generated_image_url == "https://blob/gen.png"
+    assert c.image_url == "https://blob/cut.jpg"        # crop (source) untouched
+    assert stats.candidates_seen == 1 and stats.ready == 1 and stats.held == 0
+
+
+def test_self_heal_clothing_item_regenerates(db, user, monkeypatch):
+    _seams(monkeypatch)
+    it = _item(db, user)
+    _providers(monkeypatch, {
+        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
+        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
+    })
+    _verify(monkeypatch, lambda **k: _ok())
+
+    stats = gen.run_generation_self_heal(user.id, db)
+
+    db.refresh(it)
+    # Confirmed item: the card IS image_url, so success replaces the crop with it.
+    assert it.generation_status == "ready"
+    assert it.image_url == "https://blob/gen.png"
+    assert stats.items_seen == 1 and stats.ready == 1
+
+
+def test_self_heal_idempotent_skips_ready(db, user, monkeypatch):
+    store = _seams(monkeypatch)
+    sync = uuid4()
+    _stage(db, user, sync, generation_status="ready",
+           generated_image_url="https://blob/done.png")
+    _item(db, user, generation_status="ready", image_url="https://blob/done.png")
+    _providers(monkeypatch, {
+        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
+        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
+    })
+    _verify(monkeypatch, lambda **k: _ok())
+
+    stats = gen.run_generation_self_heal(user.id, db)
+
+    assert stats.candidates_seen == 0 and stats.items_seen == 0
+    assert store["store"] == 0                          # nothing regenerated/stored
+
+
+def test_self_heal_both_fail_leaves_pending_retry(db, user, monkeypatch):
+    _seams(monkeypatch)
+    sync = uuid4()
+    c = _stage(db, user, sync, generation_status="pending_retry")
+    _providers(monkeypatch, {
+        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
+        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
+    })
+    _verify(monkeypatch, lambda **k: _fail())
+
+    stats = gen.run_generation_self_heal(user.id, db)
+
+    db.refresh(c)
+    assert c.generation_status == "pending_retry"        # still a target for next sweep
+    assert c.generated_image_url is None
+    assert stats.held == 1 and stats.ready == 0
+
+
+def test_self_heal_excludes_current_sync(db, user, monkeypatch):
+    _seams(monkeypatch)
+    sync = uuid4()
+    c = _stage(db, user, sync, generation_status="pending_retry")
+    _providers(monkeypatch, {
+        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
+        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
+    })
+    _verify(monkeypatch, lambda **k: _ok())
+
+    stats = gen.run_generation_self_heal(user.id, db, exclude_sync_id=sync)
+
+    db.refresh(c)
+    assert c.generation_status == "pending_retry"        # this run's fresh failure skipped
+    assert stats.candidates_seen == 0
+
+
+def test_self_heal_scoped_per_user(db, user, monkeypatch):
+    _seams(monkeypatch)
+    other = User(email="x@example.com", hashed_password="x", display_name="X")
+    db.add(other); db.commit(); db.refresh(other)
+    _item(db, other)                                     # another user's pending_retry item
+    _providers(monkeypatch, {
+        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
+        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
+    })
+    _verify(monkeypatch, lambda **k: _ok())
+
+    stats = gen.run_generation_self_heal(user.id, db)
+
+    assert stats.items_seen == 0 and stats.ready == 0    # never touches another user's rows

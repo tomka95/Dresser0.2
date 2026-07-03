@@ -45,7 +45,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.gmail_closet.image_verify import VerifyBudget, verify_generated_image
 from app.gmail_closet.usage import UsageAccumulator, record_fill_usage
-from app.models import IngestCandidate, IngestRun
+from app.models import ClothingItem, IngestCandidate, IngestRun
 from app.photo_closet.dedup import dedup_check
 from app.services.image_generation.base import (
     GenerationBudget,
@@ -164,7 +164,15 @@ def generate_background(user_id_str: str, sync_id_str: str) -> None:
 
     db = SessionLocal()
     try:
-        run_photo_generation(UUID(user_id_str), db, UUID(sync_id_str))
+        user_id = UUID(user_id_str)
+        sync_id = UUID(sync_id_str)
+        run_photo_generation(user_id, db, sync_id)
+        # Opportunistic self-heal (mirrors run_image_fill running at the tail of a Gmail
+        # sync): now that a provider + storage are demonstrably reachable, re-attempt this
+        # user's OTHER stale 'pending_retry' targets — candidates from earlier runs and
+        # confirmed items that fell back to the crop. exclude_sync_id skips THIS run's
+        # fresh failures (just attempted). Best-effort; never affects the commit response.
+        run_generation_self_heal(user_id, db, exclude_sync_id=sync_id)
     except Exception as exc:
         logger.error(
             "generate_background: unhandled error — %s: %s", type(exc).__name__, exc
@@ -443,3 +451,237 @@ def _finalize_run(db: Session, run: Optional[IngestRun]) -> None:
             db.rollback()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Self-heal sweep — re-attempt 'pending_retry' generation targets (Wave 2)
+# ---------------------------------------------------------------------------
+#
+# A per-sync generation pass (run_photo_generation) attempts each staged candidate ONCE;
+# targets where both providers fail verify are left 'pending_retry' and the run finalizes
+# — without this sweep they'd dead-end forever. This is the generation analog of the
+# Phase 4 image_fill self-heal: idempotent (only 'pending_retry' with a usable crop is a
+# target; 'ready' rows are never touched), budget-capped (shared Generation/Verify
+# budgets + a per-sweep row cap), and safe to run repeatedly. It re-generates FROM the
+# stored crop (candidate.image_url / item.image_url), verifies with the SAME mandatory
+# fidelity gate, and only then persists — no unverified image is ever stored.
+#
+# Covers BOTH lifecycle stages:
+#   * pre-confirm  ingest_candidates -> writes generated_image_url + generation_status
+#   * confirmed    clothing_items    -> the card IS image_url, so success replaces it and
+#                                       flips generation_status (the crop is the source it
+#                                       regenerated from; on failure image_url stays the crop)
+#
+# SECURITY/PRIVACY: user_id is server-pinned (the caller's, never a body); every query is
+# filtered by user_id (per-user isolation / RLS-aligned); SSRF + verify gates are the same
+# ones the live path uses; only ids/counts/statuses are logged, never image bytes/PII.
+
+_SELF_HEAL_STATUS = "pending_retry"
+
+
+@dataclass
+class SelfHealStats:
+    """Redaction-safe summary of one self-heal sweep (no image bytes / PII)."""
+    user_id: UUID
+    candidates_seen: int = 0
+    items_seen: int = 0
+    ready: int = 0             # verified + stored -> flipped to 'ready'
+    held: int = 0             # still could not verify/store -> left 'pending_retry'
+    download_errors: int = 0  # stored crop could not be re-fetched (left 'pending_retry')
+    budget_stopped: bool = False
+    cost_usd: float = 0.0
+
+
+@dataclass
+class _HealOutcome:
+    outcome: str                 # ready | held | download_error | budget
+    url: Optional[str] = None    # stored generated-card URL on success
+    cost_usd: float = 0.0
+
+
+def _generate_from_crop(
+    *,
+    crop_url: str,
+    name: Optional[str],
+    category: Optional[str],
+    color: Optional[str],
+    brand: Optional[str],
+    storage_client,
+    user_id: UUID,
+    ladder: Tuple[str, ...],
+    gen_budget: GenerationBudget,
+    verify_budget: VerifyBudget,
+    usage: UsageAccumulator,
+) -> _HealOutcome:
+    """Run the provider ladder on a stored crop, gated by the mandatory verify.
+
+    Returns a stored URL only when a provider's output PASSES verify against the crop —
+    a skipped/disabled verify is never a pass. Makes NO DB writes (the caller persists),
+    so it's reusable for both candidates and confirmed items."""
+    if not gen_budget.take():
+        return _HealOutcome("budget")
+    dl = _download_bytes(crop_url)
+    if dl is None:
+        return _HealOutcome("download_error")
+    ref_bytes, ref_ct = dl
+    for provider_name in ladder:
+        provider = get_generation_provider(provider_name)
+        result = provider.generate(
+            GenerationRequest(
+                image_bytes=ref_bytes,
+                content_type=ref_ct,
+                name=name,
+                category=category,
+                color=color,
+                pattern=None,
+                brand=brand,
+            )
+        )
+        if result is None:
+            continue  # provider failure / unavailable -> next rung
+        verdict = verify_generated_image(
+            reference_bytes=ref_bytes,
+            reference_content_type=ref_ct,
+            candidate_bytes=result.image_bytes,
+            candidate_content_type=result.content_type,
+            category=category,
+            color=color,
+            pattern=None,
+            name=name,
+            budget=verify_budget,
+            usage=usage,
+        )
+        if not verdict.matches:  # MANDATORY gate — skipped verify is NOT a pass
+            continue
+        url = _store_generated(storage_client, user_id, result.image_bytes, result.content_type)
+        if not url:
+            break  # passed verify but storage down -> hold for a later sweep
+        return _HealOutcome("ready", url=url, cost_usd=float(result.cost_usd or 0.0))
+    return _HealOutcome("held")
+
+
+def run_generation_self_heal(
+    user_id: UUID,
+    db: Session,
+    *,
+    exclude_sync_id: Optional[UUID] = None,
+    item_limit: Optional[int] = None,
+    storage_client=None,
+    provider_ladder: Optional[Sequence[str]] = None,
+) -> SelfHealStats:
+    """Re-attempt generation for a user's 'pending_retry' targets. Never raises.
+
+    Targets (each filtered by user_id — per-user isolation):
+      * pre-confirm ingest_candidates: photo, status='pending', generation_status=
+        'pending_retry', crop present (image_url), no card yet (generated_image_url NULL).
+        ``exclude_sync_id`` skips a run whose candidates were JUST attempted (the commit
+        that triggered this sweep), so we don't immediately re-hit its fresh failures.
+      * confirmed clothing_items: photo, generation_status='pending_retry', crop present.
+
+    Idempotent + budget-capped; safe to run repeatedly. A no-op when generation isn't
+    armed (no provider -> every rung returns None -> targets stay 'pending_retry')."""
+    stats = SelfHealStats(user_id=user_id)
+    try:
+        ladder = tuple(provider_ladder or _GENERATION_LADDER)
+        limit = item_limit or settings.GENERATION_SELF_HEAL_MAX_ITEMS
+
+        cand_q = db.query(IngestCandidate).filter(
+            IngestCandidate.user_id == user_id,
+            IngestCandidate.source_type == "photo",
+            IngestCandidate.status == "pending",
+            IngestCandidate.generation_status == _SELF_HEAL_STATUS,
+            IngestCandidate.image_url.isnot(None),
+            IngestCandidate.generated_image_url.is_(None),
+        )
+        if exclude_sync_id is not None:
+            cand_q = cand_q.filter(IngestCandidate.sync_id != exclude_sync_id)
+        cand_rows = cand_q.order_by(IngestCandidate.created_at.asc()).limit(limit).all()
+
+        item_rows: List[ClothingItem] = []
+        remaining = max(0, limit - len(cand_rows))
+        if remaining:
+            item_rows = (
+                db.query(ClothingItem)
+                .filter(
+                    ClothingItem.user_id == user_id,
+                    ClothingItem.source_type == "photo",
+                    ClothingItem.generation_status == _SELF_HEAL_STATUS,
+                    ClothingItem.image_url.isnot(None),
+                )
+                .order_by(ClothingItem.created_at.desc())
+                .limit(remaining)
+                .all()
+            )
+
+        stats.candidates_seen = len(cand_rows)
+        stats.items_seen = len(item_rows)
+        if not cand_rows and not item_rows:
+            return stats
+
+        if storage_client is None:
+            storage_client = _storage_from_env()
+
+        gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
+        verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
+        usage = UsageAccumulator()
+
+        def _heal(crop_url, name, category, color, brand):
+            return _generate_from_crop(
+                crop_url=crop_url, name=name, category=category, color=color, brand=brand,
+                storage_client=storage_client, user_id=user_id, ladder=ladder,
+                gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
+            )
+
+        # --- pre-confirm candidates: write the card to generated_image_url ---------
+        for c in cand_rows:
+            r = _heal(c.image_url, c.name, c.category, c.color, c.brand)
+            if r.outcome == "budget":
+                stats.budget_stopped = True
+                break
+            if r.outcome == "download_error":
+                stats.download_errors += 1
+                stats.held += 1
+                continue
+            if r.url:
+                c.generated_image_url = r.url
+                c.generation_status = "ready"
+                db.commit()
+                stats.ready += 1
+                stats.cost_usd += r.cost_usd
+            else:
+                stats.held += 1  # left 'pending_retry' (no write)
+
+        # --- confirmed items: the card IS image_url, so success replaces it --------
+        if not stats.budget_stopped:
+            for it in item_rows:
+                r = _heal(it.image_url, it.name, it.category, it.color_primary, it.brand)
+                if r.outcome == "budget":
+                    stats.budget_stopped = True
+                    break
+                if r.outcome == "download_error":
+                    stats.download_errors += 1
+                    stats.held += 1
+                    continue
+                if r.url:
+                    it.image_url = r.url
+                    it.generation_status = "ready"
+                    db.commit()
+                    stats.ready += 1
+                    stats.cost_usd += r.cost_usd
+                else:
+                    stats.held += 1
+
+        logger.info(
+            "generation self-heal user=%s: candidates=%d items=%d -> ready=%d held=%d "
+            "dl_err=%d budget_stopped=%s cost_usd=%.4f",
+            user_id, stats.candidates_seen, stats.items_seen, stats.ready, stats.held,
+            stats.download_errors, stats.budget_stopped, stats.cost_usd,
+        )
+        return stats
+    except Exception as exc:  # background tail must never crash the caller
+        logger.error("generation self-heal user=%s: %s: %s", user_id, type(exc).__name__, exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return stats

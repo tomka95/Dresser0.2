@@ -228,6 +228,38 @@ describe('RegionSelector', () => {
     ]);
   });
 
+  it('carries a drawn box name through commit as {box, name}', () => {
+    const { onCommit } = renderSelector([{ previewUrl: 'blob:a', session: session() }]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add item' }));
+    drag(screen.getByTestId('draw-layer'), { x: 40, y: 40 }, { x: 240, y: 140 });
+    fireEvent.change(screen.getByPlaceholderText('Name (optional)'), {
+      target: { value: '  Scarf  ' }, // trimmed at commit
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Add \d+ items?$/ }));
+    const payload = onCommit.mock.calls[0][0];
+    expect(payload[0].manual_boxes).toEqual([{ box: [100, 100, 350, 600], name: 'Scarf' }]);
+  });
+
+  it('flags a tiny occluded region with a non-blocking warning (commit still enabled)', () => {
+    renderSelector([
+      {
+        previewUrl: 'blob:a',
+        session: session({
+          regions: [
+            region(1, 'Shirt', [100, 100, 900, 900]),
+            region(2, 'Scrap', [400, 400, 470, 470]), // ~0.5% of the photo, inside the shirt
+          ],
+        }),
+      },
+    ]);
+
+    expect(screen.getByText('Very small — may be too little to identify')).toBeInTheDocument();
+    // Non-blocking: the item can still be added.
+    expect(screen.getByRole('button', { name: 'Add 2 items' })).toBeEnabled();
+  });
+
   it('Cancel hands control back', () => {
     const { onCancel } = renderSelector([{ previewUrl: 'blob:a', session: session() }]);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));

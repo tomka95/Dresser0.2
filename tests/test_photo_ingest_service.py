@@ -610,3 +610,80 @@ def test_deck_scoped_to_current_run(db, user):
     # Unscoped (Gmail deck behavior) is unchanged: all pending, accepted excluded.
     unscoped = list_pending_candidates(db, user.id)
     assert len(unscoped) == 4
+
+
+# --- manual-box name persistence (contract v2) -------------------------------
+
+def test_commit_manual_box_named_uses_name_and_skips_describe(db, user):
+    img = _sanitized()
+    out = _detect_one(db, user, img, _two_garment_detection())
+
+    describe_calls = []
+    def _describe(data, content_type, *, provider=None, usage=None):
+        describe_calls.append(1)
+        return GarmentDescription(name="AUTO", category="top", confidence_overall=0.5)
+
+    box = [100, 100, 600, 600]
+    res = _commit(db, user, [img], [
+        PhotoSelection(
+            session_id=out.session_id,
+            manual_boxes=[{"box": box, "name": "My Jacket"}],
+        ),
+    ], describe=_describe)
+
+    assert res.staged == 1
+    assert describe_calls == []                 # named box -> no auto-describe call
+    cand = db.query(IngestCandidate).one()
+    assert cand.name == "My Jacket"             # user's name wins
+    assert cand.source_line_key == _source_line_key(img.sha256, box)
+
+
+def test_commit_manual_box_blank_name_falls_back_to_describe(db, user):
+    img = _sanitized()
+    out = _detect_one(db, user, img, _two_garment_detection())
+
+    describe_calls = []
+    def _describe(data, content_type, *, provider=None, usage=None):
+        describe_calls.append(1)
+        return GarmentDescription(name="Auto Name", category="top", confidence_overall=0.6)
+
+    box = [100, 100, 600, 600]
+    res = _commit(db, user, [img], [
+        PhotoSelection(
+            session_id=out.session_id,
+            manual_boxes=[{"box": box, "name": "   "}],  # whitespace -> None
+        ),
+    ], describe=_describe)
+
+    assert res.staged == 1
+    assert describe_calls == [1]                # blank name -> auto-describe runs
+    assert db.query(IngestCandidate).one().name == "Auto Name"
+
+
+def test_commit_manual_box_legacy_list_still_describes(db, user):
+    """Bare [y,x,y,x] (contract v1) keeps working: auto-describe, no name."""
+    img = _sanitized()
+    out = _detect_one(db, user, img, _two_garment_detection())
+
+    describe_calls = []
+    def _describe(data, content_type, *, provider=None, usage=None):
+        describe_calls.append(1)
+        return GarmentDescription(name="Auto", category="top", confidence_overall=0.6)
+
+    res = _commit(db, user, [img], [
+        PhotoSelection(session_id=out.session_id, manual_boxes=[[100, 100, 600, 600]]),
+    ], describe=_describe)
+
+    assert res.staged == 1 and describe_calls == [1]
+
+
+def test_commit_manual_box_bad_name_type_rejected(db, user):
+    img = _sanitized()
+    out = _detect_one(db, user, img, _two_garment_detection())
+    with pytest.raises(PhotoSelectionInvalid):
+        _commit(db, user, [img], [
+            PhotoSelection(
+                session_id=out.session_id,
+                manual_boxes=[{"box": [100, 100, 600, 600], "name": 123}],
+            ),
+        ])

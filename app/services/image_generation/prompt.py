@@ -1,7 +1,10 @@
-"""The ONE shared generation prompt (all providers use the same wording).
+"""The shared generation prompt (flux / seedream) + nano's logo-hardened variant.
 
-A single deterministic prompt keeps the bake-off honest: provider differences in
-output quality are provider differences, not prompt differences.
+A single deterministic base prompt keeps the bake-off honest: provider differences in
+output quality are provider differences, not prompt differences. The ONE exception is
+build_nano_generation_prompt, which appends a provider-specific anti-logo-hallucination
+guard for nano_banana ONLY (Gemini is the provider that duplicates/invents brand marks);
+flux and seedream keep the base prompt verbatim.
 
 ISOLATION AT GENERATION TIME
 ----------------------------
@@ -45,6 +48,22 @@ _BASE_PROMPT = (
 
 _VOWELS = "aeiou"
 
+# nano_banana-SPECIFIC hardening. Gemini image gen is the provider that hallucinates
+# logos — it duplicates an existing mark (a twin Nike swoosh at the collar) or paints a
+# fake brand label onto a plain garment. The verify gate catches these (-> crop fallback)
+# but each miss wastes a generation. This clause is appended ONLY to nano's prompt (flux /
+# seedream keep the shared prompt untouched, so the bake-off stays honest for them). It is
+# ADDITIVE — it strengthens, never relaxes, the base ISOLATE / PRESERVE / NO-SCENE rules.
+_NANO_LOGO_GUARD = (
+    " CRITICAL — LOGOS, TEXT AND BRAND MARKS: reproduce ONLY the logos, text, labels or "
+    "brand marks that are ALREADY visibly printed on the target garment in the input, each "
+    "in its exact original position, size, orientation and count. Do NOT add, invent, "
+    "duplicate, mirror, complete, relocate, resize or re-draw any logo, wordmark, monogram, "
+    "emblem, tag, or graphic. If the target garment shows no logo or text, leave it "
+    "completely plain — never place a brand mark on a blank area. When unsure whether a "
+    "mark is present, omit it. Reproduce exactly what is visible on the garment, nothing more."
+)
+
 
 def build_generation_prompt(req: GenerationRequest) -> str:
     """Build the shared prompt, appending a target-garment descriptor to condition
@@ -73,3 +92,11 @@ def build_generation_prompt(req: GenerationRequest) -> str:
     else:
         target = ""
     return _BASE_PROMPT + target
+
+
+def build_nano_generation_prompt(req: GenerationRequest) -> str:
+    """nano_banana's prompt: the shared prompt PLUS the anti-logo-hallucination guard.
+
+    Provider-specific on purpose (nano is the offender). flux / seedream keep calling
+    build_generation_prompt, so their wording is unchanged. Deterministic."""
+    return build_generation_prompt(req) + _NANO_LOGO_GUARD
