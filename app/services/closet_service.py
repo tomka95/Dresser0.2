@@ -9,8 +9,24 @@ from uuid import UUID
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import ClothingItem
+from app.services.enrichment import normalize_category
 
 logger = logging.getLogger(__name__)
+
+
+def _user_edited_attributes(category: str | None, brand: str | None, color: str | None) -> dict:
+    """Seed attributes_json with provenance='user_edited' for manually-typed fields.
+
+    A manual create is the user asserting these values, so they are authoritative: the
+    async enricher fills the REST as 'inferred' and never overwrites these. Only non-empty
+    fields are recorded (confidence is None — a human, not a model score)."""
+    values = {"category": category, "brand": brand, "color_primary": color}
+    attrs: dict = {}
+    for key, v in values.items():
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        attrs[key] = {"value": v, "confidence": None, "provenance": "user_edited"}
+    return attrs
 
 
 def list_closet_items(
@@ -65,6 +81,11 @@ def create_closet_item(
     Returns:
         Created ClothingItem SQLAlchemy model
     """
+    # Branch B: fold legacy category aliases so manual entries land canonical, and seed
+    # provenance='user_edited' for the typed fields (the async enricher fills the rest as
+    # 'inferred' and never overwrites these). Embedding + full Tier-1/2 enrichment run in
+    # the background task the route schedules after this returns.
+    category = normalize_category(category)
     item = ClothingItem(
         user_id=user_id,
         name=name,
@@ -72,8 +93,9 @@ def create_closet_item(
         brand=brand,
         color_primary=color,  # Map color input to color_primary field
         image_url=image_url,
+        attributes_json=_user_edited_attributes(category, brand, color),
     )
-    
+
     db.add(item)
     db.commit()
     db.refresh(item)

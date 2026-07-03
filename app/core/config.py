@@ -195,6 +195,45 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-004"
     EMBEDDING_DIM: int = 768
 
+    # --- Garment enrichment (Wave S0, Branch B) ----------------------------
+    # The ASYNC pass that widens a confirmed item to the full Tier-1/2 schema
+    # (subcategory, formality, warmth, seasons, occasions, pattern/material/fit,
+    # hex, length, neckline, sleeve, heel). Runs on Flash-Lite AFTER confirm so the
+    # ×3.4-10 output-token widening never touches the interactive deck path. Same
+    # routine backs the eager post-confirm background task AND the nightly backfill;
+    # both write provenance='inferred' and never overwrite 'user_edited'.
+    ENRICHMENT_MODEL: str = "gemini-2.5-flash-lite"
+    # Text embedding: RETRIEVAL_DOCUMENT indexes closet items (a search query would
+    # embed with RETRIEVAL_QUERY). model/dim come from EMBEDDING_MODEL/EMBEDDING_DIM.
+    EMBEDDING_TASK_TYPE_DOCUMENT: str = "RETRIEVAL_DOCUMENT"
+    # item_embeddings.version for the CURRENT embedding recipe. Bump when the model or
+    # canonical-text formula changes so old vectors can be re-embedded under a new row
+    # (the UNIQUE is (item_id, model, version)).
+    EMBEDDING_VERSION: int = 1
+    # Nightly backfill cost/wall-clock guards. Max items one sweep loads per user, and
+    # a hard ceiling on enrichment LLM calls per run (embedding is ~free, uncapped).
+    ENRICHMENT_BACKFILL_MAX_ITEMS: int = 500
+    ENRICHMENT_MAX_LLM_CALLS_PER_RUN: int = 500
+    # Below this per-field confidence the enricher's value is written to attributes_json
+    # (for provenance/debug) but NOT promoted to the flat query column — keeps the
+    # composer's flat reads high-signal. Flat columns query; attributes_json audits.
+    ENRICHMENT_FLAT_CONFIDENCE_MIN: float = 0.35
+
+    # --- Interaction telemetry (Wave S0, Branch C) -------------------------
+    # POST /events writes rows into style_events. user_id is ALWAYS the JWT
+    # subject (never client-supplied). These guards bound abuse of the endpoint:
+    #   EVENTS_MAX_BATCH        : max events accepted in one POST /events call.
+    #   EVENTS_MAX_PROPERTIES_BYTES : cap on the JSON-serialized `properties` blob
+    #                             per event (payload-size guard; over-limit -> 422).
+    #   EVENTS_RATE_LIMIT_PER_MINUTE : per-user sliding-window ceiling on events
+    #                             INGESTED via POST /events (batch counts as N).
+    #                             In-process (per uvicorn worker); a shared limiter
+    #                             (Redis) is the production upgrade. Server-derived
+    #                             events (confirm/commit/PATCH) bypass this limit.
+    EVENTS_MAX_BATCH: int = 50
+    EVENTS_MAX_PROPERTIES_BYTES: int = 4096
+    EVENTS_RATE_LIMIT_PER_MINUTE: int = 600
+
     # Database configuration.
     # No localhost/postgres defaults on purpose: a missing value must surface as a
     # clear configuration error rather than silently pointing the app at a local DB.

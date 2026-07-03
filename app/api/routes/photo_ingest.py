@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
 from app.models import User
+from app.services.events_service import log_event
 from app.photo_closet.ingest_service import (
     PhotoSelection,
     PhotoSelectionInvalid,
@@ -276,6 +277,29 @@ def commit_photo_selection(
         background_tasks.add_task(
             generate_background, str(current_user.id), result.sync_id,
         )
+
+    # --- Interaction telemetry (Wave S0 Branch C) ---------------------------
+    # Server-derived: the user committed these detected/manual regions from a photo.
+    # One `candidate_keep` per selection (the closet-accept decision comes later at
+    # /gmail/ingest/confirm -> `save`, so no double-logging). Best-effort.
+    try:
+        for sel in parsed_selections:
+            log_event(
+                db,
+                user_id=current_user.id,
+                event_type="candidate_keep",
+                entity_type="photo_selection",
+                entity_id=sel.session_id,
+                source="photo_detect",
+                properties={
+                    "selected": len(sel.selected_region_ids),
+                    "manual": len(sel.manual_boxes),
+                },
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("photo commit telemetry failed for user %s", current_user.id, exc_info=True)
 
     message = None
     if result.staged == 0 and result.duplicates:

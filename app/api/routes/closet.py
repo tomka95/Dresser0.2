@@ -5,12 +5,13 @@ import time
 from typing import ClassVar, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_current_user
 from app.models import User, ClothingItem, ItemImage
+from app.services.events_service import log_event
 from app.services.closet_service import (
     list_closet_items,
     create_closet_item,
@@ -237,6 +238,7 @@ async def list_closet_items_endpoint(
 @router.post("", response_model=ClosetItemOut, status_code=201)
 async def create_closet_item_endpoint(
     input_data: ClosetItemCreateIn,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ClosetItemOut:
@@ -268,7 +270,15 @@ async def create_closet_item_endpoint(
             color=input_data.color,
             image_url=input_data.imageUrl,  # Map camelCase input to snake_case parameter
         )
-        
+
+        # Wave S0 Branch B: enrich (full Tier-1/2) + embed the new item in the background.
+        # Async so manual create stays instant; ⚠️ in-process (Starlette threadpool).
+        from app.services.enrichment import enrich_items_background
+
+        background_tasks.add_task(
+            enrich_items_background, str(current_user.id), [str(item.id)],
+        )
+
         # Map to contract format
         # For POST, we need to ensure images are loaded if item.image_url is not set
         # Since this is a single item, trigger lazy load if needed (usually image_url is set)
@@ -296,6 +306,11 @@ class ClosetItemUpdateIn(BaseModel):
     unitPrice: Optional[float] = Field(None, description="Unit price")
     currency: Optional[str] = Field(None, description="3-char ISO-4217 currency code")
     imageUrl: Optional[str] = Field(None, description="Image URL")
+    # Wave S0 Branch C: persist the favorite heart server-side (was client-local).
+    isFavorite: Optional[bool] = Field(None, description="Favorite flag")
+    # Optional UI-surface hint for telemetry only ('closet_grid' | 'closet_detail').
+    # Never affects the write; sanitized before it reaches style_events.source.
+    eventSource: Optional[str] = Field(None, description="Telemetry source hint")
 
     @field_validator('category')
     @classmethod
@@ -421,7 +436,41 @@ async def update_closet_item_endpoint(
                 item.currency = update_kwargs['currency']
             if 'image_url' in update_kwargs:
                 item.image_url = update_kwargs['image_url']
-        
+
+        # --- Interaction telemetry (Wave S0 Branch C) -----------------------
+        # Emit in the SAME transaction as the write so an event never survives a
+        # rolled-back edit. source is a sanitized UI hint, never trusted for auth.
+        src = input_data.eventSource if input_data.eventSource in ("closet_grid", "closet_detail") else "closet_detail"
+
+        # is_favorite is a distinct persisted signal -> `favorite` event, not edit_field.
+        if input_data.isFavorite is not None:
+            new_fav = bool(input_data.isFavorite)
+            if new_fav != bool(item.is_favorite):
+                item.is_favorite = new_fav
+                log_event(
+                    db,
+                    user_id=current_user.id,
+                    event_type="favorite",
+                    item_id=item.id,
+                    entity_type="clothing_item",
+                    source=src,
+                    properties={"value": new_fav},
+                )
+
+        # One edit_field event per edited scalar field (contract field names).
+        _EDIT_FIELDS = ("name", "category", "brand", "color", "size", "unitPrice", "currency", "imageUrl")
+        for field in _EDIT_FIELDS:
+            if getattr(input_data, field) is not None:
+                log_event(
+                    db,
+                    user_id=current_user.id,
+                    event_type="edit_field",
+                    item_id=item.id,
+                    entity_type="clothing_item",
+                    source=src,
+                    properties={"field": field},
+                )
+
         # Commit all changes atomically
         db.commit()
         db.refresh(item)

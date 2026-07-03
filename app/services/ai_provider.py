@@ -126,6 +126,41 @@ class AIProvider:
             config=config,
         )
 
+    def embed_texts(
+        self,
+        texts: List[str],
+        *,
+        model: str,
+        dim: int,
+        task_type: str = "RETRIEVAL_DOCUMENT",
+    ) -> List[List[float]]:
+        """Embed one or more short product strings to fixed-width vectors.
+
+        Wave S0 Branch B: the item-embedding seam. Synchronous (mirrors
+        generate_structured — enrichment runs in a background thread, so a blocking
+        SDK call is the right shape). `output_dimensionality=dim` pins the width to
+        the vector(dim) column declared in migration 0018 (768 = text-embedding-004's
+        native size). `task_type=RETRIEVAL_DOCUMENT` is correct for indexing closet
+        items; a query-time embed would pass RETRIEVAL_QUERY.
+
+        The input is product attribute text ONLY (brand/subcategory/color/pattern/…),
+        never image bytes or PII — see app/services/embeddings.build_canonical_text.
+        Returns one vector per input, in order. Raises on API failure (the caller —
+        enrich_item — swallows it so a transient embed miss never breaks enrichment).
+        """
+        if not texts:
+            return []
+        resp = self._client.models.embed_content(
+            model=model,
+            contents=texts,
+            config=types.EmbedContentConfig(
+                task_type=task_type,
+                output_dimensionality=dim,
+            ),
+        )
+        # google-genai returns .embeddings[i].values (list[float]) per input.
+        return [list(e.values) for e in resp.embeddings]
+
     async def detect_clothing_items_from_image(
         self,
         outfit_image,

@@ -820,6 +820,16 @@ class ItemEmbedding(Base):
         UniqueConstraint("item_id", "model", "version",
                          name="item_embeddings_item_id_model_version_key"),
         Index("idx_item_embeddings_user_id", "user_id"),
+        # ANN index (Branch B, migration 0019) — built now that enrichment can bulk-
+        # populate. hnsw + cosine for semantic closet retrieval. Declared here AND created
+        # in 0019 (mirrors the live GIN pattern) so `alembic check` matches it by name and
+        # stays green. postgresql_using/ops are honored on Postgres; on the SQLite dev path
+        # the vector column is a Text fallback and this degrades to a plain index.
+        Index(
+            "idx_item_embeddings_embedding_hnsw", "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
     )
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)

@@ -35,8 +35,50 @@ from sqlalchemy.orm import Session
 from app.gmail_closet.extraction_schema import normalize_currency, normalize_order_date
 from app.gmail_closet.product_image_cache import make_cache_key
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
+from app.services.enrichment import normalize_category
 
 logger = logging.getLogger(__name__)
+
+
+# Candidate core fields -> (attributes_json key, confidence_json['fields'] key). Written
+# with provenance='extracted' at confirm: these came DIRECTLY from the inline extraction
+# LLM reading the receipt/photo. The async enricher fills the rest as 'inferred' and
+# never overwrites these. Seeded on INSERT only (see _upsert_clothing_item).
+_EXTRACTED_ATTR_MAP = (
+    ("category", "category"),
+    ("color_primary", "color"),
+    ("brand", "brand"),
+    ("size", "size"),
+)
+
+
+def _extracted_attributes(cand: IngestCandidate, *, category: Optional[str]) -> Dict[str, Any]:
+    """Build the provenance='extracted' attributes_json seed from a candidate's core fields.
+
+    Values come from the candidate (category already NORMALIZED by the caller); per-field
+    confidence from confidence_json['fields']. Only non-empty fields are recorded. This is
+    a pure reshape of already-extracted data — no LLM, so it stays on the fast confirm path.
+    """
+    cj = cand.confidence_json if isinstance(cand.confidence_json, dict) else {}
+    per_field = cj.get("fields") if isinstance(cj.get("fields"), dict) else {}
+    values = {
+        "category": category,
+        "color_primary": cand.color,
+        "brand": cand.brand,
+        "size": cand.size,
+    }
+    attrs: Dict[str, Any] = {}
+    for attr_key, conf_key in _EXTRACTED_ATTR_MAP:
+        v = values.get(attr_key)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        score = per_field.get(conf_key)
+        attrs[attr_key] = {
+            "value": v,
+            "confidence": score if isinstance(score, (int, float)) else None,
+            "provenance": "extracted",
+        }
+    return attrs
 
 
 # Fields the swipe UI can flag as weak (null value OR low per-field confidence).
@@ -301,10 +343,17 @@ def _upsert_clothing_item(
         closet_image_url = cand.generated_image_url
     else:
         closet_image_url = cand.image_url
+    # Branch B: fold legacy aliases (shoes->footwear, accessories->accessory) so the
+    # closet data tightens at confirm; 'other'/canonical pass through (the async enricher
+    # resolves 'other' from its chosen subcategory). Seed provenance='extracted'
+    # attributes_json from the core fields — on INSERT only (see on_conflict set_ below),
+    # so a re-confirm never clobbers a row the enricher/user has since enriched/edited.
+    category = normalize_category(cand.category)
+    extracted_attrs = _extracted_attributes(cand, category=category)
     vals = dict(
         user_id=user_id,
         name=cand.name,
-        category=cand.category,
+        category=category,
         color_primary=cand.color,
         brand=cand.brand,
         size=cand.size,
@@ -326,6 +375,9 @@ def _upsert_clothing_item(
         # Carry the ingestion source forward ('gmail' | 'photo') so the closet records
         # how each item arrived. The candidate's value is server-set at stage time.
         source_type=cand.source_type,
+        # provenance='extracted' seed. INSERT-only: NOT in the on_conflict set_ below, so
+        # a re-confirm preserves any 'inferred'/'user_edited' attributes already present.
+        attributes_json=extracted_attrs,
     )
     stmt = pg_insert(tbl).values(**vals)
     ex = stmt.excluded
