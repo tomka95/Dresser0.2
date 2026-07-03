@@ -15,8 +15,9 @@ import { GlassCard, ItemTile, Spark } from '@/components/ds';
 
 export default function HomePage() {
   const router = useRouter();
-  // Gate on the Supabase session; redirects to /sign-in when absent.
-  const { session, loading } = useRequireAuth();
+  // Gate on the Supabase session AND onboarding completion; a not-onboarded user
+  // is redirected to /onboarding before any home chrome renders (no flash).
+  const { session, loading } = useRequireAuth('/sign-in', { requireOnboarded: true });
   const isAuth = !!session;
 
   const items = useClosetStore((state) => state.items);

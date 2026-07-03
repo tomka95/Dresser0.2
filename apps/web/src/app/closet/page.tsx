@@ -34,8 +34,8 @@ const CATEGORIES: CategoryChipItem[] = [
 export default function ClosetPage() {
   const router = useRouter();
   const pathname = usePathname();
-  // Gate on the Supabase session; redirects to /sign-in when absent.
-  const { session, loading: checkingAuth } = useRequireAuth();
+  // Gate on the Supabase session AND onboarding completion.
+  const { session, loading: checkingAuth } = useRequireAuth('/sign-in', { requireOnboarded: true });
   const isAuth = !!session;
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
