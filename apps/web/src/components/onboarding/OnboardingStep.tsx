@@ -20,7 +20,7 @@ export function OnboardingStep({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col px-1 pt-2">
+    <div className="flex min-h-0 flex-1 flex-col px-1 pt-2">
       <h1 className="m-0 mb-2 text-[26px] font-bold leading-tight tracking-[-0.4px] text-white">
         {title}
       </h1>
@@ -31,7 +31,9 @@ export function OnboardingStep({
       ) : (
         <div className="mb-6" />
       )}
-      <div className="flex flex-1 flex-col">{children}</div>
+      {/* min-h-0 so a screen body's own overflow-y-auto region scrolls instead of
+          pushing the fixed footer (sizes / weather can exceed the viewport). */}
+      <div className="flex min-h-0 flex-1 flex-col">{children}</div>
     </div>
   );
 }
