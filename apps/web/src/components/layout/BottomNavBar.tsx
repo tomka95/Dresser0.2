@@ -66,7 +66,7 @@ export function BottomNavBar({ activeRoute }: BottomNavBarProps) {
         >
           {/* Brand hanger line-art (generous transparent padding — sized up so the
               visible glyph reads ~32px). */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}ֿ
           <img src="/9.png" alt="" className="pointer-events-none w-full h-full object-contain scale-150 -translate-y-2" aria-hidden />
         </Link>
 

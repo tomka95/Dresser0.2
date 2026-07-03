@@ -146,3 +146,61 @@ class NanoBananaProvider:
             cost_usd=settings.NANO_BANANA_USD_PER_IMAGE,
             detail="gemini image generation",
         )
+
+
+def generate_text_to_image(
+    prompt: str, *, model: Optional[str] = None
+) -> Optional[GenerationResult]:
+    """TEXT->IMAGE generation (no reference cutout) via Gemini image gen.
+
+    Additive sibling to NanoBananaProvider.generate: same client, config and
+    byte-sniff helpers, but the request carries ONLY a text part — there is no
+    input image to condition on. This is offline CURATION tooling (the taste-deck
+    archetype job), NOT the product path: the image->image seam
+    (GenerationProvider / GenerationRequest) is untouched, so its ISOLATE/PRESERVE
+    invariants and tests still hold. Never raises; returns None on any failure.
+
+    The caller owns the prompt in full (build_generation_prompt is garment-restyle
+    specific and is NOT used here). Logs provider/status/latency only — never the
+    prompt text or image bytes.
+    """
+    if not settings.GEMINI_API_KEY:
+        logger.info("t2i [nano_banana] skipped: GEMINI_API_KEY not set")
+        return None
+
+    model = model or settings.NANO_BANANA_MODEL
+    started = time.monotonic()
+    try:
+        client = _get_client()
+        resp = client.models.generate_content(
+            model=model,
+            contents=[{"text": prompt}],
+            config=_image_config(),
+        )
+        raw = _first_image_bytes(resp)
+    except Exception as exc:
+        logger.warning(
+            "t2i [nano_banana] error (%s) latency=%.1fs",
+            type(exc).__name__, time.monotonic() - started,
+        )
+        return None
+
+    content_type = sniff_generated_image(raw)
+    if raw is None or content_type is None:
+        logger.warning(
+            "t2i [nano_banana] failed: no/invalid image part latency=%.1fs",
+            time.monotonic() - started,
+        )
+        return None
+
+    latency = time.monotonic() - started
+    logger.info("t2i [nano_banana] ok: latency=%.1fs bytes=%d", latency, len(raw))
+    return GenerationResult(
+        image_bytes=raw,
+        content_type=content_type,
+        provider="nano_banana",
+        model=model,
+        latency_s=latency,
+        cost_usd=settings.NANO_BANANA_USD_PER_IMAGE,
+        detail="gemini text-to-image",
+    )
