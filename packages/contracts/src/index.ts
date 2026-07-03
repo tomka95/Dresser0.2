@@ -11,6 +11,7 @@ export * from './outfit';
 export * from './departments';
 export * from './sizes';
 export * from './preferences';
+export * from './chat';
 
 
 
