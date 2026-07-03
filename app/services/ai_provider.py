@@ -139,8 +139,9 @@ class AIProvider:
         Wave S0 Branch B: the item-embedding seam. Synchronous (mirrors
         generate_structured — enrichment runs in a background thread, so a blocking
         SDK call is the right shape). `output_dimensionality=dim` pins the width to
-        the vector(dim) column declared in migration 0018 (768 = text-embedding-004's
-        native size). `task_type=RETRIEVAL_DOCUMENT` is correct for indexing closet
+        the vector(dim) column declared in migration 0018 (768; gemini-embedding-001's
+        native width is 3072, truncated via MRL). `task_type=RETRIEVAL_DOCUMENT` is
+        correct for indexing closet
         items; a query-time embed would pass RETRIEVAL_QUERY.
 
         The input is product attribute text ONLY (brand/subcategory/color/pattern/…),

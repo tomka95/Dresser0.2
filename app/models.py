@@ -835,8 +835,8 @@ class ItemEmbedding(Base):
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     item_id = Column(GUID(), ForeignKey("clothing_items.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    # Dimension fixed at DDL time (config.EMBEDDING_DIM, default 768 = text-embedding-004).
-    # Changing the embedding model's dim requires re-migrating this one column.
+    # Dimension fixed at DDL time (config.EMBEDDING_DIM, default 768 = gemini-embedding-001
+    # truncated via output_dimensionality/MRL). Changing the dim requires re-migrating this column.
     embedding = Column(_vector(768), nullable=False)
     model = Column(Text, nullable=False)
     dim = Column(Integer, nullable=False)

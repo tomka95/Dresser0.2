@@ -187,12 +187,17 @@ class Settings(BaseSettings):
     # yet); Branch B/S1 wire them. Values are sensible Gemini defaults, overridable
     # via env.
     #   STYLIST_MODEL   : the reasoning model behind the stylist agent / distillation.
-    #   EMBEDDING_MODEL : the item/text embedding model. text-embedding-004 is 768-dim.
+    #   EMBEDDING_MODEL : the item/text embedding model. gemini-embedding-001 (the
+    #                     retired text-embedding-004 returns 404 NOT_FOUND on the
+    #                     Gemini API's v1beta embedContent endpoint). Its native width
+    #                     is 3072 but it supports Matryoshka (MRL) truncation, so we
+    #                     pin output_dimensionality=EMBEDDING_DIM (768) at call time to
+    #                     match the vector(768) column — no migration needed.
     #   EMBEDDING_DIM   : dimension of the vector column (item_embeddings.embedding).
-    #                     MUST match EMBEDDING_MODEL's output width and the vector(N)
+    #                     Passed as output_dimensionality and MUST equal the vector(N)
     #                     declared in migration 0018 — changing it requires a migration.
     STYLIST_MODEL: str = "gemini-2.5-flash"
-    EMBEDDING_MODEL: str = "text-embedding-004"
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
     EMBEDDING_DIM: int = 768
 
     # --- Garment enrichment (Wave S0, Branch B) ----------------------------
