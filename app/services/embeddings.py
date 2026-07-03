@@ -10,8 +10,9 @@ WHAT WE EMBED
 -------------
 A canonical PRODUCT string — brand + subcategory + color + pattern + fit + material +
 name — lowercased and whitespace-collapsed. This is deliberately:
-  * TEXT only. text-embedding-004 (EMBEDDING_MODEL) is a 768-dim text model and the
-    vector(768) column is fixed at DDL time (migration 0018). A native image/multimodal
+  * TEXT only. gemini-embedding-001 (EMBEDDING_MODEL) is truncated via MRL to 768 dims
+    (output_dimensionality) to match the vector(768) column fixed at DDL time (migration
+    0018). A native image/multimodal
     embedding is a later upgrade — item_embeddings.model + version exist precisely so it
     can be added under a new row with NO migration. The vision-derived attributes
     (color/pattern/material/fit) already fold the photo's visual signal into this text.
@@ -91,7 +92,10 @@ def embed_item(db, item, *, provider=None) -> bool:
             task_type=settings.EMBEDDING_TASK_TYPE_DOCUMENT,
         )
     except Exception as exc:  # network / quota / SDK error — leave for a later sweep
-        logger.warning("embed_item item=%s: embed call failed (%s)", item.id, type(exc).__name__)
+        # Log the full message, not just the class name: a bare "ClientError" hides
+        # actionable API detail (e.g. 404 model-not-found vs 429 quota). The provider
+        # message carries no API key or PII.
+        logger.warning("embed_item item=%s: embed call failed (%s: %s)", item.id, type(exc).__name__, exc)
         return False
 
     if not vectors or not vectors[0]:
