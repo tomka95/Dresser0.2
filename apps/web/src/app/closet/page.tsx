@@ -7,6 +7,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { Plus } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
+import { logEvent, startSession } from '@/lib/api/events';
 import { AppShell } from '@/components/layout/AppShell';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
@@ -39,11 +40,13 @@ export default function ClosetPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // Favorites are LOCAL-ONLY (no backend endpoint yet) — a visual affordance.
-  const [faves, setFaves] = useState<Record<string, boolean>>({});
+  // Optimistic overlay over the persisted item.isFavorite (source of truth is the
+  // server via updateItem). Only holds ids whose heart was toggled this session.
+  const [favOverride, setFavOverride] = useState<Record<string, boolean>>({});
 
   const items = useClosetStore((state) => state.items);
   const fetchItems = useClosetStore((state) => state.fetchItems);
+  const updateItem = useClosetStore((state) => state.updateItem);
   const hasFetchedItems = useClosetStore((state) => state.hasFetchedItems);
   const isLoading = useClosetStore((state) => state.isLoading);
   const error = useClosetStore((state) => state.error);
@@ -53,6 +56,23 @@ export default function ClosetPage() {
       fetchItems();
     }
   }, [isAuth, hasFetchedItems, fetchItems]);
+
+  // Emit session_start once per tab session (idempotent).
+  useEffect(() => {
+    if (isAuth) startSession();
+  }, [isAuth]);
+
+  // Persist a favorite toggle server-side (which also server-derives the `favorite`
+  // event). Optimistic: flip immediately, revert on failure.
+  const toggleFavorite = async (id: string, current: boolean) => {
+    const next = !current;
+    setFavOverride((f) => ({ ...f, [id]: next }));
+    try {
+      await updateItem(id, { isFavorite: next, eventSource: 'closet_grid' });
+    } catch {
+      setFavOverride((f) => ({ ...f, [id]: current })); // revert
+    }
+  };
 
   // Filter the REAL closet items by category and search. No mock fallback — an
   // empty result renders the empty state below, never placeholder cards.
@@ -135,17 +155,23 @@ export default function ClosetPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3.5">
-            {filteredItems.map((it) => (
-              <ItemTile
-                key={it.id}
-                name={it.name}
-                brand={it.brand}
-                imageUrl={it.imageUrl}
-                faved={!!faves[it.id]}
-                onFav={() => setFaves((f) => ({ ...f, [it.id]: !f[it.id] }))}
-                onClick={() => router.push(`/closet/${it.id}`)}
-              />
-            ))}
+            {filteredItems.map((it) => {
+              const faved = favOverride[it.id] ?? !!it.isFavorite;
+              return (
+                <ItemTile
+                  key={it.id}
+                  name={it.name}
+                  brand={it.brand}
+                  imageUrl={it.imageUrl}
+                  faved={faved}
+                  onFav={() => toggleFavorite(it.id, faved)}
+                  onClick={() => {
+                    logEvent({ eventType: 'item_view', itemId: it.id, source: 'closet_grid' });
+                    router.push(`/closet/${it.id}`);
+                  }}
+                />
+              );
+            })}
           </div>
         )}
       </div>

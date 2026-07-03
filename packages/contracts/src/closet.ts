@@ -64,6 +64,11 @@ export const closetItemUpdateSchema = z.object({
   unitPrice: z.number().optional(),
   currency: z.string().optional(),
   imageUrl: z.string().url().optional(),
+  // Wave S0 Branch C: persist the favorite heart (previously client-local only).
+  isFavorite: z.boolean().optional(),
+  // Telemetry-only UI-surface hint ('closet_grid' | 'closet_detail'); server
+  // sanitizes it and never uses it for authorization.
+  eventSource: z.string().optional(),
   // TODO: define expected analysis_raw JSON shape (user will provide example)
   analysisRaw: z.unknown().optional(),
 });

@@ -1,21 +1,37 @@
 /**
  * Analytics wrapper for event tracking.
  *
- * Currently logs to console. When Mixpanel or another analytics SDK is
- * configured, replace the implementation here to call the real SDK.
- *
- * TODO(analytics): Integrate Mixpanel or preferred analytics service.
- * Example: import mixpanel from 'mixpanel-browser'; mixpanel.track(event, props);
+ * Backed by the FastAPI /events endpoint (style_events). `track()` still logs to
+ * console in dev; when its event name maps to a known taxonomy type it is ALSO
+ * forwarded to the backend via the batching events client. Callers that need
+ * typed refs (itemId/entityId/properties) should use `logEvent` directly.
  */
+import { logEvent as sendEvent, startSession } from '@/lib/api/events';
+
+export { logEvent, startSession, getSessionId } from '@/lib/api/events';
+
+// Legacy free-form `track()` names that correspond 1:1 to a backend taxonomy type.
+// Only these are forwarded to /events; other names stay console-only so we never
+// POST an event the server would reject with a 422.
+const FORWARDED_EVENTS: Record<string, string> = {
+  outfit_shown: 'outfit_shown',
+  outfit_suggestions_viewed: 'outfit_shown',
+  outfit_liked: 'outfit_accept',
+  outfit_unliked: 'outfit_reject',
+};
 
 export function track(event: string, props?: Record<string, any>): void {
-  // For now, log to console in development
   if (process.env.NODE_ENV === 'development') {
     console.log('[Analytics]', event, props || {});
   }
-  // TODO: Replace with real analytics SDK
-  // Example: mixpanel.track(event, props);
+  const mapped = FORWARDED_EVENTS[event];
+  if (mapped) {
+    sendEvent({ eventType: mapped, source: 'system', properties: props });
+  }
 }
+
+// Re-export so existing imports keep working while new code uses logEvent/startSession.
+export { sendEvent };
 
 
 

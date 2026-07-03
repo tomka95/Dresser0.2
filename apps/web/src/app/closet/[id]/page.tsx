@@ -21,6 +21,7 @@ import { ItemImage } from '@/components/ui/ItemImage';
 import { ConfidenceDot } from '@/components/ui/ConfidenceDot';
 import { ContextMenu, DSButton, GlassCard, RadioRow, Sheet, TopBar } from '@/components/ds';
 import type { ClosetItemUpdate } from '@tailor/contracts';
+import { logEvent } from '@/lib/api/events';
 
 interface ItemDetailsPageProps {
   params: {
@@ -86,7 +87,7 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuNote, setMenuNote] = useState<string | null>(null);
-  const [faved, setFaved] = useState(false); // local-only affordance
+  const [faved, setFaved] = useState(false); // seeded from item.isFavorite; persisted on toggle
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -109,12 +110,18 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
         setQuantity(item.quantity);
         setOrderDate(item.orderDate);
         setCurrency(item.currency);
+        setFaved(!!item.isFavorite); // seed from the persisted flag
         setLoadedOnce(true);
       })
       .catch(() => {
         // Error handled by store, component shows error view
       });
   }, [id, fetchItem, isAuthed]);
+
+  // Detail open -> `expand` (once per mount for this item).
+  useEffect(() => {
+    if (isAuthed) logEvent({ eventType: 'expand', itemId: id, source: 'closet_detail' });
+  }, [id, isAuthed]);
 
   const currencySymbol = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : '$';
 
@@ -131,6 +138,7 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
       const updates: ClosetItemUpdate = {
         name: form.name.trim(),
         category,
+        eventSource: 'closet_detail',
       };
       if (form.brand.trim()) updates.brand = form.brand.trim();
       if (form.color.trim()) updates.color = form.color.trim();
@@ -313,7 +321,15 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
           <button
             type="button"
             aria-label={faved ? 'Unfavorite' : 'Favorite'}
-            onClick={() => setFaved((f) => !f)}
+            onClick={async () => {
+              const next = !faved;
+              setFaved(next); // optimistic
+              try {
+                await updateItem(id, { isFavorite: next, eventSource: 'closet_detail' });
+              } catch {
+                setFaved(!next); // revert on failure
+              }
+            }}
             className="flex shrink-0 items-center justify-center rounded-full transition-transform active:scale-90"
             style={{
               width: 44,

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.db import check_database_connection
 from app.security import hash_password, verify_password, create_access_token
-from app.api.routes import auth_google, closet, gmail_oauth, gmail_ingest, photo_ingest
+from app.api.routes import auth_google, closet, gmail_oauth, gmail_ingest, photo_ingest, events
 
 import os
 import tempfile
@@ -76,6 +76,9 @@ app.include_router(photo_ingest.router)
 
 # Closet endpoints
 app.include_router(closet.router)
+
+# Interaction telemetry (Wave S0 Branch C: client-POSTed events -> style_events)
+app.include_router(events.router)
 
 
 @app.get("/health")

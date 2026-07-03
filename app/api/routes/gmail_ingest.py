@@ -30,10 +30,57 @@ from app.gmail_closet.review_service import (
 )
 from app.gmail_closet.usage import get_user_cost_summary
 from app.models import GoogleAccount, IngestRun, User
+from app.services.events_service import EventValidationError, log_event
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/gmail/ingest", tags=["gmail-ingest"])
+
+
+def _log_confirm_events(db: Session, user_id, body: "ConfirmRequest", result) -> None:
+    """Server-derive style_events for a review-deck confirm (accept/reject/edit).
+
+    Best-effort and isolated: any telemetry failure is swallowed and rolled back
+    so it can never fail an already-successful closet write.
+    """
+    try:
+        # candidate_id -> written clothing_item_id (accepted rows only).
+        item_by_candidate = {w.candidate_id: w.clothing_item_id for w in result.written}
+        for candidate_id in body.accepted:
+            log_event(
+                db,
+                user_id=user_id,
+                event_type="save",
+                item_id=item_by_candidate.get(candidate_id),
+                entity_type="ingest_candidate",
+                entity_id=candidate_id,
+                source="review_deck",
+            )
+        for candidate_id in body.rejected:
+            log_event(
+                db,
+                user_id=user_id,
+                event_type="dismiss",
+                entity_type="ingest_candidate",
+                entity_id=candidate_id,
+                source="review_deck",
+            )
+        for candidate_id, patch in body.edits.items():
+            for field in patch.keys():
+                log_event(
+                    db,
+                    user_id=user_id,
+                    event_type="edit_field",
+                    item_id=item_by_candidate.get(candidate_id),
+                    entity_type="ingest_candidate",
+                    entity_id=candidate_id,
+                    source="review_deck",
+                    properties={"field": str(field)},
+                )
+        db.commit()
+    except (EventValidationError, Exception):
+        db.rollback()
+        logger.warning("confirm telemetry failed for user %s (write already committed)", user_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +315,7 @@ def get_ingest_usage(
 @router.post("/confirm", response_model=ConfirmResponse)
 def confirm_ingest_candidates(
     body: ConfirmRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ConfirmResponse:
@@ -277,6 +325,12 @@ def confirm_ingest_candidates(
     UNIQUE(user_id, source_line_key) — re-confirming never duplicates. Rejected
     candidates write nothing. user_id is always the JWT subject; every candidate_id is
     validated to belong to the caller (cross-user / unknown ids -> 400).
+
+    After the write, a background task enriches the newly-written items to the full
+    Tier-1/2 schema and embeds them (Wave S0 Branch B). This is the ONE trigger for both
+    ingest sources — Gmail AND photo candidates are confirmed through this route. The
+    enrichment is Flash-Lite + async so it never slows the confirm response; ⚠️ it runs
+    IN-PROCESS (Starlette threadpool, no external scheduler).
     """
     try:
         result = confirm_candidates(
@@ -289,6 +343,23 @@ def confirm_ingest_candidates(
     except ConfirmError as exc:
         # ConfirmError messages name only ids/fields — safe to surface, no email content.
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # Schedule async enrichment + embedding for the just-written items (best-effort).
+    written_ids = [w.clothing_item_id for w in result.written]
+    if written_ids:
+        from app.services.enrichment import enrich_items_background
+
+        background_tasks.add_task(
+            enrich_items_background, str(current_user.id), written_ids,
+        )
+
+    # --- Interaction telemetry (Wave S0 Branch C) ---------------------------
+    # Server-derived: the swipe decisions that reached the closet. Accept -> `save`
+    # (item_id = the written clothing_item), reject -> `dismiss` (candidate only),
+    # plus `edit_field` per field the user changed in the review deck. Written in
+    # the SAME db session, committed by _log_confirm_events. Best-effort: a telemetry
+    # failure never fails the confirm (the closet write already succeeded).
+    _log_confirm_events(db, current_user.id, body, result)
 
     return ConfirmResponse(
         accepted_count=result.accepted_count,

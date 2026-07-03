@@ -27,6 +27,7 @@ import { motion } from 'framer-motion';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Move, Plus, X } from 'lucide-react';
 
 import type { PhotoCommitSelection, PhotoDetectSession } from '@/lib/api/gmail';
+import { logEvent } from '@/lib/api/events';
 import { DSButton } from '@/components/ds';
 
 export interface RegionPhoto {
@@ -579,7 +580,16 @@ export function RegionSelector({
                   >
                     <button
                       type="button"
-                      onClick={() => toggleRegion(r.region_id)}
+                      onClick={() => {
+                        logEvent({
+                          eventType: 'region_select',
+                          entityType: 'photo_detect_session',
+                          entityId: current.session.session_id ?? undefined,
+                          source: 'photo',
+                          properties: { mode: 'detected', region_id: r.region_id, selected: !isSel },
+                        });
+                        toggleRegion(r.region_id);
+                      }}
                       aria-pressed={isSel}
                       aria-label={`${r.name} region`}
                       className="absolute inset-0 p-0 text-left transition-opacity duration-150"
