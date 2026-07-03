@@ -51,8 +51,8 @@ function SettingsRow({ icon, label, control, onClick }: SettingsRowProps) {
 
 export default function ProfilePage() {
   const router = useRouter();
-  // Gate on the Supabase session (three-state: never redirects while loading).
-  const { session, loading: authLoading } = useRequireAuth();
+  // Gate on the Supabase session AND onboarding completion.
+  const { session, loading: authLoading } = useRequireAuth('/sign-in', { requireOnboarded: true });
   const [user, setUser] = useState<CurrentUserResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 

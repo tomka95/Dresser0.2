@@ -25,7 +25,7 @@ interface ChatMessage {
 const QUICK_PROMPTS = ['Outfit for today', 'What goes with this?', 'Pack for a trip'];
 
 export default function ChatPage() {
-  const { session, loading } = useRequireAuth();
+  const { session, loading } = useRequireAuth('/sign-in', { requireOnboarded: true });
   const isAuth = !!session;
 
   const items = useClosetStore((state) => state.items);

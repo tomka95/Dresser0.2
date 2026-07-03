@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Check } from "lucide-react";
 import { DSButton } from "@/components/ds";
 import { getSessionUser } from "@/lib/auth";
+import { getOnboardingStatus } from "@/lib/api/onboarding";
 
 /**
  * Email confirmed — celebratory landing after /auth/callback (?next=/confirmed).
@@ -13,6 +14,7 @@ import { getSessionUser } from "@/lib/auth";
 export default function ConfirmedPage() {
   const router = useRouter();
   const [firstName, setFirstName] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     getSessionUser().then((user) => {
@@ -20,6 +22,19 @@ export default function ConfirmedPage() {
       if (full) setFirstName(full.trim().split(/\s+/)[0]);
     });
   }, []);
+
+  // Route by onboarding state: a fresh signup is definitionally not onboarded and
+  // lands in /onboarding; a re-confirmed returning user goes straight home. Fail
+  // closed to /onboarding if status can't be read (the gate would bounce anyway).
+  async function handleStart() {
+    setStarting(true);
+    try {
+      const { completed } = await getOnboardingStatus();
+      router.replace(completed ? "/home" : "/onboarding");
+    } catch {
+      router.replace("/onboarding");
+    }
+  }
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-2 text-center">
@@ -36,7 +51,7 @@ export default function ConfirmedPage() {
         Your account is confirmed. Let&rsquo;s build your closet.
       </p>
       <div className="w-full max-w-[320px]">
-        <DSButton variant="light" fullWidth pill onClick={() => router.push("/home")}>
+        <DSButton variant="light" fullWidth pill disabled={starting} onClick={handleStart}>
           Get started
         </DSButton>
       </div>

@@ -30,7 +30,7 @@ type Scope = (typeof SCOPES)[number];
 
 export default function SearchPage() {
   const router = useRouter();
-  const { session, loading } = useRequireAuth();
+  const { session, loading } = useRequireAuth('/sign-in', { requireOnboarded: true });
   const isAuth = !!session;
 
   const [query, setQuery] = useState('');
