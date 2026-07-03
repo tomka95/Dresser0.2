@@ -239,6 +239,25 @@ class Settings(BaseSettings):
     EVENTS_MAX_PROPERTIES_BYTES: int = 4096
     EVENTS_RATE_LIMIT_PER_MINUTE: int = 600
 
+    # --- Onboarding seed (Wave S1) -----------------------------------------
+    # POST /onboarding/seed writes the tap-only onboarding result into the S0
+    # Style Profile tables (style_profiles.facts, style_preferences,
+    # preference_signals). user_id is ALWAYS the JWT subject. These guards bound
+    # a single seed payload (the whole flow commits once at the end):
+    #   ONBOARDING_MAX_PREFERENCES : max style_preferences rows one seed upserts.
+    #   ONBOARDING_MAX_SIGNALS     : max preference_signals rows one seed inserts
+    #                                (taste deck is ~10 swipes; headroom for more).
+    #   ONBOARDING_MAX_FACTS_BYTES : cap on the JSON-serialized facts blob merged
+    #                                into style_profiles.facts (payload/PII guard).
+    # The onboarding-derived confidence band clamps every seeded preference's
+    # confidence into [MIN, MAX] regardless of client input (a self-reported taste
+    # is a weak-to-moderate prior, never certainty).
+    ONBOARDING_MAX_PREFERENCES: int = 40
+    ONBOARDING_MAX_SIGNALS: int = 60
+    ONBOARDING_MAX_FACTS_BYTES: int = 8192
+    ONBOARDING_CONFIDENCE_MIN: float = 0.5
+    ONBOARDING_CONFIDENCE_MAX: float = 0.6
+
     # Database configuration.
     # No localhost/postgres defaults on purpose: a missing value must surface as a
     # clear configuration error rather than silently pointing the app at a local DB.

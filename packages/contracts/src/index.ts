@@ -8,6 +8,8 @@
 export * from './user';
 export * from './closet';
 export * from './outfit';
+export * from './departments';
+export * from './sizes';
 
 
 

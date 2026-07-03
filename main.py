@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.db import check_database_connection
 from app.security import hash_password, verify_password, create_access_token
-from app.api.routes import auth_google, closet, gmail_oauth, gmail_ingest, photo_ingest, events
+from app.api.routes import auth_google, closet, gmail_oauth, gmail_ingest, photo_ingest, events, onboarding
 
 import os
 import tempfile
@@ -79,6 +79,9 @@ app.include_router(closet.router)
 
 # Interaction telemetry (Wave S0 Branch C: client-POSTed events -> style_events)
 app.include_router(events.router)
+
+# Onboarding seed (Wave S1: tap-only onboarding -> style_profiles/preferences/signals)
+app.include_router(onboarding.router)
 
 
 @app.get("/health")
