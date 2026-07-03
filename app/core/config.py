@@ -169,6 +169,12 @@ class Settings(BaseSettings):
     # wall-clock guard; the per-run Verify/Fetch/Search budgets are the hard ceilings).
     GMAIL_IMAGE_FILL_MAX_CANDIDATES: int = 500
     GMAIL_SELF_HEAL_MAX_ITEMS: int = 500
+    # Wave 2 generation self-heal: how many stale 'pending_retry' generation targets
+    # (photo ingest_candidates + confirmed clothing_items whose card fell back to the raw
+    # crop) one opportunistic sweep re-attempts. Modest by default — each target is a real
+    # generation + verify call; the shared GENERATION_MAX_PER_RUN / GMAIL_VERIFY_MAX_PER_RUN
+    # budgets are the hard ceilings, this just bounds how many rows a single sweep loads.
+    GENERATION_SELF_HEAL_MAX_ITEMS: int = 30
 
     # How far back the Gmail receipt scan looks. Read via gmail_oauth_client.
     # default_since(); the deleted pipeline._calculate_since read an unset env var

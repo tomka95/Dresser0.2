@@ -24,7 +24,7 @@ import React, {
   useState,
 } from 'react';
 import { motion } from 'framer-motion';
-import { Check, ChevronLeft, ChevronRight, Move, Plus, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Move, Plus, X } from 'lucide-react';
 
 import type { PhotoCommitSelection, PhotoDetectSession } from '@/lib/api/gmail';
 import { DSButton } from '@/components/ds';
@@ -73,6 +73,41 @@ const boxArea = ([ymin, xmin, ymax, xmax]: Box) =>
   Math.max(0, ymax - ymin) * Math.max(0, xmax - xmin);
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+// ── Occlusion / size guard (cheap, no model) ────────────────────────────────
+// A garment crop is only useful if it's big enough AND mostly visible. Two signals,
+// both from box geometry alone:
+//   • area  — the box covers less than this fraction of the whole photo → too small a
+//     scrap to be a usable garment crop (the white-tee-sliver case).
+//   • cover — this fraction (or more) of the box is overlapped by a LARGER kept box →
+//     the item is mostly hidden behind another, so its crop is mostly the other garment.
+const MIN_USABLE_AREA_FRAC = 0.02;   // 2% of the photo (0..1000² units)
+const OCCLUDED_COVER_FRAC = 0.7;     // 70% of this box covered by a bigger one
+const PHOTO_AREA = 1000 * 1000;
+
+/** Fraction of box `a` overlapped by box `b` (0..1). */
+function coveredFraction(a: Box, b: Box): number {
+  const iy = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]));
+  const ix = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  const inter = iy * ix;
+  const area = boxArea(a);
+  return area > 0 ? inter / area : 0;
+}
+
+/** A non-blocking warning for a kept box, or null. `others` are the other kept boxes. */
+function occlusionWarning(box: Box, others: Box[]): string | null {
+  if (boxArea(box) / PHOTO_AREA < MIN_USABLE_AREA_FRAC) {
+    return 'Very small — may be too little to identify';
+  }
+  const selfArea = boxArea(box);
+  for (const o of others) {
+    // Only a LARGER box can plausibly occlude this one.
+    if (boxArea(o) > selfArea && coveredFraction(box, o) >= OCCLUDED_COVER_FRAC) {
+      return 'Mostly hidden behind another item';
+    }
+  }
+  return null;
+}
+
 /** Small glass label chip shown at a box's top-left corner. */
 function BoxLabel({ name }: { name: string }) {
   return (
@@ -86,6 +121,23 @@ function BoxLabel({ name }: { name: string }) {
       }}
     >
       {name}
+    </span>
+  );
+}
+
+/** Subtle amber occlusion/size warning chip at a box's bottom-left. Non-blocking. */
+function WarnBadge({ text }: { text: string }) {
+  return (
+    <span
+      title={text}
+      className="absolute bottom-1 left-1 z-[3] inline-flex max-w-[92%] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[9.5px] font-semibold"
+      style={{
+        background: 'rgba(245,158,11,0.92)',
+        color: '#3a2400',
+      }}
+    >
+      <AlertTriangle size={10} strokeWidth={2.6} className="shrink-0" />
+      {text}
     </span>
   );
 }
@@ -173,6 +225,32 @@ export function RegionSelector({
       ),
     [selections, photos],
   );
+
+  // Occlusion/size guard for the CURRENT photo's KEPT boxes (selected detected regions
+  // that aren't being adjusted + all manual boxes). Non-blocking — surfaces a subtle
+  // warning; the user can still commit.
+  const occWarnings = useMemo(() => {
+    const kept: { kind: 'det' | 'man'; id: number; box: Box }[] = [];
+    for (const r of current.session.regions) {
+      if (sel.regionIds.has(r.region_id) && !sel.adjusted.has(r.region_id)) {
+        kept.push({ kind: 'det', id: r.region_id, box: r.box_2d as Box });
+      }
+    }
+    for (const m of sel.manual) kept.push({ kind: 'man', id: m.id, box: m.box });
+
+    const det: Record<number, string> = {};
+    const man: Record<number, string> = {};
+    let count = 0;
+    kept.forEach((k, ki) => {
+      const others = kept.filter((_, oi) => oi !== ki).map((o) => o.box);
+      const w = occlusionWarning(k.box, others);
+      if (!w) return;
+      count += 1;
+      if (k.kind === 'det') det[k.id] = w;
+      else man[k.id] = w;
+    });
+    return { det, man, count };
+  }, [current.session, sel]);
 
   // ── Selection mutations ─────────────────────────────────────────────────────
   const toggleRegion = useCallback(
@@ -372,21 +450,37 @@ export function RegionSelector({
           selected_region_ids: s.regions
             .filter((r) => chosen.regionIds.has(r.region_id))
             .map((r) => r.region_id),
-          manual_boxes: chosen.manual.map((m) => m.box),
+          // Carry the user's name through when they gave one; a blank name falls back to
+          // the server's auto-describe (bare geometry).
+          manual_boxes: chosen.manual.map((m) => {
+            const nm = m.name?.trim();
+            return nm ? { box: m.box, name: nm } : m.box;
+          }),
         },
       ];
     });
   }, [photos, selections]);
 
+  // Occlusion warnings take priority in the hint (still non-blocking) so the user knows
+  // why a box is flagged; commit stays enabled.
+  const occHint =
+    occWarnings.count > 0 && !drawMode && !isDup
+      ? occWarnings.count === 1
+        ? 'One item looks small or mostly hidden — you can still add it.'
+        : `${occWarnings.count} items look small or mostly hidden — you can still add them.`
+      : null;
+
   const hint = isDup
     ? 'This photo is already in your closet.'
     : drawMode
       ? 'Drag around the item'
-      : atManualCap
-        ? `Up to ${MAX_MANUAL_BOXES} drawn items per photo.`
-        : current.session.regions.length === 0 && sel.manual.length === 0
-          ? 'Nothing detected — draw a box around each item.'
-          : 'Tap a box to keep or remove it.';
+      : occHint
+        ? occHint
+        : atManualCap
+          ? `Up to ${MAX_MANUAL_BOXES} drawn items per photo.`
+          : current.session.regions.length === 0 && sel.manual.length === 0
+            ? 'Nothing detected — draw a box around each item.'
+            : 'Tap a box to keep or remove it.';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -499,6 +593,9 @@ export function RegionSelector({
                       }}
                     >
                       <BoxLabel name={r.name} />
+                      {isSel && occWarnings.det[r.region_id] && (
+                        <WarnBadge text={occWarnings.det[r.region_id]} />
+                      )}
                       {isSel && (
                         <span
                           aria-hidden
@@ -568,6 +665,7 @@ export function RegionSelector({
                       className="absolute left-1 top-1 w-[74%] truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white outline-none placeholder:text-white/45"
                       style={{ background: 'rgba(0,0,0,0.55)', border: '1px solid var(--tr-20)' }}
                     />
+                    {occWarnings.man[m.id] && <WarnBadge text={occWarnings.man[m.id]} />}
                     <button
                       type="button"
                       onPointerDown={(e) => e.stopPropagation()}
@@ -649,7 +747,10 @@ export function RegionSelector({
 
       {/* Toolbar: hint + add-missed-region pill */}
       <div className="flex items-center justify-between gap-3">
-        <p className="m-0 flex-1 text-[12.5px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+        <p
+          className="m-0 flex-1 text-[12.5px]"
+          style={{ color: occHint ? 'var(--amber, #f59e0b)' : 'rgba(255,255,255,0.6)' }}
+        >
           {hint}
         </p>
         <button

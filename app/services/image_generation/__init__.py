@@ -14,7 +14,10 @@ from app.services.image_generation.base import (
     list_available_providers,
     sniff_generated_image,
 )
-from app.services.image_generation.prompt import build_generation_prompt
+from app.services.image_generation.prompt import (
+    build_generation_prompt,
+    build_nano_generation_prompt,
+)
 
 __all__ = [
     "MAX_GENERATED_BYTES",
@@ -24,6 +27,7 @@ __all__ = [
     "GenerationResult",
     "NullGenerationProvider",
     "build_generation_prompt",
+    "build_nano_generation_prompt",
     "get_generation_provider",
     "list_available_providers",
     "sniff_generated_image",

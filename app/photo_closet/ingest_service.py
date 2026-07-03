@@ -32,7 +32,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from PIL import Image
@@ -61,6 +61,8 @@ NEAR_DUP_DISTANCE = 6
 _NEAR_DUP_SCAN_LIMIT = 500
 # Cap on user-drawn boxes per photo at commit (each is a Gemini describe call).
 MAX_MANUAL_BOXES_PER_PHOTO = 8
+# Max chars kept from a user-supplied manual-box name (trimmed; longer is truncated).
+MAX_MANUAL_NAME_LEN = 120
 
 
 # --- Commit error taxonomy (the route maps these to HTTP codes) ---------------
@@ -107,7 +109,10 @@ class PhotoSelection:
 
     session_id: str
     selected_region_ids: List[int] = field(default_factory=list)
-    manual_boxes: List[List[int]] = field(default_factory=list)
+    # Heterogeneous by design (contract v2): each entry is EITHER a legacy geometry-only
+    # box [ymin,xmin,ymax,xmax] OR an object {"box": [...], "name"?: str}. _parse_manual_box
+    # normalizes both; a supplied name replaces the auto-describe for that candidate.
+    manual_boxes: List = field(default_factory=list)
 
 
 @dataclass
@@ -308,6 +313,26 @@ def _validate_manual_box(box) -> List[int]:
     return vals
 
 
+def _parse_manual_box(raw) -> Tuple[List[int], Optional[str]]:
+    """Normalize a manual-box entry to (validated_box, optional_name).
+
+    Accepts BOTH shapes (contract v2, backward compatible):
+      * legacy geometry-only:  [ymin, xmin, ymax, xmax]
+      * named:                 {"box": [ymin, xmin, ymax, xmax], "name"?: str}
+    A blank/whitespace name normalizes to None (falls back to auto-describe)."""
+    name: Optional[str] = None
+    if isinstance(raw, dict):
+        box = raw.get("box")
+        raw_name = raw.get("name")
+        if raw_name is not None:
+            if not isinstance(raw_name, str):
+                raise PhotoSelectionInvalid("manual box name must be a string")
+            name = raw_name.strip()[:MAX_MANUAL_NAME_LEN] or None
+    else:
+        box = raw
+    return _validate_manual_box(box), name
+
+
 # --- Entry point 1: detect ------------------------------------------------------
 
 def run_photo_detect(
@@ -474,8 +499,8 @@ def _load_session_for_commit(
     if len(selection.manual_boxes) > MAX_MANUAL_BOXES_PER_PHOTO:
         raise PhotoSelectionInvalid(
             f"too many manual boxes (max {MAX_MANUAL_BOXES_PER_PHOTO} per photo)")
-    for box in selection.manual_boxes:
-        _validate_manual_box(box)
+    for raw_box in selection.manual_boxes:
+        _parse_manual_box(raw_box)  # validates geometry + optional name shape
     return session
 
 
@@ -566,20 +591,29 @@ def run_photo_commit(
                 dedup_check(db, user_id, cand)
                 staged_here += 1
 
-            # (b) User-drawn manual boxes — box crop, then describe the crop.
+            # (b) User-drawn manual boxes — box crop, then describe the crop (unless the
+            #     user named the box, in which case we honor their name and skip describe).
             for raw_box in selection.manual_boxes:
-                box = _validate_manual_box(raw_box)
+                box, manual_name = _parse_manual_box(raw_box)
                 cut = build_cutout(original=original, box_2d=box, mask_b64=None)
                 if cut is None:
                     continue
-                described = describe(cut.data, cut.content_type, provider=provider)
-                if described is None:
-                    # Model failed: stage a low-confidence placeholder the user can
-                    # edit in the deck rather than dropping their selection.
+                if manual_name:
+                    # User named this box: use it verbatim and skip the auto-describe call
+                    # (and its cost). Category/color are unknown here — editable in the deck.
                     described = GarmentDescription(
-                        name="Item", category=GarmentCategory.other,
-                        confidence_overall=0.2,
+                        name=manual_name, category=GarmentCategory.other,
+                        confidence_overall=0.9,
                     )
+                else:
+                    described = describe(cut.data, cut.content_type, provider=provider)
+                    if described is None:
+                        # Model failed: stage a low-confidence placeholder the user can
+                        # edit in the deck rather than dropping their selection.
+                        described = GarmentDescription(
+                            name="Item", category=GarmentCategory.other,
+                            confidence_overall=0.2,
+                        )
                 image_url = store_cutout(storage_client, user_id, cut)
                 slk = _source_line_key(session.image_sha256, box)
                 cand = _stage_candidate(

@@ -35,7 +35,7 @@ from app.services.image_generation.base import (
     GenerationResult,
     sniff_generated_image,
 )
-from app.services.image_generation.prompt import build_generation_prompt
+from app.services.image_generation.prompt import build_nano_generation_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ class NanoBananaProvider:
             logger.info("generation [nano_banana] skipped: GEMINI_API_KEY not set")
             return None
 
-        prompt = build_generation_prompt(req)
+        prompt = build_nano_generation_prompt(req)
         model = settings.NANO_BANANA_MODEL
         started = time.monotonic()
         try:

@@ -23,6 +23,7 @@ from app.services.image_generation import (
     GenerationResult,
     NullGenerationProvider,
     build_generation_prompt,
+    build_nano_generation_prompt,
     get_generation_provider,
     list_available_providers,
 )
@@ -168,6 +169,28 @@ def test_prompt_without_attributes_has_no_target_descriptor():
 
 def test_prompt_is_deterministic():
     assert build_generation_prompt(REQ) == build_generation_prompt(REQ)
+
+
+def test_nano_prompt_adds_logo_guard_without_weakening_base():
+    """nano's prompt = shared prompt + the anti-logo-hallucination guard (additive)."""
+    base = build_generation_prompt(REQ)
+    nano = build_nano_generation_prompt(REQ)
+    # Base is preserved verbatim as the prefix — no invariant relaxed.
+    assert nano.startswith(base)
+    assert "Extract ONLY the single target garment" in nano
+    assert "REMOVE the person" in nano
+    assert "No person, no mannequin" in nano
+    # The added guard forbids adding / duplicating / relocating / inventing marks.
+    assert "LOGOS, TEXT AND BRAND MARKS" in nano
+    for verb in ("add", "invent", "duplicate", "mirror", "relocate"):
+        assert verb in nano
+    assert "leave it completely plain" in nano
+    assert build_nano_generation_prompt(REQ) == nano  # deterministic
+
+
+def test_nano_guard_is_provider_specific():
+    """flux / seedream keep the shared prompt — the guard is nano-only."""
+    assert "LOGOS, TEXT AND BRAND MARKS" not in build_generation_prompt(REQ)
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +499,9 @@ def test_nano_banana_happy_path(monkeypatch):
     call = fake.calls[0]
     assert call["model"] == settings.NANO_BANANA_MODEL
     assert call["contents"][0]["inline_data"]["data"] == REQ.image_bytes
+    # …and the text part carries the nano-specific anti-logo-hallucination guard.
+    assert call["contents"][1]["text"] == build_nano_generation_prompt(REQ)
+    assert "LOGOS, TEXT AND BRAND MARKS" in call["contents"][1]["text"]
 
 
 def test_nano_banana_base64_string_data(monkeypatch):

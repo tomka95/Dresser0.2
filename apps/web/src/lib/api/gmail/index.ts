@@ -312,12 +312,19 @@ export interface PhotoDetectResponse {
   sessions: PhotoDetectSession[];
 }
 
+/** A manual box's geometry: [ymin, xmin, ymax, xmax] in 0..1000 photo coordinates. */
+export type ManualBox = [number, number, number, number];
+
+/** One user-drawn box sent to commit. Either bare geometry (auto-describe) or geometry
+ *  plus a user-given name (used verbatim instead of the server's auto-describe). */
+export type ManualBoxPayload = ManualBox | { box: ManualBox; name: string };
+
 /** Per-session selection sent to /photo/ingest/commit. Manual boxes use the same
  *  [ymin, xmin, ymax, xmax] 0..1000 photo coordinates as detected regions (max 8). */
 export interface PhotoCommitSelection {
   session_id: string;
   selected_region_ids: number[];
-  manual_boxes: [number, number, number, number][];
+  manual_boxes: ManualBoxPayload[];
 }
 
 export interface PhotoIngestResponse {
