@@ -68,6 +68,29 @@ class ClosetItemOut(BaseModel):
     isReturn: bool = False
     merchant: Optional[str] = None
     imageUrl: Optional[str] = None
+    # --- AI Stylist universal garment schema (Wave S0). All optional/nullable
+    # passthrough; NOT populated until Branch B enriches. No new required fields. ---
+    subCategory: Optional[str] = None
+    colorPrimaryHex: Optional[str] = None
+    colorSecondary: Optional[str] = None
+    pattern: Optional[str] = None
+    material: Optional[str] = None
+    fitSilhouette: Optional[str] = None
+    fitRise: Optional[str] = None
+    formality: Optional[int] = None
+    warmth: Optional[int] = None
+    seasons: Optional[List[str]] = None
+    occasions: Optional[List[str]] = None
+    length: Optional[str] = None
+    neckline: Optional[str] = None
+    sleeveLength: Optional[str] = None
+    heelHeight: Optional[str] = None
+    acquiredDate: Optional[str] = None
+    condition: Optional[str] = None
+    isFavorite: bool = False
+    archivedAt: Optional[str] = None
+    wearCount: int = 0
+    lastWornAt: Optional[str] = None
     createdAt: str
     updatedAt: str
 
@@ -121,6 +144,12 @@ def _map_clothing_item_to_out(
     unit_price = float(item.unit_price) if item.unit_price is not None else None
     order_date = item.order_date.isoformat() if item.order_date else None
 
+    # AI Stylist passthrough (Wave S0). Dates -> ISO strings; the rest pass as-is.
+    # All None until Branch B enriches — no behavior change for existing clients.
+    acquired_date = item.acquired_date.isoformat() if item.acquired_date else None
+    archived_at = item.archived_at.isoformat() if item.archived_at else None
+    last_worn_at = item.last_worn_at.isoformat() if item.last_worn_at else None
+
     return ClosetItemOut(
         id=str(item.id),
         userId=str(item.user_id),
@@ -136,6 +165,27 @@ def _map_clothing_item_to_out(
         isReturn=bool(item.is_return),
         merchant=item.merchant,
         imageUrl=image_url,
+        subCategory=item.sub_category,
+        colorPrimaryHex=item.color_primary_hex,
+        colorSecondary=item.color_secondary,
+        pattern=item.pattern,
+        material=item.material,
+        fitSilhouette=item.fit_silhouette,
+        fitRise=item.fit_rise,
+        formality=item.formality,
+        warmth=item.warmth,
+        seasons=item.seasons,
+        occasions=item.occasions,
+        length=item.length,
+        neckline=item.neckline,
+        sleeveLength=item.sleeve_length,
+        heelHeight=item.heel_height,
+        acquiredDate=acquired_date,
+        condition=item.condition,
+        isFavorite=bool(item.is_favorite),
+        archivedAt=archived_at,
+        wearCount=item.wear_count if item.wear_count is not None else 0,
+        lastWornAt=last_worn_at,
         createdAt=item.created_at.isoformat() if item.created_at else "",
         updatedAt=item.updated_at.isoformat() if item.updated_at else "",
     )

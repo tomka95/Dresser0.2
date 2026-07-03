@@ -182,6 +182,19 @@ class Settings(BaseSettings):
     GMAIL_MAX_YEARS: float = 2.0
     GMAIL_IMAP_TIMEOUT: int = 30
 
+    # --- AI Stylist (Wave S0) ----------------------------------------------
+    # Model seams for the Stylist. Branch A only defines them (nothing reads these
+    # yet); Branch B/S1 wire them. Values are sensible Gemini defaults, overridable
+    # via env.
+    #   STYLIST_MODEL   : the reasoning model behind the stylist agent / distillation.
+    #   EMBEDDING_MODEL : the item/text embedding model. text-embedding-004 is 768-dim.
+    #   EMBEDDING_DIM   : dimension of the vector column (item_embeddings.embedding).
+    #                     MUST match EMBEDDING_MODEL's output width and the vector(N)
+    #                     declared in migration 0018 — changing it requires a migration.
+    STYLIST_MODEL: str = "gemini-2.5-flash"
+    EMBEDDING_MODEL: str = "text-embedding-004"
+    EMBEDDING_DIM: int = 768
+
     # Database configuration.
     # No localhost/postgres defaults on purpose: a missing value must surface as a
     # clear configuration error rather than silently pointing the app at a local DB.
