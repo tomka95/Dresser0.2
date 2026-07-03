@@ -110,8 +110,9 @@ describe('RegionSelector', () => {
 
   it('stacks the smaller box above the bigger one so it wins overlapping taps', () => {
     renderSelector([{ previewUrl: 'blob:a', session: session() }]);
-    const tshirt = screen.getByRole('button', { name: 'T-shirt region' });
-    const sneakers = screen.getByRole('button', { name: 'Sneakers region' });
+    // The region toggle now fills a positioned wrapper that carries the z-index.
+    const tshirt = screen.getByRole('button', { name: 'T-shirt region' }).parentElement!;
+    const sneakers = screen.getByRole('button', { name: 'Sneakers region' }).parentElement!;
     expect(Number(sneakers.style.zIndex)).toBeGreaterThan(Number(tshirt.style.zIndex));
   });
 
@@ -141,14 +142,35 @@ describe('RegionSelector', () => {
 
     drag(screen.getByTestId('draw-layer'), { x: 40, y: 40 }, { x: 240, y: 140 });
 
-    // New manual box: labeled, auto-selected (counted), draw mode auto-exits.
-    expect(screen.getByText('New item')).toBeInTheDocument();
+    // New manual box: carries a name input, auto-selected (counted), draw mode auto-exits.
+    expect(screen.getByPlaceholderText('Name (optional)')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add 3 items' })).toBeEnabled();
     expect(screen.queryByTestId('draw-layer')).toBeNull();
 
     // × deletes it and the count drops back.
     fireEvent.click(screen.getByRole('button', { name: 'Remove drawn item' }));
-    expect(screen.queryByText('New item')).toBeNull();
+    expect(screen.queryByPlaceholderText('Name (optional)')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add 2 items' })).toBeEnabled();
+  });
+
+  it('names a drawn box via its inline input', () => {
+    renderSelector([{ previewUrl: 'blob:a', session: session() }]);
+    fireEvent.click(screen.getByRole('button', { name: 'Add item' }));
+    drag(screen.getByTestId('draw-layer'), { x: 40, y: 40 }, { x: 240, y: 140 });
+
+    const input = screen.getByPlaceholderText('Name (optional)') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'Scarf' } });
+    expect(input.value).toBe('Scarf');
+  });
+
+  it('"adjust" converts a detected box into an editable manual box (count preserved)', () => {
+    renderSelector([{ previewUrl: 'blob:a', session: session() }]);
+
+    // Adjust the T-shirt: its detected toggle disappears, replaced by a manual box
+    // pre-named from the detection; the overall count is unchanged (deselect + add).
+    fireEvent.click(screen.getByRole('button', { name: 'Adjust T-shirt box' }));
+    expect(screen.queryByRole('button', { name: 'T-shirt region' })).toBeNull();
+    expect((screen.getByPlaceholderText('Name (optional)') as HTMLInputElement).value).toBe('T-shirt');
     expect(screen.getByRole('button', { name: 'Add 2 items' })).toBeEnabled();
   });
 
@@ -159,7 +181,7 @@ describe('RegionSelector', () => {
     // 4% of 400px = 16px minimum; an 8px nudge must be thrown away.
     drag(screen.getByTestId('draw-layer'), { x: 50, y: 50 }, { x: 58, y: 58 });
 
-    expect(screen.queryByText('New item')).toBeNull();
+    expect(screen.queryByPlaceholderText('Name (optional)')).toBeNull();
     expect(screen.getByRole('button', { name: 'Add 2 items' })).toBeEnabled();
     // Draw mode stays armed for another try.
     expect(screen.getByTestId('draw-layer')).toBeInTheDocument();

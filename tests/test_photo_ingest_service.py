@@ -219,6 +219,64 @@ def test_detect_sweeps_expired_pending_sessions(db, user):
     assert remaining[0].image_sha256 == new_img.sha256
 
 
+def test_detect_multiple_photos_concurrently_preserves_order(db, user):
+    """A multi-photo upload detects concurrently but returns outcomes in INPUT ORDER,
+    one session per photo, each with its regions."""
+    a = _sanitized(color=(200, 30, 30))
+    b = _sanitized(color=(30, 30, 200))
+    c = _banded()
+    assert len({a.sha256, b.sha256, c.sha256}) == 3  # three distinct photos
+
+    calls: list = []
+    outcomes = ingest_service.run_photo_detect(
+        db, user.id, [a, b, c],
+        detect=_detect_returning(_two_garment_detection(), calls=calls),
+    )
+
+    assert [o.image_sha256 for o in outcomes] == [a.sha256, b.sha256, c.sha256]
+    assert all(o.session_id for o in outcomes)
+    assert all(len(o.regions) == 2 for o in outcomes)   # two garments each
+    assert len(calls) == 3                              # each non-dup detected once
+    assert db.query(PhotoDetectSession).count() == 3
+
+
+def _striped(period):
+    """A vertically-STRIPED photo: alternating bands give a varied (non-flat) phash, so it
+    never collides with a solid image (whose dHash is all-zero, like a monotonic gradient).
+    Different periods → distinct bytes AND distinct phashes."""
+    img = Image.new("RGB", (128, 128))
+    for x in range(128):
+        v = 255 if (x // period) % 2 == 0 else 0
+        for y in range(128):
+            img.putpixel((x, y), (v, v, v))
+    buf = io.BytesIO(); img.save(buf, "PNG")
+    return validate_and_sanitize(buf.getvalue())
+
+
+def test_detect_concurrent_skips_duplicate_in_batch(db, user):
+    """A duplicate mixed into a concurrent batch is flagged (no Gemini call, no session);
+    order is preserved and the other photos still detect."""
+    a = _striped(6)
+    dup = _sanitized(color=(50, 50, 50))
+    c = _striped(12)
+    db.add(ProcessedUpload(
+        user_id=user.id, sync_id=None, image_sha256=dup.sha256, phash=dup.phash,
+        status="processed", item_count=1,
+    ))
+    db.commit()
+
+    calls: list = []
+    outcomes = ingest_service.run_photo_detect(
+        db, user.id, [a, dup, c],
+        detect=_detect_returning(_two_garment_detection(), calls=calls),
+    )
+
+    assert [o.duplicate for o in outcomes] == [False, True, False]  # order preserved
+    assert outcomes[1].session_id is None                          # dup: no session
+    assert len(calls) == 2                                         # dup NOT detected
+    assert db.query(PhotoDetectSession).count() == 2
+
+
 # --- run_photo_commit -----------------------------------------------------------
 
 def _commit(db, user, sanitized_images, selections, describe=None):
@@ -270,6 +328,42 @@ def test_commit_stages_only_selected_regions(db, user):
     assert pu.image_sha256 == img.sha256 and pu.phash == img.phash
 
     assert db.query(PhotoDetectSession).one().status == "committed"
+
+
+def test_commit_defers_completion_for_generation(db, user):
+    """defer_completion + staged>0: the run stays 'running' so the background
+    generation job (not the commit) finalizes it — the deck's generation-in-flight
+    signal. extracted_count is still recorded; finished_at is left null."""
+    img = _sanitized()
+    detection = DetectionResult(person_count=1, garments=[
+        _garment("Red Tee", "top", (50, 50, 500, 600)),
+    ])
+    out = _detect_one(db, user, img, detection)
+    res = ingest_service.run_photo_commit(
+        db, user.id, None, {img.sha256: img},
+        [PhotoSelection(session_id=out.session_id, selected_region_ids=[0])],
+        defer_completion=True,
+    )
+    assert res.staged == 1
+    run = db.query(IngestRun).filter(IngestRun.sync_id == res.sync_id).one()
+    assert run.status == "running"        # deferred — generation owns finalization
+    assert run.finished_at is None
+    assert run.extracted_count == 1
+
+
+def test_commit_defer_but_nothing_staged_completes(db, user):
+    """defer_completion is moot when nothing stages (all deselected): with no
+    generation job to run, the commit finalizes the run itself."""
+    img = _sanitized()
+    out = _detect_one(db, user, img, _two_garment_detection())
+    res = ingest_service.run_photo_commit(
+        db, user.id, None, {img.sha256: img},
+        [PhotoSelection(session_id=out.session_id, selected_region_ids=[])],
+        defer_completion=True,
+    )
+    assert res.staged == 0
+    run = db.query(IngestRun).filter(IngestRun.sync_id == res.sync_id).one()
+    assert run.status == "completed" and run.finished_at is not None
 
 
 def test_commit_same_session_twice_conflicts(db, user):

@@ -112,6 +112,11 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         # Phase 4 streaming deck: resolved | pending (still resolving — shimmer + poll) |
         # placeholder (slow tiers exhausted — static placeholder, stop polling) | null.
         "image_status": c.image_status,
+        # Wave 2 generation card + lifecycle (photo only; null for Gmail). The deck
+        # shows generated_image_url once generation_status='ready'; while 'generating'
+        # it keeps polling. image_url stays the raw crop (verify reference + fallback).
+        "generated_image_url": c.generated_image_url,
+        "generation_status": c.generation_status,
         "confidence_overall": _to_float(c.confidence_overall),
         "low_confidence_fields": _low_confidence_fields(c),
         "seen_count": c.seen_count or 1,
@@ -285,6 +290,17 @@ def _upsert_clothing_item(
     else:
         image_status = "pending"
     image_cache_key = make_cache_key(cand.brand, cand.name, cand.color)
+    # Wave 2 confirm-attach: the closet row must show the VERIFIED generated product
+    # card, NOT the raw crop. Only 'ready' (with a stored card) uses generated_image_url;
+    # every other generation_status — pending_retry / failed / null, i.e. no verified
+    # card — falls back to the crop (image_url) so the item still has an image. The
+    # candidate's generation_status is carried forward so a later generation self-heal
+    # can find the 'pending_retry' closet rows and re-attempt (image_url is the crop it
+    # regenerates from).
+    if cand.generation_status == "ready" and cand.generated_image_url:
+        closet_image_url = cand.generated_image_url
+    else:
+        closet_image_url = cand.image_url
     vals = dict(
         user_id=user_id,
         name=cand.name,
@@ -302,10 +318,11 @@ def _upsert_clothing_item(
         source_google_account_id=ga_id,
         source_line_key=cand.source_line_key,
         ingest_confidence=cand.confidence_overall,
-        image_url=cand.image_url,
+        image_url=closet_image_url,
         merchant=cand.merchant,
         image_status=image_status,
         image_cache_key=image_cache_key,
+        generation_status=cand.generation_status,
         # Carry the ingestion source forward ('gmail' | 'photo') so the closet records
         # how each item arrived. The candidate's value is server-set at stage time.
         source_type=cand.source_type,
@@ -333,6 +350,7 @@ def _upsert_clothing_item(
             "merchant": ex.merchant,
             "image_status": ex.image_status,
             "image_cache_key": ex.image_cache_key,
+            "generation_status": ex.generation_status,
             "source_type": ex.source_type,
             "updated_at": func.now(),
         },

@@ -49,6 +49,13 @@ class IngestProgress(BaseModel):
     filtered: int
     extracted: int
     total_estimate: Optional[int] = None
+    # Wave 2 product-image generation progress (photo runs; 0 for Gmail). While a photo
+    # run is generating, status stays 'running' with generation_ready climbing toward
+    # generation_total — enough to drive the add-photo "Preparing N items -> Review
+    # ready" pill. generation_failed counts cards held for a later retry sweep.
+    generation_total: int = 0
+    generation_ready: int = 0
+    generation_failed: int = 0
 
 
 class IngestStatusResponse(BaseModel):
@@ -84,6 +91,12 @@ class CandidateOut(BaseModel):
     # 'pending' -> still resolving (shimmer + keep polling); 'placeholder' -> slow tiers
     # exhausted (static placeholder, stop polling); 'resolved' -> image_url is present.
     image_status: Optional[str] = None
+    # Wave 2 generation card + lifecycle (photo only; null for Gmail). The deck renders
+    # generated_image_url as the product card once generation_status='ready', keeps a
+    # progress state while 'generating', and keeps polling until it is no longer null/
+    # 'generating'. image_url stays the raw crop (verify reference + fallback).
+    generated_image_url: Optional[str] = None
+    generation_status: Optional[str] = None
     confidence_overall: Optional[float] = None
     # Fields the UI should flag for edit (null value or weak per-field confidence).
     low_confidence_fields: List[str] = Field(default_factory=list)
@@ -205,6 +218,9 @@ def get_ingest_status(
             filtered=run.filtered_count,
             extracted=run.extracted_count,
             total_estimate=run.total_estimate,
+            generation_total=run.generation_total or 0,
+            generation_ready=run.generation_ready or 0,
+            generation_failed=run.generation_failed or 0,
         ),
         started_at=run.started_at.isoformat() if run.started_at else None,
         finished_at=run.finished_at.isoformat() if run.finished_at else None,

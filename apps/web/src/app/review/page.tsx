@@ -10,10 +10,12 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { motion } from 'framer-motion';
 import { Camera, Check, Mail, Pencil, X } from 'lucide-react';
 
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
+import { useGenerationStore } from '@/stores/useGenerationStore';
 import {
   confirmCandidates,
   fetchGmailConnectionStatus,
@@ -21,7 +23,6 @@ import {
   getIngestStatus,
   startGmailConnect,
   startIngest,
-  type ConfirmResponse,
   type IngestCandidate,
 } from '@/lib/api/gmail';
 import { AppShell } from '@/components/layout/AppShell';
@@ -31,6 +32,62 @@ import { LightButton } from '@/components/ui/LightButton';
 import { EmptyState } from '@/components/ui/EmptyState';
 
 type CardEdits = Record<string, Record<string, unknown>>;
+
+// The URL a card WILL paint into its <img>, or null if the card shows a non-image state
+// (still-generating "tailoring" placeholder / resolving shimmer) and so needs no warming.
+function cardImageUrl(c: IngestCandidate | undefined): string | null {
+  if (!c) return null;
+  if (c.generation_status === 'ready' && c.generated_image_url) return c.generated_image_url;
+  // Photo cards mid-generation show the placeholder, not the raw crop — nothing to warm.
+  if (c.source_type === 'photo' && (c.generation_status === 'generating' || c.generation_status == null)) {
+    return null;
+  }
+  // Gmail cards / exhausted photo cards paint image_url (once resolved).
+  return c.image_status === 'pending' ? null : c.image_url ?? null;
+}
+
+// URLs already handed to the browser this session — warming the same one twice is wasted
+// work (and re-creating an Image can even evict a fresh decode on some browsers).
+const warmed = new Set<string>();
+
+// Warm the browser cache AND decode the image each card WILL show, so the visible <img>
+// paints instantly — no white flash on the first card or on advance. `img.decode()`
+// pulls the bytes AND rasterizes them off-thread; a plain `img.src =` (the prior attempt)
+// only primed the HTTP cache, so the visible <img> still had to decode on the main thread
+// at paint time and flashed the panel meanwhile. The bg-sampling probe is separate.
+function warmCardImages(cands: IngestCandidate[], from: number, to: number) {
+  if (typeof window === 'undefined') return;
+  for (let i = Math.max(0, from); i <= to; i++) {
+    const url = cardImageUrl(cands[i]);
+    if (!url || warmed.has(url)) continue;
+    warmed.add(url);
+    const img = new window.Image();
+    img.src = url;
+    void img.decode?.().catch(() => {});
+  }
+}
+
+// Fully decode `url` before resolving, capped so a slow/broken image can never hang the
+// deck reveal. Used to hold the loading spinner until the FIRST card's image is ready to
+// paint — the deck then appears with its image already on screen instead of white.
+function decodeUrl(url: string, capMs = 600): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') return resolve();
+    const img = new window.Image();
+    const cap = setTimeout(resolve, capMs);
+    const done = () => {
+      clearTimeout(cap);
+      resolve();
+    };
+    img.src = url;
+    if (img.decode) img.decode().then(done, done);
+    else {
+      img.onload = done;
+      img.onerror = done;
+    }
+    warmed.add(url);
+  });
+}
 
 // A bordered "Label Value" pill (Option A). Label muted, value bold. Only rendered by
 // the caller when the value exists — never a blank/empty chip.
@@ -74,9 +131,12 @@ export default function ReviewPage() {
   const dragStartRef = useRef<number | null>(null); // pointer clientX at press
   const dragXRef = useRef(0);                        // live offset (read on release, no stale closure)
 
-  const [confirming, setConfirming] = useState(false);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
-  const [result, setResult] = useState<ConfirmResponse | null>(null);
+  // Auto-add + auto-advance: reaching the end of the deck commits the accepted batch and
+  // navigates to the closet after a short countdown — no "Add to closet" press. The commit
+  // fires once (memoized promise); navigation awaits it so the closet shows the new items.
+  const autoCommitRef = useRef<Promise<void> | null>(null);
+  const leftRef = useRef(false);
+  const [autoError, setAutoError] = useState<string | null>(null);
 
   // Progressive sync state. A sync is started ONLY by the explicit "Scan my inbox" CTA
   // (handleScan below) — never automatically on mount, focus, or poll — so visiting an
@@ -88,6 +148,12 @@ export default function ReviewPage() {
   // Gmail connection (drives the "Connect Gmail to begin" empty state).
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
+
+  // Wave 2: true while a photo run is still generating product cards (run status
+  // 'running'). Covers the brief window after commit where a photo candidate is still
+  // generation_status=null but its card is being made — so the deck shows a "creating…"
+  // state instead of flashing the raw crop. Only meaningful for a sync-scoped photo deck.
+  const [runGenerating, setRunGenerating] = useState(false);
 
   const mountedRef = useRef(true);
   // When the deck is opened for a specific run (the photo flow navigates to
@@ -121,6 +187,8 @@ export default function ReviewPage() {
           u &&
           (u.image_url !== c.image_url ||
             u.image_status !== c.image_status ||
+            u.generated_image_url !== c.generated_image_url ||
+            u.generation_status !== c.generation_status ||
             u.name !== c.name ||
             u.brand !== c.brand ||
             u.category !== c.category ||
@@ -141,15 +209,26 @@ export default function ReviewPage() {
     });
   }, []);
 
-  // While images keep resolving in the background, poll candidates to swap them in.
-  // This only READS candidates — it never starts a sync.
+  // While images keep resolving OR a photo run keeps generating product cards, poll to
+  // swap them in. READ-only — never starts a sync. For a sync-scoped photo deck it also
+  // reads the run status, so the "creating…" state persists across the window where a
+  // candidate is still generation_status=null but the run is mid-generation.
   const pollImages = useCallback(async function pollImages() {
     if (!mountedRef.current) return;
     try {
-      const cands = await getIngestCandidates(scopeSyncIdRef.current);
+      const syncId = scopeSyncIdRef.current;
+      const [cands, st] = await Promise.all([
+        getIngestCandidates(syncId),
+        // Status only matters when scoped to a run (the photo flow); tolerate its failure.
+        syncId ? getIngestStatus(syncId).catch(() => null) : Promise.resolve(null),
+      ]);
       if (!mountedRef.current) return;
       mergeCandidates(cands);
-      if (cands.some((c) => c.image_status === 'pending')) schedule(pollImages, 2500);
+      const generating = st ? st.status === 'running' : false;
+      setRunGenerating(generating);
+      const stillResolving = cands.some((c) => c.image_status === 'pending');
+      const stillGenerating = generating || cands.some((c) => c.generation_status === 'generating');
+      if (stillResolving || stillGenerating) schedule(pollImages, 2500);
     } catch {
       /* transient — a manual refresh recovers */
     }
@@ -217,11 +296,29 @@ export default function ReviewPage() {
       .then((s) => mountedRef.current && setGmailConnected(s.connected))
       .catch(() => mountedRef.current && setGmailConnected(null));
     getIngestCandidates(scopeSyncIdRef.current)
-      .then((cands) => {
+      .then(async (cands) => {
+        if (!mountedRef.current) return;
+        // Warm the first cards' images now, then HOLD the loading spinner until the very
+        // first card's image has fully decoded — so the deck's first paint already carries
+        // its image instead of flashing the panel while the <img> loads. Capped inside
+        // decodeUrl so a slow/absent image can't stall the deck. This is why the earlier
+        // "warm the cache" attempt didn't help: it ran in the same commit as the render,
+        // giving the visible <img> zero head start.
+        warmCardImages(cands, 0, 2);
+        const firstUrl = cardImageUrl(cands[0]);
+        if (firstUrl) await decodeUrl(firstUrl);
         if (!mountedRef.current) return;
         setCandidates(cands);
         setLoading(false);
-        if (cands.some((c) => c.image_status === 'pending')) pollImages();
+        // Poll when images are still resolving, a card is generating, OR this is a
+        // sync-scoped photo deck (one poll reads the run status; it self-stops once the
+        // run is done and nothing is pending/generating).
+        if (
+          scopeSyncIdRef.current ||
+          cands.some((c) => c.image_status === 'pending' || c.generation_status === 'generating')
+        ) {
+          pollImages();
+        }
       })
       .catch((err) => {
         if (!mountedRef.current) return;
@@ -235,19 +332,26 @@ export default function ReviewPage() {
     };
   }, [isAuth, pollImages]);
 
-  // Preload the NEXT couple of card images so they paint instantly on advance instead
-  // of loading after the swipe (the "old image lingers ~2s" gap). `new Image()` warms
-  // the browser's HTTP cache; the visible <img> then decodes from cache immediately.
+  // Warm the CURRENT + next couple of card images so they paint instantly — the current
+  // covers the first-card-on-return case; the look-ahead covers swipes. Re-runs when a
+  // poll flips a card to 'ready', warming its freshly-generated image before it shows.
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    for (let i = index + 1; i <= index + 2; i++) {
-      const url = candidates[i]?.image_url;
-      if (url) {
-        const img = new window.Image();
-        img.src = url;
-      }
-    }
+    warmCardImages(candidates, index, index + 2);
   }, [index, candidates]);
+
+  // Reached the end of a decided deck (not still scanning) → auto-commit the batch and
+  // auto-advance to the closet after a 1.5s countdown (the top bar shows it coming). No
+  // button press. Commit fires immediately for a head start; the timer navigates.
+  const deckComplete =
+    !loading && !loadError && candidates.length > 0 && index >= candidates.length && !scanning;
+  useEffect(() => {
+    if (!deckComplete) return;
+    setAutoError(null);
+    void commitBatch();
+    const t = setTimeout(() => void finishAndGo(), 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckComplete]);
 
   const total = candidates.length;
   const current = candidates[index];
@@ -277,19 +381,39 @@ export default function ReviewPage() {
     }));
   }
 
-  async function handleConfirm() {
-    setConfirming(true);
-    setConfirmError(null);
+  // Commit the accepted batch exactly once. Memoized so the on-mount head-start call and a
+  // later tap/timer share ONE POST. On failure the memo resets so a tap can retry.
+  function commitBatch(): Promise<void> {
+    if (autoCommitRef.current) return autoCommitRef.current;
+    autoCommitRef.current =
+      accepted.length === 0
+        ? Promise.resolve()
+        : confirmCandidates({ accepted, rejected, edits })
+            .then(() => {
+              useClosetStore.getState().invalidate();
+              // This run's batch is decided — drop any pending "review in background" pill.
+              useGenerationStore.getState().clear();
+            })
+            .catch((err) => {
+              autoCommitRef.current = null; // allow a retry tap
+              setAutoError(err instanceof Error ? err.message : 'Failed to add items.');
+              throw err;
+            });
+    return autoCommitRef.current;
+  }
+
+  // Await the commit (usually already resolved from the head start), then go to the closet.
+  // Fires from the 1.5s countdown OR an early tap. Stays put on commit failure so the
+  // error + retry are visible instead of stranding the user.
+  async function finishAndGo() {
+    if (leftRef.current) return;
     try {
-      const res = await confirmCandidates({ accepted, rejected, edits });
-      useClosetStore.getState().invalidate();
-      setResult(res);
-      router.refresh();
-    } catch (err) {
-      setConfirmError(err instanceof Error ? err.message : 'Failed to add items.');
-    } finally {
-      setConfirming(false);
+      await commitBatch();
+    } catch {
+      return;
     }
+    leftRef.current = true;
+    router.push('/closet');
   }
 
   // ── Render guards ──────────────────────────────────────────────────────────
@@ -434,65 +558,54 @@ export default function ReviewPage() {
         </AppShell>
       );
     }
+    // Review complete → auto-add + auto-advance. No button: the batch commits on entry and
+    // the top bar depletes over 1.5s, then we navigate. Tapping anywhere commits + goes now.
     return (
       <AppShell scroll={false}>
-        <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-          {result ? (
-            <>
-              <div
-                className="mb-5 flex items-center justify-center"
-                style={{
-                  width: 72,
-                  height: 72,
-                  borderRadius: '50%',
-                  background: 'rgba(10,207,131,0.18)',
-                  border: '1px solid rgba(10,207,131,0.4)',
-                }}
-              >
-                <Check size={32} color="var(--success)" />
-              </div>
-              <h1 className="m-0 text-[22px] font-bold text-white">
-                Added {result.inserted_count} to closet
-              </h1>
-              <p className="mt-2 mb-7 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                {result.inserted_count} new · {result.updated_count} updated · {result.rejected_count} skipped
-              </p>
-              <LightButton onClick={() => router.push('/closet')} style={{ height: 48, padding: '0 26px' }}>
-                View closet
-              </LightButton>
-            </>
-          ) : (
-            <>
-              <h1 className="m-0 text-[22px] font-bold text-white">Review complete</h1>
-              <p className="mt-2 mb-7 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                {accepted.length} to add · {rejected.length} skipped
-              </p>
-              {confirmError && (
-                <p className="mb-4 text-[13px]" style={{ color: 'var(--danger)' }}>
-                  {confirmError}
-                </p>
-              )}
-              <LightButton
-                onClick={handleConfirm}
-                disabled={confirming || accepted.length === 0}
-                style={{ height: 48, padding: '0 26px' }}
-              >
-                {confirming
-                  ? 'Adding…'
-                  : `Add ${accepted.length} to closet`}
-              </LightButton>
-              {accepted.length === 0 && (
-                <button
-                  type="button"
-                  onClick={() => router.push('/closet')}
-                  className="mt-4 text-[13px] underline"
-                  style={{ color: 'rgba(255,255,255,0.5)' }}
-                >
-                  Nothing to add — go to closet
-                </button>
-              )}
-            </>
-          )}
+        <div className="relative h-full">
+          {/* Top countdown bar — full-width, depletes to the left over 1.5s so the
+              auto-advance is visible. Matches the 1.5s timer in the deckComplete effect. */}
+          <motion.div
+            className="absolute left-0 top-0 h-[3px] w-full"
+            style={{ background: 'var(--mint)', transformOrigin: 'left' }}
+            initial={{ scaleX: 1 }}
+            animate={{ scaleX: 0 }}
+            transition={{ duration: 1.5, ease: 'linear' }}
+            aria-hidden
+          />
+          <button
+            type="button"
+            onClick={() => void finishAndGo()}
+            className="flex h-full w-full flex-col items-center justify-center px-8 text-center"
+            aria-label="Add to closet and go now"
+          >
+            <div
+              className="mb-5 flex items-center justify-center rounded-full"
+              style={{
+                width: 64,
+                height: 64,
+                background: 'rgba(10,207,131,0.18)',
+                border: '1px solid rgba(10,207,131,0.4)',
+              }}
+            >
+              <Check size={30} color="var(--success)" />
+            </div>
+            <h1 className="m-0 text-[22px] font-bold text-white">
+              {accepted.length > 0 ? `Adding ${accepted.length} to your closet` : 'All caught up'}
+            </h1>
+            <p className="mt-2 text-[14px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              {accepted.length} to add · {rejected.length} skipped
+            </p>
+            {autoError ? (
+              <span className="mt-6 text-[13px]" style={{ color: 'var(--danger)' }}>
+                {autoError} — tap to retry
+              </span>
+            ) : (
+              <span className="mt-6 text-[13px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                Taking you to your closet… <span style={{ color: 'var(--mint)' }}>tap to go now</span>
+              </span>
+            )}
+          </button>
         </div>
       </AppShell>
     );
@@ -520,6 +633,20 @@ export default function ReviewPage() {
   if (price != null && Number.isFinite(Number(price))) {
     chips.push({ label: 'Price', value: `${currencySymbol}${Number(price).toFixed(2)}` });
   }
+
+  // Wave 2 card image selection. A photo card shows the VERIFIED generated product card
+  // once ready; while it's being made — or the run is still generating and this card
+  // hasn't flipped to a status yet — it shows a "creating…" state, NEVER the raw crop
+  // (a full-scene shot with face/background). pending_retry/failed fall back to the crop
+  // with a subtle "Preview" tag (the item still gets an image on confirm). Gmail cards
+  // (generation_status null, unscoped) are unaffected — they render image_url as before.
+  const genStatus = current.generation_status;
+  const isPhotoCard = current.source_type === 'photo';
+  const generatedReady = genStatus === 'ready' && !!current.generated_image_url;
+  const showGenerating =
+    isPhotoCard && (genStatus === 'generating' || (genStatus == null && runGenerating));
+  const showPreviewTag = isPhotoCard && (genStatus === 'pending_retry' || genStatus === 'failed');
+  const cardSrc = generatedReady ? current.generated_image_url : current.image_url;
 
   // Alternating stack tilt: even cards lean left (−2°), odd cards lean right (+2°), so a
   // card and the one peeking behind it lean opposite ways.
@@ -649,21 +776,74 @@ export default function ReviewPage() {
                 main→min-h-full→h-full ancestor chain. The image region can never collapse
                 to 0px regardless of ancestors (the bug that hid loaded cutouts). */}
             <div className="relative w-full aspect-[1/1]">
-              {current.image_status === 'pending' && !current.image_url ? (
-                // Still resolving in the background fill — soft shimmer, not a wrong image.
+              {showGenerating ? (
+                // Photo card mid-generation: a clearly-visible "tailoring" loading state —
+                // a LIFTED neutral panel (distinct from the #222 card) with a moving sheen,
+                // a bright spinner and copy on top. Never the raw full-scene crop, never a
+                // blank panel. (Earlier this was #2c2c2c-on-#222 with a 0.2-alpha ring + a
+                // dark gradient painted over it → it read as an empty black rectangle.)
+                <div
+                  className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 overflow-hidden"
+                  style={{ background: '#33343a' }}
+                  role="status"
+                  aria-label="Tailoring your item"
+                >
+                  {/* Moving sheen: a wide highlight bar sweeping across (clipped by the
+                      panel's overflow-hidden). Reads unmistakably as "working". */}
+                  <div
+                    className="pointer-events-none absolute inset-y-0 left-0"
+                    style={{
+                      width: '60%',
+                      background:
+                        'linear-gradient(100deg, transparent 0%, rgba(255,255,255,0.13) 50%, transparent 100%)',
+                      animation: 'tailor-shimmer 1.6s ease-in-out infinite',
+                    }}
+                    aria-hidden
+                  />
+                  <div
+                    className="relative h-9 w-9 rounded-full"
+                    style={{
+                      border: '3px solid rgba(255,255,255,0.18)',
+                      borderTopColor: 'var(--mint)',
+                      animation: 'tailor-spin 0.8s linear infinite',
+                    }}
+                  />
+                  <span className="relative text-[13.5px] font-semibold" style={{ color: 'rgba(255,255,255,0.92)' }}>
+                    Tailoring your item…
+                  </span>
+                  <span className="relative text-[11.5px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                    Pressing a clean product shot
+                  </span>
+                </div>
+              ) : current.image_status === 'pending' && !current.image_url ? (
+                // Gmail card still resolving in the background fill — soft shimmer, not a
+                // wrong image.
                 <div className="absolute inset-0 animate-pulse" style={{ background: '#3a3a3a' }} aria-label="Resolving image" />
               ) : (
-                // Shared render path: opaque neutral backing + absolute-fill <img>. contain
-                // shows the WHOLE cutout (cover would crop the garment).
-                <ItemImage key={current.candidate_id} src={current.image_url} alt={name} fit="contain" emptyLabel="No image" />
+                // Shared render path: absolute-fill <img>, contain shows the WHOLE card
+                // (cover would crop it). cardSrc is the generated product card when ready,
+                // else the crop fallback. For the generated card we SAMPLE its own bg so
+                // the contain letterbox matches the image → seamless full-bleed, no bars.
+                <ItemImage
+                  key={current.candidate_id}
+                  src={cardSrc}
+                  alt={name}
+                  fit="contain"
+                  emptyLabel="No image"
+                  sampleBackground={generatedReady}
+                />
               )}
-              {/* Gradient fade: blends the image bottom into the dark info panel (#222)
-                  so there's no hard seam between the photo and the card body. */}
-              <div
-                className="pointer-events-none absolute inset-0"
-                style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent 55%)' }}
-                aria-hidden
-              />
+              {/* Gradient fade: blends a real image's bottom into the dark info panel
+                  (#222). Gated OFF the generating state (it darkened the loading panel)
+                  AND the generated card (its sampled pale bg must stay seamless — a dark
+                  fade would smudge it). Kept for Gmail images / crop previews. */}
+              {!showGenerating && !generatedReady && (
+                <div
+                  className="pointer-events-none absolute inset-0"
+                  style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent 55%)' }}
+                  aria-hidden
+                />
+              )}
               <span
                 className="absolute left-3 top-3 inline-flex items-center gap-1.5 text-[11px] font-semibold"
                 style={{
@@ -682,6 +862,23 @@ export default function ReviewPage() {
                   <>✦ Detected in Gmail</>
                 )}
               </span>
+
+              {/* Generation held (pending_retry / failed): the crop stands in as a preview
+                  — a subtle tag signals it isn't the final product card. Never blocks confirm. */}
+              {showPreviewTag && (
+                <span
+                  className="absolute right-3 top-3 inline-flex items-center text-[10.5px] font-semibold"
+                  style={{
+                    color: 'rgba(255,255,255,0.85)',
+                    background: 'rgba(0,0,0,0.5)',
+                    border: '1px solid var(--tr-20)',
+                    borderRadius: 999,
+                    padding: '3px 9px',
+                  }}
+                >
+                  Preview
+                </span>
+              )}
 
               {/* Swipe affordance stamps — fade in with drag distance/direction. */}
               <span

@@ -145,6 +145,70 @@ def test_upsert_threads_photo_source_type_and_preserves_user_uploaded():
     assert params["image_status"] == "user_uploaded"
 
 
+# --- Wave 2 confirm-attach: generated card (not the crop) lands in the closet ------
+
+def _upsert_params(cand):
+    """Compile the Postgres upsert and return its bound VALUES params (SQLite can't run
+    the pg_insert + (xmax=0) RETURNING statement, so inspect it instead)."""
+    fake = _CapturingDB()
+    _upsert_clothing_item(fake, cand.user_id, cand, None)
+    return fake.stmt.compile(dialect=postgresql.dialect()).params
+
+
+def _gen_candidate(status, generated=None, crop="https://blob.example/cut.jpg"):
+    import uuid
+    return IngestCandidate(
+        id=uuid.uuid4(), user_id=uuid.uuid4(), name="Red Tee", category="top",
+        color="red", brand=None, size=None, quantity=1, unit_price=None, currency=None,
+        order_date=None, is_return=False, order_id=None, message_id=None,
+        source_line_key="photoslk0000000000000000000000000", confidence_overall=0.9,
+        merchant=None, image_url=crop, image_status="user_uploaded", source_type="photo",
+        generation_status=status, generated_image_url=generated,
+    )
+
+
+def test_confirm_attaches_generated_card_when_ready():
+    params = _upsert_params(_gen_candidate("ready", generated="https://blob.example/gen.png"))
+    # The closet row gets the VERIFIED generated card, NOT the raw crop.
+    assert params["image_url"] == "https://blob.example/gen.png"
+    assert params["generation_status"] == "ready"
+
+
+def test_confirm_falls_back_to_crop_when_pending_retry():
+    params = _upsert_params(_gen_candidate("pending_retry", generated=None))
+    # No verified card -> crop fallback; marked so a later self-heal re-attempts.
+    assert params["image_url"] == "https://blob.example/cut.jpg"
+    assert params["generation_status"] == "pending_retry"
+
+
+def test_confirm_falls_back_to_crop_when_failed():
+    params = _upsert_params(_gen_candidate("failed", generated=None))
+    assert params["image_url"] == "https://blob.example/cut.jpg"
+    assert params["generation_status"] == "failed"
+
+
+def test_confirm_ready_without_stored_card_falls_back_to_crop():
+    # Defensive: 'ready' but generated_image_url somehow null -> never write a null card.
+    params = _upsert_params(_gen_candidate("ready", generated=None))
+    assert params["image_url"] == "https://blob.example/cut.jpg"
+
+
+def test_confirm_gmail_candidate_uses_crop_and_null_generation():
+    import uuid
+    cand = IngestCandidate(
+        id=uuid.uuid4(), user_id=uuid.uuid4(), name="Gmail Tee", category="top",
+        color="red", brand=None, size=None, quantity=1, unit_price=None, currency=None,
+        order_date=None, is_return=False, order_id=None, message_id=None,
+        source_line_key="gmailslk000000000000000000000000", confidence_overall=0.9,
+        merchant=None, image_url="https://img.example/product.jpg",
+        image_status="resolved", source_type="gmail",
+    )
+    params = _upsert_params(cand)
+    # Gmail path is unchanged: its resolved product image, generation_status stays null.
+    assert params["image_url"] == "https://img.example/product.jpg"
+    assert params["generation_status"] is None
+
+
 def test_confirm_photo_candidate_accepts_and_marks(db):
     # The end-to-end write is Postgres-only; here we verify the candidate-side
     # bookkeeping (ownership accepted, status flip) that runs before the upsert.

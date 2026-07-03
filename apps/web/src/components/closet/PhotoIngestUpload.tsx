@@ -29,10 +29,14 @@ import {
 } from '@/lib/api/gmail';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
+import { useGenerationStore } from '@/stores/useGenerationStore';
 import { HeicTranscodeError, looksLikeHeic, transcodeHeicToJpeg } from '@/lib/image/heic';
 import { RegionSelector } from './RegionSelector';
+import { GenerationProgressPill } from './GenerationProgressPill';
 
-type Step = 'pick' | 'detecting' | 'select' | 'committing';
+// 'preparing' = commit succeeded and product cards are generating in the background; the
+// non-blocking pill lets the user review whenever they choose (never a forced navigation).
+type Step = 'pick' | 'detecting' | 'select' | 'committing' | 'preparing';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB — mirrors the backend cap
 const MAX_FILES = 10;
@@ -49,17 +53,30 @@ interface Picked {
 // Module-level id: object URLs aren't unique under the test stub, so keys use this.
 let pickedSeq = 0;
 
+// Drop a PROVISIONAL background indicator (one set with no sync_id while a commit was
+// still in flight). Real runs (syncId set) are left alone.
+function clearProvisionalPending() {
+  const p = useGenerationStore.getState().pending;
+  if (p && p.syncId == null) useGenerationStore.getState().clear();
+}
+
 export function PhotoIngestUpload() {
   const router = useRouter();
   const [picked, setPicked] = useState<Picked[]>([]);
   const [step, setStep] = useState<Step>('pick');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // After a successful commit, the run whose product cards are generating — drives the
+  // non-blocking "Preparing N → Review" pill (step 'preparing').
+  const [genRun, setGenRun] = useState<{ syncId: string; staged: number } | null>(null);
   // True while a HEIC/HEIF file is being transcoded to JPEG (async, can be slow on
   // large photos) — drives a lightweight "preparing" affordance so the UI isn't frozen.
   const [preparing, setPreparing] = useState(false);
   // Detect sessions, index-aligned with `picked` (the API returns them in file order).
   const [sessions, setSessions] = useState<PhotoDetectSession[] | null>(null);
+  // Estimated staged count for the in-flight commit — the number the provisional
+  // background indicator shows before commit returns the real sync_id + count.
+  const stagedGuessRef = useRef(0);
 
   const galleryRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -185,6 +202,23 @@ export function PhotoIngestUpload() {
     [updatePicked],
   );
 
+  // Resume a "review in background" run: if we arrived with a pending generation (the
+  // user tapped "Tailor in the background" in the deck, or is returning to /add-photo)
+  // and there's no fresh pick/handoff in flight, resurface the progress pill so the deck
+  // is one tap away once it's ready. Runs BEFORE the handoff effect so it never competes
+  // with a drawer hand-off (which owns the pristine-mount case).
+  useEffect(() => {
+    const pending = useGenerationStore.getState().pending;
+    const hasHandoff = usePhotoPickStore.getState().files.length > 0;
+    // Only resume a REAL run (has a sync_id) into the preparing pill — a provisional
+    // pending (no id yet) has nothing to poll here.
+    if (pending?.syncId && !hasHandoff && pickedRef.current.length === 0) {
+      setGenRun({ syncId: pending.syncId, staged: pending.staged });
+      setStep('preparing');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Drawer handoff: consume Files stashed by AddItemDrawer and go straight to detect
   // (transcoding any HEIC first, inside addFiles).
   useEffect(() => {
@@ -214,24 +248,51 @@ export function PhotoIngestUpload() {
     async (selections: PhotoCommitSelection[]) => {
       const sess = sessions;
       if (!sess) return;
-      setStep('committing');
-      setError(null);
       const list = pickedRef.current;
       // Commit re-uploads only the files backing LIVE sessions — duplicates have no
       // session for the server to hash-match, so their bytes stay home.
       const liveFiles = list
         .filter((_, i) => sess[i] && !sess[i].duplicate && sess[i].session_id)
         .map((p) => p.file);
+      // Show the "Tailoring your items" waiting screen INSTANTLY on tap — don't block it
+      // behind the commit call. commitPhotoIngest cuts out + stages every region server-
+      // side before it returns (~10s), which used to keep the RegionSelector on screen the
+      // whole time. We now flip to 'preparing' first (genRun null → indeterminate waiting
+      // copy) and run commit in the background; the progress pill fills in with the real
+      // count once the run id comes back.
+      // ⚠️ BACKEND: the ~10s is server-synchronous cutout in POST /photo/ingest/commit, so
+      // the run id + item count can't appear until it returns. If we want the COUNT instant
+      // too, commit must be split into a fast stage-ack + async cutout.
+      // Estimate the staged count now (selected regions + manual boxes) so a provisional
+      // background indicator can show a number instantly if the user backgrounds the flow
+      // before commit returns.
+      stagedGuessRef.current = selections.reduce(
+        (n, s) => n + s.selected_region_ids.length + s.manual_boxes.length,
+        0,
+      );
+      setError(null);
+      setNotice(null);
+      setGenRun(null);
+      setStep('preparing');
       try {
         const res = await commitPhotoIngest(liveFiles, selections);
         useClosetStore.getState().invalidate?.();
         if (res.staged > 0) {
-          // Scope the deck to THIS run so it shows only these garments. Preview
-          // object-URLs are revoked by the unmount cleanup.
-          router.push(`/review?sync_id=${encodeURIComponent(res.sync_id)}`);
+          // Product cards are now generating in the background. Reset the picker and let
+          // the non-blocking "Preparing N → Review" pill (already visible) take the count;
+          // it routes to the run-scoped deck when the user chooses (or once it's ready).
+          list.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+          updatePicked([]);
+          setSessions(null);
+          // Stash the run so the pill can resurface if the user navigates away (e.g. the
+          // in-deck "Tailor in the background" escape) and needs pulling back when ready.
+          useGenerationStore.getState().setPending({ syncId: res.sync_id, staged: res.staged });
+          setGenRun({ syncId: res.sync_id, staged: res.staged });
           return;
         }
-        // Nothing staged — surface why and reset to pick.
+        // Nothing staged — surface why and reset to pick. Drop any provisional background
+        // indicator the user set by backgrounding (it has no real run to point to).
+        clearProvisionalPending();
         list.forEach((p) => URL.revokeObjectURL(p.previewUrl));
         updatePicked([]);
         setSessions(null);
@@ -241,15 +302,18 @@ export function PhotoIngestUpload() {
         if (err instanceof PhotoSessionExpiredError) {
           // Detect sessions TTL'd out server-side — transparently re-scan the same
           // files. (Selections reset to all-selected: region ids may change.)
+          clearProvisionalPending();
           setNotice('That scan expired — re-scanning your photos…');
           await runDetect(list);
           return;
         }
+        // Commit failed — a provisional background indicator would point at nothing, clear it.
+        clearProvisionalPending();
         setStep('select'); // recoverable: selections are still on screen
         setError(err instanceof Error ? err.message : 'Failed to add items.');
       }
     },
-    [sessions, router, runDetect, updatePicked],
+    [sessions, runDetect, updatePicked],
   );
 
   const busy = step === 'detecting' || step === 'committing' || preparing;
@@ -313,6 +377,71 @@ export function PhotoIngestUpload() {
         />
       )}
 
+      {step === 'preparing' && (
+        <div className="flex flex-1 flex-col items-center justify-center gap-6 py-12 text-center">
+          <div className="flex flex-col items-center gap-2">
+            <span style={{ fontSize: 34 }}>✨</span>
+            <p className="m-0 text-[16px] font-semibold text-white">Tailoring your items</p>
+            <p className="mt-1 max-w-[260px] text-[13px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              We&rsquo;re pressing clean product shots. Wait here and your review opens
+              the moment they&rsquo;re ready.
+            </p>
+          </div>
+          {genRun ? (
+            // Commit returned → the real progress pill. Waiting here auto-advances to the
+            // deck when the run finishes (no tap). Tapping early still works; onReview
+            // clears the stashed run.
+            <GenerationProgressPill
+              syncId={genRun.syncId}
+              staged={genRun.staged}
+              onReview={() => useGenerationStore.getState().clear()}
+              onDone={() => {
+                useGenerationStore.getState().clear();
+                router.push(`/review?sync_id=${encodeURIComponent(genRun.syncId)}`);
+              }}
+            />
+          ) : (
+            // Commit still in flight (server-side cutout) — indeterminate spinner so the
+            // waiting screen is up instantly instead of blocking on the RegionSelector.
+            <div
+              className="inline-flex items-center gap-2.5 rounded-full"
+              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)', padding: '11px 18px' }}
+              role="status"
+              aria-label="Preparing your items"
+            >
+              <span
+                className="h-4 w-4 shrink-0 rounded-full"
+                style={{
+                  border: '2px solid var(--tr-20)',
+                  borderTopColor: 'var(--mint)',
+                  animation: 'tailor-spin 0.8s linear infinite',
+                }}
+                aria-hidden
+              />
+              <span className="text-[14px] font-semibold" style={{ color: 'rgba(255,255,255,0.85)' }}>
+                Preparing your items…
+              </span>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              // If commit hasn't returned a run yet, drop a PROVISIONAL pending so the home
+              // indicator shows INSTANTLY (not after commit finishes ~10s later). It's
+              // patched to the real sync_id the moment commit resolves.
+              if (!useGenerationStore.getState().pending) {
+                useGenerationStore.getState().setPending({ syncId: null, staged: stagedGuessRef.current });
+              }
+              router.push('/home');
+            }}
+            className="text-[13px] underline"
+            style={{ color: 'rgba(255,255,255,0.5)' }}
+          >
+            Tailor in the background
+          </button>
+        </div>
+      )}
+
       {step === 'pick' && (
         <>
           {/* Hidden inputs: gallery (multiple) + camera (capture). */}
@@ -347,61 +476,84 @@ export function PhotoIngestUpload() {
             }}
           />
 
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => galleryRef.current?.click()}
-              disabled={busy}
-              className="flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-[14px] font-medium disabled:opacity-50"
-              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)', color: 'white' }}
-            >
-              <ImagePlus size={18} /> Choose photos
-            </button>
+          {/* Intentional entry: two big, tappable source cards (icon + title + sub)
+              instead of flat buttons — the redesigned /add-photo landing. */}
+          <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
               onClick={() => cameraRef.current?.click()}
               disabled={busy}
-              className="flex flex-1 items-center justify-center gap-2 rounded-xl py-3 text-[14px] font-medium disabled:opacity-50"
-              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)', color: 'white' }}
+              className="group flex flex-col items-center gap-2.5 rounded-2xl px-4 py-6 text-center transition-transform active:scale-[0.98] disabled:opacity-50"
+              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
             >
-              <Camera size={18} /> Take photo
+              <span
+                className="flex items-center justify-center rounded-full"
+                style={{ width: 52, height: 52, background: 'var(--mint)', color: 'var(--brand-teal)' }}
+              >
+                <Camera size={24} />
+              </span>
+              <span className="text-[15px] font-semibold text-white">Take photo</span>
+              <span className="text-[12.5px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                Use your camera
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => galleryRef.current?.click()}
+              disabled={busy}
+              className="group flex flex-col items-center gap-2.5 rounded-2xl px-4 py-6 text-center transition-transform active:scale-[0.98] disabled:opacity-50"
+              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
+            >
+              <span
+                className="flex items-center justify-center rounded-full"
+                style={{ width: 52, height: 52, background: 'var(--tr-20)', color: 'white' }}
+              >
+                <ImagePlus size={24} />
+              </span>
+              <span className="text-[15px] font-semibold text-white">Choose photos</span>
+              <span className="text-[12.5px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                From your library
+              </span>
             </button>
           </div>
 
-          {picked.length > 0 && (
-            <div className="grid grid-cols-3 gap-2">
-              {picked.map((p, i) => (
-                <div key={p.id} className="relative aspect-square overflow-hidden rounded-lg" style={{ background: '#333' }}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={p.previewUrl} alt={`Selected ${i + 1}`} className="h-full w-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={() => removeAt(i)}
-                    aria-label="Remove"
-                    className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full"
-                    style={{ background: 'rgba(0,0,0,0.6)', color: 'white' }}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+          {picked.length === 0 ? (
+            // Nothing picked yet — a quiet guidance line (the source cards are the CTA).
+            <p className="mt-1 text-center text-[12.5px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+              Use a photo of just yourself — we&rsquo;ll spot each garment. JPEG, PNG, WebP,
+              or HEIC, up to {MAX_FILE_SIZE / 1024 / 1024}MB each.
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                {picked.map((p, i) => (
+                  <div key={p.id} className="relative aspect-square overflow-hidden rounded-lg" style={{ background: '#333' }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={p.previewUrl} alt={`Selected ${i + 1}`} className="h-full w-full object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => removeAt(i)}
+                      aria-label="Remove"
+                      className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full"
+                      style={{ background: 'rgba(0,0,0,0.6)', color: 'white' }}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
 
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={picked.length === 0 || busy}
-            className="rounded-xl py-3.5 text-[15px] font-semibold disabled:opacity-50"
-            style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
-          >
-            {picked.length > 0
-              ? `Find clothes in ${picked.length} photo${picked.length > 1 ? 's' : ''}`
-              : 'Select photos to continue'}
-          </button>
-          <p className="text-center text-[12px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
-            Use a photo of just yourself. JPEG, PNG, WebP, or HEIC, up to {MAX_FILE_SIZE / 1024 / 1024}MB each.
-          </p>
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={busy}
+                className="rounded-xl py-3.5 text-[15px] font-semibold disabled:opacity-50"
+                style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
+              >
+                {`Find clothes in ${picked.length} photo${picked.length > 1 ? 's' : ''}`}
+              </button>
+            </>
+          )}
         </>
       )}
     </div>

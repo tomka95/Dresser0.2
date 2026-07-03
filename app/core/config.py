@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # row is swept on the user's next detect. Sessions hold hashes + boxes, never
     # the photo itself, so a generous default costs nothing sensitive.
     PHOTO_SESSION_TTL_HOURS: int = 24
+    # Max photos whose Gemini detection runs CONCURRENTLY per /photo/ingest/detect call
+    # (bounded worker pool). A 2+ photo upload detects in ~1 photo's time, not the sum,
+    # without firing an unbounded number of model calls at once.
+    PHOTO_DETECT_MAX_CONCURRENCY: int = 4
 
     IMAGE_API_BASE_URL: str = ""
     IMAGE_API_MODEL: str = ""
@@ -69,6 +73,20 @@ class Settings(BaseSettings):
     # Per-run cost guard: at most this many verify calls per sync. Beyond it,
     # further images are left image_status='pending' for a later run to verify.
     GMAIL_VERIFY_MAX_PER_RUN: int = 200
+
+    # --- Generation verify (Wave 2) -----------------------------------------
+    # Model for the TWO-image reference-vs-generated verify pass
+    # (image_verify.verify_generated_image). Stronger than the single-image
+    # GMAIL_VERIFY_MODEL on purpose: the flash-lite tier canNOT judge logo
+    # fidelity (count/placement) — it passed a duplicated-and-relocated swoosh
+    # even at HIGH resolution, while gemini-2.5-flash catches it at medium. The
+    # single-image color/garment pass stays on the cheaper flash-lite.
+    GENERATION_VERIFY_MODEL: str = "gemini-2.5-flash"
+    # Media resolution for the TWO-image reference-vs-generated verify pass
+    # (image_verify.verify_generated_image). "low" | "medium" | "high".
+    # Default medium: LOW is too coarse to judge logo/text presence reliably.
+    # Unknown values fall back to medium (with a warning).
+    GENERATION_VERIFY_MEDIA_RESOLUTION: str = "medium"
 
     # --- Long-tail shopping search (Wave 2c) -------------------------------
     # When the cache + email + og tiers all miss, query DataForSEO Google Shopping
@@ -111,6 +129,37 @@ class Settings(BaseSettings):
     # changes. Feed images route through the SAME guarded-fetch + vision-verify +
     # cache-seed path as every other untrusted-web tier (verify is mandatory).
     GMAIL_FEED_ENABLED: bool = False
+
+    # --- Image generation (Wave 2) ------------------------------------------
+    # The generation seam (app/services/image_generation) turns a user photo
+    # cutout into a clean product-card CANDIDATE image via an image-editing
+    # model. Candidates are NEVER trusted directly — the vision-verify gate
+    # decides whether one is shown. Ships disabled with a NullGenerationProvider;
+    # nothing in the product flow calls the seam yet (the bake-off script does).
+    GENERATION_ENABLED: bool = False
+    # Which provider get_generation_provider() dispatches to:
+    # 'flux_kontext' (BFL, the default) | 'seedream' (fal.ai) | 'nano_banana'
+    # (Gemini image gen, reuses GEMINI_API_KEY). Unknown/keyless -> Null.
+    GENERATION_PROVIDER: str = "flux_kontext"
+    BFL_API_KEY: Optional[str] = None
+    FAL_API_KEY: Optional[str] = None
+    # Gemini image model behind the nano_banana provider ("Nano Banana Pro").
+    NANO_BANANA_MODEL: str = "gemini-3-pro-image-preview"
+    # Total wall-clock budget per generation call (submit + poll + download).
+    GENERATION_TIMEOUT_SECONDS: float = 90.0
+    # Per-run cost guard: at most this many generation calls per run (bake-off).
+    GENERATION_MAX_PER_RUN: int = 50
+    # Max candidates generated CONCURRENTLY per run (bounded worker pool). Caps parallel
+    # provider calls so a big batch doesn't hammer the provider APIs / hit rate limits: a
+    # typical (<=6-garment) photo finishes in ~1 slow item (~15s), not the sum, while a
+    # 50-item batch still runs 6-at-a-time. Shared GenerationBudget / VerifyBudget cap
+    # total calls across the concurrent set.
+    GENERATION_MAX_CONCURRENCY: int = 6
+    # Editable per-IMAGE USD rates (same idea as the per-1M token rates above):
+    # GenerationResult.cost_usd reads straight from these; bump on price change.
+    FLUX_KONTEXT_USD_PER_IMAGE: float = 0.04
+    SEEDREAM_USD_PER_IMAGE: float = 0.03
+    NANO_BANANA_USD_PER_IMAGE: float = 0.134
 
     # --- Background image fill + self-heal (Phase 4) -----------------------
     # The slow image tiers (og:image / feed / search) and the cross-user self-heal

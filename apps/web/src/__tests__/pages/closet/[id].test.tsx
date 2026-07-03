@@ -11,6 +11,8 @@ vi.mock('next/navigation', () => ({
     replace: vi.fn(),
     back: vi.fn(),
   }),
+  // AppShell now renders BackgroundTailorNotice, which reads usePathname.
+  usePathname: () => '/closet/x',
 }));
 
 // Render as authenticated; the three-state guard is covered by useRequireAuth.test.

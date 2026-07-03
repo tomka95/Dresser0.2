@@ -118,6 +118,14 @@ class ClothingItem(Base):
             "image_status IS NULL OR image_status IN "
             "('resolved','placeholder','pending','user_uploaded')",
             name='image_status'),
+        # Wave 2 generation lifecycle carried from the confirmed candidate (named CHECK;
+        # not diffed by autogenerate). Same vocabulary as ingest_candidates. NULL = not a
+        # generation item (Gmail / manual). 'pending_retry' rows are what a later
+        # generation self-heal sweep re-attempts.
+        CheckConstraint(
+            "generation_status IS NULL OR generation_status IN "
+            "('generating','ready','failed','pending_retry')",
+            name='generation_status'),
         # Ingestion source provenance (Wave 1 photo ingest). 'gmail' (default, the
         # receipt pipeline) or 'photo' (a garment detected from a user-uploaded
         # photo). Named CHECK (not diffed by autogenerate); server default 'gmail'
@@ -185,6 +193,13 @@ class ClothingItem(Base):
     image_status = Column(Text, nullable=True)
     # The product_image_cache.cache_key this item maps to (shared-cache linkage).
     image_cache_key = Column(Text, nullable=True)
+
+    # Wave 2 generation lifecycle, carried from the confirmed candidate. 'ready' =
+    # image_url above IS the verified generated product card; 'pending_retry' = image_url
+    # is the raw crop fallback and a later generation self-heal should re-attempt;
+    # 'failed' = crop, terminal; NULL = not a generation item. Mirrors
+    # ingest_candidates.generation_status (CHECK above).
+    generation_status = Column(Text, nullable=True)
 
     # Ingestion source: 'gmail' (receipts) | 'photo' (user-uploaded photo). NOT NULL;
     # server default 'gmail' (migration 0014) backfills legacy rows. Confirm copies the
@@ -360,6 +375,14 @@ class IngestCandidate(Base):
             "image_status IS NULL OR image_status IN "
             "('resolved','placeholder','pending','user_uploaded')",
             name='image_status'),
+        # Wave 2 GENERATION lifecycle (named CHECK; not diffed by autogenerate).
+        # SEPARATE from image_status: a photo cutout stays image_status='user_uploaded'
+        # while generation_status tracks the clean product-card image built FROM it.
+        # NULL = not a generation target (e.g. Gmail candidates).
+        CheckConstraint(
+            "generation_status IS NULL OR generation_status IN "
+            "('generating','ready','failed','pending_retry')",
+            name='generation_status'),
         # Ingestion source (Wave 1). Mirrors clothing_items.source_type; confirm copies
         # it onto the closet row. Default 'gmail'; the photo pipeline stages 'photo'.
         CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
@@ -424,6 +447,15 @@ class IngestCandidate(Base):
     # user_uploaded (CHECK above). Set 'resolved'/'pending' at extraction (fast tiers),
     # flipped to 'resolved'/'placeholder' by the background image-fill worker.
     image_status = Column(Text, nullable=True)
+
+    # Wave 2 generation: the VERIFIED clean product-card image generated from the
+    # cutout. image_url stays the raw cutout (verify reference + last-resort); this is
+    # the card the deck shows once generation passes the fidelity gate. NULL until then.
+    generated_image_url = Column(Text, nullable=True)
+
+    # Wave 2 generation lifecycle (CHECK above), independent of image_status:
+    # generating | ready | failed | pending_retry. NULL = not a generation target.
+    generation_status = Column(Text, nullable=True)
 
     confidence_overall = Column(Numeric, nullable=True)
 
@@ -679,6 +711,14 @@ class IngestRun(Base):
     verify_cost_usd = Column(Numeric, nullable=False, default=0)
     search_cost_usd = Column(Numeric, nullable=False, default=0)
     cost_usd = Column(Numeric, nullable=False, default=0)                 # = extract+verify+search
+
+    # --- Wave 2 product-image generation progress (photo runs) ------------------
+    # Per-run counters so GET /ingest/status reports generation-in-flight (drives the
+    # add-photo "Preparing N items -> Review ready" pill). 0 for Gmail runs. Server
+    # defaults (0) owned by migration 0016.
+    generation_total = Column(Integer, nullable=False, default=0)   # candidates to generate
+    generation_ready = Column(Integer, nullable=False, default=0)   # verified + stored
+    generation_failed = Column(Integer, nullable=False, default=0)  # held pending_retry
 
     started_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 

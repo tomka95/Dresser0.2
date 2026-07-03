@@ -1,5 +1,6 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
+import { BackgroundTailorNotice } from '@/components/closet/BackgroundTailorNotice';
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -60,6 +61,9 @@ export function AppShell({ children, contentClassName, scroll = true, dim = fals
       <div className={cn('relative z-10', scroll ? '' : 'h-full overflow-hidden', contentClassName)}>
         {children}
       </div>
+      {/* Global, non-blocking "review ready" surface for background-tailored runs. Self-
+          hides when there's no pending run and on the screens that own the flow. */}
+      <BackgroundTailorNotice />
     </div>
   );
 }

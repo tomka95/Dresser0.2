@@ -97,14 +97,26 @@ def build_cutout(
     x0, y0, x1, y1 = box
     crop = img.crop((x0, y0, x1, y1))
 
+    # Isolation: alpha-composite the masked garment onto a neutral background so
+    # the stored cutout (used by BOTH the review deck and Wave-2 generation) is the
+    # garment alone, not the full scene. Falls back to the rectangular box crop when
+    # no reliable mask is available — logged so the mask hit-rate is observable.
     used_mask = False
-    if mask_b64:
+    if not mask_b64:
+        logger.info("cutout: mask MISS (absent) -> box crop")
+    else:
         mask = _decode_mask(mask_b64, crop.size)
-        if mask is not None and _mask_is_reliable(mask):
+        if mask is None:
+            logger.info("cutout: mask MISS (decode failed) -> box crop")
+        elif not _mask_is_reliable(mask):
+            logger.info("cutout: mask MISS (fg fraction outside %.2f-%.2f) -> box crop",
+                        _MASK_MIN_FRACTION, _MASK_MAX_FRACTION)
+        else:
             bg = Image.new("RGB", crop.size, _NEUTRAL_BG)
             bg.paste(crop, (0, 0), mask)  # mask as alpha
             crop = bg
             used_mask = True
+            logger.info("cutout: mask HIT -> isolated garment on neutral bg")
 
     out = io.BytesIO()
     crop.save(out, format="JPEG", quality=90)
