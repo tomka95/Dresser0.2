@@ -258,6 +258,48 @@ class Settings(BaseSettings):
     ONBOARDING_CONFIDENCE_MIN: float = 0.5
     ONBOARDING_CONFIDENCE_MAX: float = 0.6
 
+    # --- AI Stylist Chat (Wave S2) ------------------------------------------
+    # Model routing (locked decision 3): Flash (STYLIST_MODEL above) is the
+    # default compose/chat model; a Flash-Lite pre-parse classifies intent /
+    # explicit deep-reasoning requests per turn; Pro runs ONLY when the user
+    # explicitly asks for deep reasoning (mirrors the extract Lite->Flash
+    # escalation pattern — cheap first, stronger only when needed).
+    STYLIST_LITE_MODEL: str = "gemini-2.5-flash-lite"
+    STYLIST_ESCALATION_MODEL: str = "gemini-2.5-pro"
+    #   Gemini 2.5 Pro rates (USD per 1M tokens; <=200k-token prompts tier).
+    GEMINI_PRO_INPUT_USD_PER_1M: float = 1.25
+    GEMINI_PRO_OUTPUT_USD_PER_1M: float = 10.0
+
+    # Input guards (payload-size / abuse controls; oversized -> 413/422).
+    CHAT_MAX_MESSAGE_CHARS: int = 4000
+    CHAT_MAX_ATTACHMENTS: int = 3
+    CHAT_MAX_BODY_BYTES: int = 8_000_000  # whole-request ceiling (base64 images)
+
+    # Context assembly: windowed transcript + retrieved closet SUBSET (never a
+    # full closet dump) keeps per-turn input tokens bounded.
+    CHAT_HISTORY_WINDOW: int = 12          # prior messages replayed per turn
+    CHAT_MAX_TOOL_ROUNDS: int = 6          # agent-loop hard stop (fail closed)
+    CHAT_RETRIEVAL_LIMIT: int = 24         # max closet items per search_closet call
+    CHAT_TURN_TIMEOUT_SECONDS: float = 120.0
+
+    # Shared (cross-worker, Postgres-backed) abuse controls. Redis is not part of
+    # this stack; the DB is the one shared, durable store every worker already
+    # has, so the limiter/quota state lives there (chat_rate_windows/chat_usage).
+    CHAT_RATE_LIMIT_PER_MINUTE: int = 10   # fixed 60s window per user
+    CHAT_MAX_CONCURRENT_STREAMS: int = 2   # per-user in-flight SSE turns
+    CHAT_DAILY_TURN_QUOTA: int = 60        # free-tier: turns per user per UTC day
+    CHAT_DAILY_COST_QUOTA_USD: float = 0.50  # free-tier: $ per user per UTC day
+
+    # Retention TTL for conversations (rolling: each message pushes it forward).
+    CHAT_RETENTION_DAYS: int = 90
+
+    # Defense-in-depth (locked decision 1): run agent tool DB access on an
+    # RLS-ENFORCED connection (SET LOCAL role authenticated + request.jwt.claims)
+    # so Postgres RLS backstops the app-level WHERE user_id. Fail-loud: if the
+    # role switch fails on Postgres the turn 503s rather than silently running
+    # unscoped. Only disable for local Postgres without Supabase roles.
+    CHAT_RLS_ENFORCED: bool = True
+
     # Database configuration.
     # No localhost/postgres defaults on purpose: a missing value must surface as a
     # clear configuration error rather than silently pointing the app at a local DB.

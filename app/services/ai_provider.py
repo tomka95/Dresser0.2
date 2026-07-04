@@ -162,6 +162,119 @@ class AIProvider:
         # google-genai returns .embeddings[i].values (list[float]) per input.
         return [list(e.values) for e in resp.embeddings]
 
+    def chat(
+        self,
+        *,
+        model: str,
+        system_instruction: str,
+        contents: List[Any],
+        tool_declarations: Optional[List[Dict[str, Any]]] = None,
+        tool_executor: Optional[Any] = None,
+        on_text: Optional[Any] = None,
+        on_tool: Optional[Any] = None,
+        on_usage: Optional[Any] = None,
+        temperature: float = 0.4,
+        max_tool_rounds: int = 6,
+    ) -> str:
+        """The stylist tool-calling loop (Wave S2): stream -> dispatch -> repeat.
+
+        Synchronous by design (the SSE route runs it in a worker thread and
+        forwards events to the async stream). Each round streams one model
+        response; text deltas go to ``on_text(text)`` as they arrive; function
+        calls are collected, dispatched through ``tool_executor(name, args)``
+        (which is expected to be fail-closed and to AUTHORIZE nothing — the
+        executor's closure owns tenant scoping), and their responses are
+        appended for the next round. The loop hard-stops after
+        ``max_tool_rounds`` rounds by disabling tools for one final,
+        text-only round — the model can never spin forever.
+
+        ``on_tool(name, phase)`` fires with phase 'start'/'end' around each
+        dispatch (drives SSE progress). ``on_usage(model, response_chunk)``
+        receives the last chunk of each round for REAL usage_metadata
+        accounting. Returns the final assistant text.
+        """
+        contents = list(contents)
+        final_text_parts: List[str] = []
+        rounds = 0
+
+        while True:
+            tools_enabled = bool(tool_declarations) and rounds < max_tool_rounds
+            config_kwargs: Dict[str, Any] = dict(
+                system_instruction=system_instruction,
+                temperature=temperature,
+                # Manual dispatch only: the SDK must never call anything itself.
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
+                ),
+            )
+            if tools_enabled:
+                config_kwargs["tools"] = [
+                    types.Tool(
+                        function_declarations=[
+                            types.FunctionDeclaration(**decl)
+                            for decl in tool_declarations
+                        ]
+                    )
+                ]
+            config = types.GenerateContentConfig(**config_kwargs)
+
+            stream = self._client.models.generate_content_stream(
+                model=model, contents=contents, config=config
+            )
+
+            round_text_parts: List[str] = []
+            function_calls: List[Any] = []
+            last_chunk = None
+            for chunk in stream:
+                last_chunk = chunk
+                candidates = getattr(chunk, "candidates", None) or []
+                if not candidates:
+                    continue
+                content = getattr(candidates[0], "content", None)
+                parts = getattr(content, "parts", None) or []
+                for part in parts:
+                    fc = getattr(part, "function_call", None)
+                    if fc is not None:
+                        function_calls.append(fc)
+                        continue
+                    text = getattr(part, "text", None)
+                    if text:
+                        round_text_parts.append(text)
+                        if on_text is not None:
+                            on_text(text)
+
+            if on_usage is not None and last_chunk is not None:
+                on_usage(model, last_chunk)
+            final_text_parts.extend(round_text_parts)
+
+            if not function_calls:
+                return "".join(final_text_parts)
+
+            # Echo the model's function-call turn, then answer each call.
+            contents.append(
+                types.Content(
+                    role="model",
+                    parts=[types.Part(function_call=fc) for fc in function_calls],
+                )
+            )
+            response_parts: List[Any] = []
+            for fc in function_calls:
+                name = getattr(fc, "name", "") or ""
+                args = dict(getattr(fc, "args", None) or {})
+                if on_tool is not None:
+                    on_tool(name, "start")
+                if tool_executor is not None:
+                    result = tool_executor(name, args)
+                else:
+                    result = {"error": "no tools available"}
+                if on_tool is not None:
+                    on_tool(name, "end")
+                response_parts.append(
+                    types.Part.from_function_response(name=name, response=result)
+                )
+            contents.append(types.Content(role="user", parts=response_parts))
+            rounds += 1
+
     async def detect_clothing_items_from_image(
         self,
         outfit_image,
