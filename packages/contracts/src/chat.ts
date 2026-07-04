@@ -90,6 +90,45 @@ export type ChatSSEEvent =
   | { event: 'done'; data: ChatDoneEvent }
   | { event: 'error'; data: ChatErrorEvent };
 
+// --- Outfit feedback -> learning (Wave S3) -----------------------------------
+/** Reject reason chips the composer offers (subset sent per reject). */
+export type OutfitReasonChip =
+  | 'color'
+  | 'formality'
+  | 'weather'
+  | 'not_my_style'
+  | 'fit'
+  | 'item_specific';
+
+export type OutfitFeedbackKind = 'reject' | 'modify' | 'worn';
+
+/** POST /outfits/feedback body. user_id is always the JWT subject, never sent. */
+export interface OutfitFeedbackRequest {
+  feedback: OutfitFeedbackKind;
+  /** The composed outfit's item ids (as rendered in chat). */
+  itemIds?: string[];
+  /** When reacting to a SAVED outfit, its id (server flips its status/worn_at). */
+  savedOutfitId?: string;
+  conversationId?: string;
+  // reject
+  reasonChips?: OutfitReasonChip[];
+  /** e.g. { formality: 'too_formal' } — optional directional refinement. */
+  directions?: Record<string, string>;
+  /** Item-specific reject target. */
+  itemId?: string;
+  // modify (swap)
+  removedItemId?: string;
+  replacementItemId?: string;
+  slot?: string;
+}
+
+export interface OutfitFeedbackAck {
+  ok: boolean;
+  eventType: string;
+  signals: number;
+  status: string | null;
+}
+
 // --- History reads -----------------------------------------------------------
 export interface ChatConversationSummary {
   id: string;

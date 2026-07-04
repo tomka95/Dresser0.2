@@ -1053,6 +1053,10 @@ class SavedOutfit(Base):
     __table_args__ = (
         Index("idx_saved_outfits_user_id", "user_id"),
         CheckConstraint("source IN ('chat','composer')", name="source"),
+        # Feedback lifecycle (Wave S3, migration 0021). Named CHECK (not diffed by
+        # autogenerate); server default 'active' owned by the migration.
+        CheckConstraint(
+            "status IN ('active','worn','rejected','archived')", name="status"),
     )
 
     id = Column(GUID(), primary_key=True, default=uuid.uuid4)
@@ -1062,6 +1066,23 @@ class SavedOutfit(Base):
     rationale = Column(Text, nullable=True)
     occasion = Column(Text, nullable=True)
     source = Column(Text, nullable=False, default="chat")
+
+    # --- Wave S3 outfit feedback -> learning (migration 0021) --------------------
+    # A kept outfit's lifecycle, driven by post-hoc feedback the user gives on the
+    # composed outfit in chat:
+    #   'active'   : saved, no terminal feedback yet (default)
+    #   'worn'     : user reported wearing it (outfit_worn one-tap) — worn_at is set
+    #   'rejected' : user rejected it after saving (outfit_reject)
+    #   'archived' : hidden by the user
+    # Named CHECK above; server default 'active' (migration 0021) backfills legacy rows.
+    status = Column(Text, nullable=False, default="active")
+    # When the user reported wearing this outfit (outfit_worn). NULL until then.
+    worn_at = Column(_tstz(), nullable=True)
+    # PII-free carrier for the LAST feedback applied to this outfit:
+    # {feedback, reason_chips[], slot, direction{}, signals}. Never free text /
+    # message content. NULL until the first feedback lands.
+    feedback = Column(_jsonb(), nullable=True)
+
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 

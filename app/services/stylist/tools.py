@@ -268,7 +268,7 @@ def _tool_save_outfit(ctx: ToolContext, args: SaveOutfitArgs) -> Dict[str, Any]:
     ctx.db.add(saved)
     ctx.db.flush()
     # Learning loop: a kept outfit is a strong positive signal (existing taxonomy).
-    log_event(
+    event = log_event(
         ctx.db,
         user_id=ctx.user_id,
         event_type="outfit_accept",
@@ -277,6 +277,12 @@ def _tool_save_outfit(ctx: ToolContext, args: SaveOutfitArgs) -> Dict[str, Any]:
         source="system",
         properties={"item_count": len(owned), "via": "chat"},
     )
+    ctx.db.flush()
+    # Attribute-level credit (Wave S3): reinforce the accepted combination into
+    # per-item preference_signals (source='outfit_feedback'), same as worn feedback.
+    from app.services.stylist import outfit_feedback as credit
+
+    credit.apply_reinforce(ctx.db, ctx.user_id, owned, event_id=event.id)
     return {"saved": True, "outfitId": str(saved.id), "itemCount": len(owned)}
 
 

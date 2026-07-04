@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.db import check_database_connection
 from app.security import hash_password, verify_password, create_access_token
-from app.api.routes import auth_google, chat, closet, gmail_oauth, gmail_ingest, photo_ingest, events, onboarding
+from app.api.routes import auth_google, chat, closet, gmail_oauth, gmail_ingest, photo_ingest, events, onboarding, outfit_feedback
 
 import os
 import tempfile
@@ -85,6 +85,9 @@ app.include_router(onboarding.router)
 
 # AI Stylist chat (Wave S2: SSE agent over closet + Style Profile)
 app.include_router(chat.router)
+
+# Outfit feedback -> learning (Wave S3: reject/modify/worn -> preference_signals)
+app.include_router(outfit_feedback.router)
 
 
 @app.get("/health")

@@ -12,6 +12,7 @@ import type {
   ChatAttachment,
   ChatConversationSummary,
   ChatOutfitPayload,
+  OutfitReasonChip,
 } from '@tailor/contracts';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
@@ -21,6 +22,7 @@ import {
   listConversations,
   sendChatMessage,
 } from '@/lib/api/chat';
+import { sendOutfitFeedback } from '@/lib/api/outfitFeedback';
 import { AppShell } from '@/components/layout/AppShell';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { ItemImage } from '@/components/ui/ItemImage';
@@ -123,27 +125,215 @@ function HeaderButton({
   );
 }
 
-function OutfitStrip({ outfit }: { outfit: ChatOutfitPayload }) {
+interface ClosetItemLite {
+  id: string;
+  name: string;
+  imageUrl?: string | null;
+}
+
+/** Reject reason chips shown when the user taps "Not for me". */
+const REJECT_CHIPS: { chip: OutfitReasonChip; label: string; direction?: string }[] = [
+  { chip: 'formality', label: 'Too dressy', direction: 'too_formal' },
+  { chip: 'formality', label: 'Too casual', direction: 'too_casual' },
+  { chip: 'color', label: 'Colors off' },
+  { chip: 'fit', label: 'Fit' },
+  { chip: 'weather', label: 'Wrong for weather' },
+  { chip: 'not_my_style', label: 'Not my style' },
+];
+
+function OutfitStrip({
+  outfit,
+  onSlotTap,
+  activeSlot,
+}: {
+  outfit: ChatOutfitPayload;
+  onSlotTap?: (slot: string) => void;
+  activeSlot?: string | null;
+}) {
   const items = Object.entries(outfit.slots);
   if (items.length === 0) return null;
   return (
     <div className="mt-2 flex gap-2 overflow-x-auto scrollbar-hide">
-      {items.map(([slot, item]) => (
-        <div key={slot} className="shrink-0" style={{ width: 72 }}>
-          <div
-            className="overflow-hidden rounded-[10px]"
-            style={{ width: 72, aspectRatio: '3/4', border: '1px solid var(--tr-20)' }}
+      {items.map(([slot, item]) => {
+        const tappable = !!onSlotTap;
+        const active = activeSlot === slot;
+        const inner = (
+          <>
+            <div
+              className="overflow-hidden rounded-[10px]"
+              style={{
+                width: 72,
+                aspectRatio: '3/4',
+                border: active ? '2px solid var(--mint)' : '1px solid var(--tr-20)',
+              }}
+            >
+              <ItemImage src={item.imageUrl ?? undefined} alt={item.name} fit="cover" />
+            </div>
+            <div
+              className="mt-1 truncate text-center text-[10px]"
+              style={{ color: active ? 'var(--mint)' : 'rgba(255,255,255,0.6)' }}
+            >
+              {tappable ? 'Swap' : item.name}
+            </div>
+          </>
+        );
+        return tappable ? (
+          <button
+            key={slot}
+            type="button"
+            onClick={() => onSlotTap?.(slot)}
+            className="shrink-0 text-left"
+            style={{ width: 72 }}
+            aria-label={`Swap ${item.name}`}
           >
-            <ItemImage src={item.imageUrl ?? undefined} alt={item.name} fit="cover" />
+            {inner}
+          </button>
+        ) : (
+          <div key={slot} className="shrink-0" style={{ width: 72 }}>
+            {inner}
           </div>
-          <div
-            className="mt-1 truncate text-center text-[10px]"
-            style={{ color: 'rgba(255,255,255,0.6)' }}
+        );
+      })}
+    </div>
+  );
+}
+
+/** Reject / modify(swap) / worn affordances on a composed outfit (Wave S3). */
+function OutfitActions({
+  outfit,
+  conversationId,
+  closetItems,
+}: {
+  outfit: ChatOutfitPayload;
+  conversationId?: string;
+  closetItems: ClosetItemLite[];
+}) {
+  const [phase, setPhase] = useState<'idle' | 'reject' | 'swap'>('idle');
+  const [swapSlot, setSwapSlot] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const itemIds = outfit.itemIds;
+  if (itemIds.length === 0) return null;
+
+  const react = async (body: Parameters<typeof sendOutfitFeedback>[0], label: string) => {
+    if (busy) return;
+    setBusy(true);
+    const ack = await sendOutfitFeedback({ ...body, itemIds, conversationId });
+    setBusy(false);
+    setDone(ack ? label : "Couldn't save that — try again.");
+  };
+
+  if (done) {
+    return (
+      <div className="mt-2 text-[12px]" style={{ color: 'var(--mint)', paddingLeft: 2 }}>
+        {done}
+      </div>
+    );
+  }
+
+  const pill = {
+    fontSize: 12,
+    padding: '6px 11px',
+    borderRadius: 999,
+    background: 'var(--tr-10)',
+    border: '1px solid var(--tr-20)',
+    color: 'rgba(255,255,255,0.85)',
+  } as const;
+
+  if (phase === 'swap') {
+    return (
+      <div className="mt-2">
+        {!swapSlot ? (
+          <>
+            <div className="mb-1 text-[11.5px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              Tap the piece to swap out
+            </div>
+            <OutfitStrip outfit={outfit} onSlotTap={setSwapSlot} activeSlot={swapSlot} />
+            <button type="button" style={pill} className="mt-2" onClick={() => setPhase('idle')}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="mb-1 text-[11.5px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              Pick a replacement for the {swapSlot}
+            </div>
+            <div className="grid grid-cols-4 gap-2" style={{ maxHeight: 220, overflowY: 'auto' }}>
+              {closetItems.map((it) => (
+                <button
+                  key={it.id}
+                  type="button"
+                  disabled={busy || it.id === outfit.slots[swapSlot]?.id}
+                  onClick={() =>
+                    react(
+                      {
+                        feedback: 'modify',
+                        removedItemId: outfit.slots[swapSlot]?.id,
+                        replacementItemId: it.id,
+                        slot: swapSlot,
+                      },
+                      'Got it — I noted that swap.'
+                    )
+                  }
+                  className="overflow-hidden rounded-[9px] disabled:opacity-30"
+                  style={{ aspectRatio: '3/4', border: '1px solid var(--tr-20)' }}
+                >
+                  <ItemImage src={it.imageUrl ?? undefined} alt={it.name} fit="cover" />
+                </button>
+              ))}
+            </div>
+            <button type="button" style={pill} className="mt-2" onClick={() => setSwapSlot(null)}>
+              Back
+            </button>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (phase === 'reject') {
+    return (
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {REJECT_CHIPS.map(({ chip, label, direction }) => (
+          <button
+            key={label}
+            type="button"
+            disabled={busy}
+            style={pill}
+            onClick={() =>
+              react(
+                {
+                  feedback: 'reject',
+                  reasonChips: [chip],
+                  directions: direction ? { formality: direction } : undefined,
+                },
+                "Thanks — I'll keep that in mind."
+              )
+            }
           >
-            {item.name}
-          </div>
-        </div>
-      ))}
+            {label}
+          </button>
+        ))}
+        <button type="button" style={pill} onClick={() => setPhase('idle')}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      <button type="button" style={pill} disabled={busy}
+        onClick={() => react({ feedback: 'worn' }, 'Nice — noted you wore it.')}>
+        Wore it
+      </button>
+      <button type="button" style={pill} onClick={() => setPhase('swap')}>
+        Swap a piece
+      </button>
+      <button type="button" style={pill} onClick={() => setPhase('reject')}>
+        Not for me
+      </button>
     </div>
   );
 }
@@ -543,6 +733,13 @@ export default function ChatPage() {
                 {m.text || (m.pending ? '…' : '')}
               </div>
               {m.outfit && <OutfitStrip outfit={m.outfit} />}
+              {m.outfit && m.from === 'ai' && !m.pending && !incognito && (
+                <OutfitActions
+                  outfit={m.outfit}
+                  conversationId={conversationIdRef.current}
+                  closetItems={items}
+                />
+              )}
             </div>
           ))}
           {toolLabel && (
