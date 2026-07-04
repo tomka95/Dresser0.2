@@ -45,7 +45,11 @@ from app.services.stylist.limits import (
     record_turn_usage,
     stream_slot,
 )
-from app.services.stylist.persistence import list_conversations, recent_messages
+from app.services.stylist.persistence import (
+    delete_conversation,
+    list_conversations,
+    recent_messages,
+)
 from app.services.stylist.rls import RlsSetupError, rls_scoped_session
 from app.services.stylist.tools import ImageAttachment
 from app.utils.image_validation import ImageValidationError, validate_and_sanitize
@@ -82,6 +86,9 @@ class ChatRequestIn(BaseModel):
     attachments: List[Union[ImageAttachmentIn, ClosetItemAttachmentIn]] = Field(
         default_factory=list, max_length=settings.CHAT_MAX_ATTACHMENTS
     )
+    # Incognito: the agent runs the turn but persists NOTHING — no conversation
+    # row, no message rows, no distillation. Any conversationId is ignored.
+    noPersist: bool = False
 
 
 def _sse(event: str, payload: Dict[str, Any]) -> str:
@@ -157,9 +164,11 @@ async def post_chat(
     turn = TurnRequest(
         user_id=current_user.id,
         message=body.message,
-        conversation_id=conversation_id,
+        # Incognito discards any prior thread: a fresh ephemeral turn, no history.
+        conversation_id=None if body.noPersist else conversation_id,
         images=images,
         attached_item_ids=attached_item_ids,
+        no_persist=body.noPersist,
     )
     user_id = current_user.id
 
@@ -196,6 +205,23 @@ async def post_chat(
                 )
             finally:
                 usage_db.close()
+
+            # Post-session distillation (Wave S3): mine this turn's transcript into
+            # preference_signals on its OWN thread + RLS-scoped session. Fire-and-
+            # forget — it runs after 'done' is already on the wire, never blocks
+            # stream close, and never raises (distill_background swallows all).
+            # Incognito wrote no transcript, so there is nothing to mine — skip it
+            # outright (never even spawn the thread).
+            if settings.DISTILL_ENABLED and not turn.no_persist:
+                import threading
+
+                from app.services.stylist.distill import distill_background
+
+                threading.Thread(
+                    target=distill_background,
+                    args=(str(user_id), str(result.conversation_id)),
+                    daemon=True,
+                ).start()
         except ChatLimitExceeded as exc:
             emit("error", {"code": exc.code, "message": str(exc)})
         except RlsSetupError as exc:
@@ -289,3 +315,16 @@ def get_conversation_messages(
                 if m.role in ("user", "assistant")
             ]
         }
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation_route(
+    conversation_id: UUID,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Delete one of the caller's conversations (messages cascade). RLS-scoped:
+    a foreign id simply doesn't match and returns deleted=false (no 404 leak of
+    whether the id exists for another user)."""
+    with rls_scoped_session(current_user.id) as db:
+        deleted = delete_conversation(db, current_user.id, conversation_id)
+        return {"deleted": deleted}

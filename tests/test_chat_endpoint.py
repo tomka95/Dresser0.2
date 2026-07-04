@@ -397,6 +397,34 @@ def test_full_turn_second_message_reuses_conversation(db, user1, monkeypatch):
     assert db.query(ChatMessage).count() == 4
 
 
+def test_incognito_turn_writes_no_conversation_or_messages(db, user1, monkeypatch):
+    """Incognito guarantee: the turn runs to completion but persists NOTHING —
+    zero conversation rows, zero message rows. Nothing left for distillation."""
+    from app.services.ai_provider import AIProvider
+    import app.services.ai_provider as provider_module
+    from app.services.stylist.agent import TurnRequest, run_stylist_turn
+
+    db.add(ClothingItem(user_id=user1.id, name="White Tee", category="top"))
+    db.commit()
+
+    fake = AIProvider.__new__(AIProvider)
+    fake._provider = "gemini"
+    fake._client = SimpleNamespace(models=_FakeStreamModels())
+    monkeypatch.setattr(provider_module, "get_ai_provider", lambda: fake)
+
+    result = run_stylist_turn(
+        TurnRequest(user_id=user1.id, message="what tops do I own?", no_persist=True),
+        emit=lambda e, p: None,
+    )
+
+    # The turn ran (model replied, tokens counted)...
+    assert result.text == "Your white tee works great."
+    assert result.input_tokens == 900 + 1200
+    # ...but left ZERO transcript trace in the DB.
+    assert db.query(Conversation).count() == 0
+    assert db.query(ChatMessage).count() == 0
+
+
 def test_conversation_history_endpoints_are_tenant_scoped(client, db, user1, user2, tok1):
     other_conv = Conversation(user_id=user2.id, title="theirs")
     db.add(other_conv); db.commit()
@@ -408,3 +436,28 @@ def test_conversation_history_endpoints_are_tenant_scoped(client, db, user1, use
     r = client.get(f"/chat/conversations/{other_conv.id}/messages", headers=_auth(tok1))
     assert r.status_code == 200
     assert r.json()["messages"] == []  # tenant-filtered, no oracle
+
+
+def test_delete_conversation_removes_own_and_cascades_messages(client, db, user1, tok1):
+    conv = Conversation(user_id=user1.id, title="mine")
+    db.add(conv); db.flush()
+    db.add(ChatMessage(conversation_id=conv.id, user_id=user1.id, role="user",
+                       content="hi"))
+    db.commit()
+    conv_id = conv.id
+
+    r = client.delete(f"/chat/conversations/{conv_id}", headers=_auth(tok1))
+    assert r.status_code == 200
+    assert r.json() == {"deleted": True}
+    assert db.query(Conversation).filter_by(id=conv_id).count() == 0
+    assert db.query(ChatMessage).filter_by(conversation_id=conv_id).count() == 0  # cascade
+
+
+def test_delete_conversation_cannot_touch_another_users_thread(client, db, user1, user2, tok1):
+    other_conv = Conversation(user_id=user2.id, title="theirs")
+    db.add(other_conv); db.commit()
+
+    r = client.delete(f"/chat/conversations/{other_conv.id}", headers=_auth(tok1))
+    assert r.status_code == 200
+    assert r.json() == {"deleted": False}  # no oracle, and no deletion
+    assert db.query(Conversation).filter_by(id=other_conv.id).count() == 1  # intact

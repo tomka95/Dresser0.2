@@ -293,6 +293,46 @@ class Settings(BaseSettings):
     # Retention TTL for conversations (rolling: each message pushes it forward).
     CHAT_RETENTION_DAYS: int = 90
 
+    # --- Preference learning / distillation (Wave S3) ----------------------
+    # Two passes over the S0/S1 preference substrate:
+    #   1. POST-SESSION chat distill (distill_background): after each chat turn a
+    #      Flash-Lite pass mines like/dislike/constraint/context signals from the
+    #      recent transcript window and appends preference_signals(source=
+    #      'chat_inferred') + a short episodic session summary. Cheap (~$0.001/
+    #      session), off the response path, never raises.
+    #   2. NIGHTLY re-distill (run_redistill / scripts.dev_redistill): decays every
+    #      style_preferences.confidence by its staleness, recomputes preferences
+    #      from the aggregated signals (explicit ALWAYS outranks inferred), then
+    #      regenerates style_profiles.narrative_blob and bumps version/distilled_at.
+    DISTILL_ENABLED: bool = True
+    # Distillation runs on the cheap Lite tier — mining is a small structured-JSON
+    # task, not reasoning. Own seam so it can move independently of the chat model.
+    DISTILL_MODEL: str = "gemini-2.5-flash-lite"
+    # Chat-distill: trailing transcript messages the miner reads, and the hard cap
+    # on preference_signals one session-distill may append (bounds a pathological
+    # long turn's cost + write volume).
+    DISTILL_MESSAGE_WINDOW: int = 12
+    DISTILL_MAX_SIGNALS_PER_SESSION: int = 12
+    # Confidence decay (nightly): a preference loses half its confidence every
+    # HALFLIFE_DAYS it goes un-reinforced (Δt measured from last_seen_at). λ =
+    # ln(2)/HALFLIFE_DAYS; confidence *= exp(-λ·Δt_days). An INFERRED preference
+    # that decays below ACTIVE_MIN_CONFIDENCE is flipped active=false (dropped from
+    # the profile); explicit/onboarding rows are never auto-deactivated (a user who
+    # stated a taste keeps it until they change it).
+    DISTILL_CONFIDENCE_HALFLIFE_DAYS: float = 30.0
+    DISTILL_ACTIVE_MIN_CONFIDENCE: float = 0.15
+    # Recompute: signals older than LOOKBACK_DAYS are treated as fully decayed and
+    # ignored. Confidence from fresh signals saturates via 1-exp(-GAIN·evidence),
+    # and an INFERRED preference can never exceed MAX_INFERRED_CONFIDENCE (an
+    # inference is never certainty — only an explicit statement can score higher).
+    DISTILL_SIGNAL_LOOKBACK_DAYS: int = 180
+    DISTILL_CONFIDENCE_GAIN: float = 0.7
+    DISTILL_MAX_INFERRED_CONFIDENCE: float = 0.85
+    # Nightly narrative regeneration is the only LLM call per user in re-distill;
+    # this caps total narrative calls across an --all sweep (cost guard, mirrors
+    # ENRICHMENT_MAX_LLM_CALLS_PER_RUN). Decay + recompute are pure-Python + free.
+    DISTILL_MAX_NARRATIVE_CALLS_PER_RUN: int = 1000
+
     # Defense-in-depth (locked decision 1): run agent tool DB access on an
     # RLS-ENFORCED connection (SET LOCAL role authenticated + request.jwt.claims)
     # so Postgres RLS backstops the app-level WHERE user_id. Fail-loud: if the

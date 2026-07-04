@@ -120,6 +120,23 @@ def recent_messages(
     return list(reversed(rows))
 
 
+def delete_conversation(db: Session, user_id: UUID, conversation_id: UUID) -> bool:
+    """Delete the caller's conversation (messages cascade). Returns True if a row
+    was owned + deleted, False otherwise. Tenant-filtered so one user can never
+    delete another's thread; the RLS-scoped session backstops it. No commit —
+    the caller owns the transaction."""
+    conversation = (
+        db.query(Conversation)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == user_id)
+        .one_or_none()
+    )
+    if conversation is None:
+        return False
+    db.delete(conversation)
+    db.flush()
+    return True
+
+
 def list_conversations(db: Session, user_id: UUID, *, limit: int = 20) -> List[Conversation]:
     sweep_expired_conversations(db, user_id)
     return (
