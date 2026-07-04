@@ -140,3 +140,40 @@ def test_phash_distance_near_duplicate():
     solid = io.BytesIO(); Image.new("RGB", (128, 128), (200, 50, 50)).save(solid, "PNG")
     h3 = validate_and_sanitize(solid.getvalue()).phash
     assert phash_distance(h1, h3) >= 8
+
+
+# --- HEIC (iPhone camera default): sniffed, transcoded to JPEG, EXIF stripped --
+
+def _heic(color=(30, 30, 120), size=(64, 64)) -> bytes:
+    """A real HEIC-encoded still (skips the test if libheif isn't present)."""
+    pillow_heif = pytest.importorskip("pillow_heif")
+    pillow_heif.register_heif_opener()
+    img = Image.new("RGB", size, color)
+    buf = io.BytesIO()
+    img.save(buf, "HEIF")
+    return buf.getvalue()
+
+
+def test_sniff_detects_heic():
+    assert sniff_image_format(_heic()) == "heic"
+
+
+def test_heic_is_transcoded_to_jpeg():
+    out = validate_and_sanitize(_heic(color=(90, 20, 140)))
+    # Output must be JPEG bytes (stock Pillow can't store HEIC downstream).
+    assert out.fmt == "jpeg"
+    assert out.content_type == "image/jpeg"
+    assert out.suffix == ".jpg"
+    assert out.data[:3] == b"\xff\xd8\xff"  # JPEG magic
+    reopened = Image.open(io.BytesIO(out.data))
+    assert reopened.format == "JPEG"
+    assert len(reopened.getexif()) == 0  # metadata still stripped
+
+
+def test_heic_unavailable_raises_clean_error(monkeypatch):
+    raw = _heic()  # build real HEIC bytes first (needs the lib)
+    # Now simulate a host without libheif: sniff still fires, decode is refused.
+    monkeypatch.setattr(iv, "_HEIF_AVAILABLE", False)
+    with pytest.raises(ImageValidationError) as exc:
+        validate_and_sanitize(raw)
+    assert "HEIC" in str(exc.value)

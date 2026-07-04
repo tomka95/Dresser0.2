@@ -971,6 +971,133 @@ class PreferenceSignal(Base):
 
 
 
+# --- AI Stylist chat (Wave S2, migration 0020) --------------------------------
+# The chat vertical: conversations + transcript + saved outfits + the usage/quota
+# ledger + the shared rate-limiter state. All user-facing tables carry UUID
+# user_id -> users(id) and per-user RLS (auth.uid() = user_id) applied in the
+# migration; chat_rate_windows is server-managed (RLS enabled, no policies).
+
+
+def _chat_expires_default():
+    """Python-side rolling-retention default (server default owned by 0020)."""
+    from datetime import timedelta
+
+    from app.core.config import settings as _settings
+
+    return datetime.utcnow() + timedelta(days=_settings.CHAT_RETENTION_DAYS)
+
+
+class Conversation(Base):
+    """One chat thread. expires_at is the retention TTL (rolling: every new
+    message pushes it forward); the sweep deletes expired rows and CASCADE
+    erases their messages."""
+
+    __tablename__ = "conversations"
+
+    __table_args__ = (
+        Index("idx_conversations_user_id", "user_id"),
+        Index("idx_conversations_expires_at", "expires_at"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(Text, nullable=True)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    expires_at = Column(_tstz(), default=_chat_expires_default, nullable=False)
+
+    messages = relationship("ChatMessage", back_populates="conversation",
+                            cascade="all, delete-orphan")
+
+
+class ChatMessage(Base):
+    """One transcript message. user_id is denormalized from the conversation
+    (mirrors item_embeddings) so RLS filters without a join. Assistant rows carry
+    the turn's token counts + cost (the per-turn cost ledger) and, when a tool
+    composed an outfit, the outfit payload for history re-render."""
+
+    __tablename__ = "chat_messages"
+
+    __table_args__ = (
+        Index("idx_chat_messages_conversation_created", "conversation_id", "created_at"),
+        Index("idx_chat_messages_user_id", "user_id"),
+        CheckConstraint("role IN ('user','assistant','tool')", name="role"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(GUID(), ForeignKey("conversations.id", ondelete="CASCADE"),
+                             nullable=False)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role = Column(Text, nullable=False)
+    content = Column(Text, nullable=False, default="")
+    # [{name, status, latency_ms, summary}] — ids + counts only, never raw args.
+    tool_calls = Column(_jsonb(), nullable=True)
+    # Composed-outfit payload (item ids + slots + rationale) for assistant turns.
+    outfit_json = Column(_jsonb(), nullable=True)
+    model = Column(Text, nullable=True)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    cost_usd = Column(Numeric, nullable=False, default=0)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+    conversation = relationship("Conversation", back_populates="messages")
+
+
+class SavedOutfit(Base):
+    """A composed outfit the user kept (compose_outfit -> save_outfit). item_ids
+    reference the user's own clothing_items — ownership is validated server-side
+    at save time (array FKs are not enforceable in Postgres)."""
+
+    __tablename__ = "saved_outfits"
+
+    __table_args__ = (
+        Index("idx_saved_outfits_user_id", "user_id"),
+        CheckConstraint("source IN ('chat','composer')", name="source"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(Text, nullable=True)
+    item_ids = Column(_uuid_array(), nullable=False)
+    rationale = Column(Text, nullable=True)
+    occasion = Column(Text, nullable=True)
+    source = Column(Text, nullable=False, default="chat")
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+
+class ChatUsage(Base):
+    """Per-user per-DAY usage rollup: turns, tokens, dollars. THE free-tier quota
+    ledger (checked before every turn) — incremented via atomic upsert so it is
+    correct across workers. Counts + dollars only, never message content."""
+
+    __tablename__ = "chat_usage"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "period_start",
+                         name="chat_usage_user_id_period_start_key"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    period_start = Column(Date, nullable=False)
+    turns = Column(Integer, nullable=False, default=0)
+    input_tokens = Column(BigInteger, nullable=False, default=0)
+    output_tokens = Column(BigInteger, nullable=False, default=0)
+    cost_usd = Column(Numeric, nullable=False, default=0)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ChatRateWindow(Base):
+    """Fixed-window rate-limiter state (one row per user), mutated via atomic
+    upsert so the limit holds across workers. Server-managed only: RLS is enabled
+    with NO policies in the migration (anon/authenticated denied)."""
+
+    __tablename__ = "chat_rate_windows"
+
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    window_start = Column(_tstz(), nullable=False)
+    count = Column(Integer, nullable=False, default=0)
+
 
 # --- Tables that exist live but were previously unmodeled in the ORM ---------
 # Modeled here so the ORM and the Alembic baseline agree with the real database.
