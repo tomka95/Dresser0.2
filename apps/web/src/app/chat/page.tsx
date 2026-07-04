@@ -732,6 +732,23 @@ export default function ChatPage() {
               >
                 {m.text || (m.pending ? '…' : '')}
               </div>
+              {m.outfit?.collageUrl && (
+                /* Lookbook collage: ONE server-tiled review image of the whole
+                   outfit (from the user's own item photos), above the per-item
+                   strip. Plain <img> like ItemImage — remote Supabase URL. */
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={m.outfit.collageUrl}
+                  alt="Outfit collage"
+                  className="mt-2 rounded-[14px]"
+                  style={{
+                    width: '100%',
+                    maxWidth: 300,
+                    border: '1px solid var(--tr-20)',
+                    background: 'rgb(242, 242, 242)',
+                  }}
+                />
+              )}
               {m.outfit && <OutfitStrip outfit={m.outfit} />}
               {m.outfit && m.from === 'ai' && !m.pending && !incognito && (
                 <OutfitActions

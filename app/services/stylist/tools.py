@@ -238,6 +238,22 @@ def _tool_compose_outfit(ctx: ToolContext, args: ComposeOutfitArgs) -> Dict[str,
     payload = outfit.to_payload()
     payload["warnings"] = warnings + payload.get("warnings", [])
     if payload["slots"]:
+        # Lookbook collage (Wave S3): one review image tiled from the outfit's
+        # OWN item photos — pure PIL, no generation. Only for a confident
+        # result (never dress up a partial outfit), and never in incognito
+        # (the upload would leave a per-user storage trace). Best-effort: a
+        # collage failure must never fail the compose.
+        if outfit.sufficient and not ctx.no_persist:
+            try:
+                from app.services.stylist.collage import get_or_create_outfit_collage
+
+                payload["collageUrl"] = get_or_create_outfit_collage(
+                    ctx.user_id, outfit.slots
+                )
+            except Exception as exc:
+                logger.warning(
+                    "outfit collage failed: %s (user=%s)", type(exc).__name__, ctx.user_id
+                )
         ctx.outfit_payloads.append(payload)
     return payload
 

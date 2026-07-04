@@ -43,6 +43,10 @@ export interface ChatOutfitPayload {
   itemIds: string[];
   rationale: string;
   warnings: string[];
+  /** Lookbook-style review image tiled server-side from the outfit's own item
+   *  photos (pure PIL, no generation). Present only for sufficient outfits;
+   *  null/absent when a collage couldn't be built (missing images, storage). */
+  collageUrl?: string | null;
 }
 
 // --- SSE event payloads -----------------------------------------------------
