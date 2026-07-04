@@ -284,6 +284,24 @@ def test_route_model_escalates_only_on_explicit_request():
     assert route_model(IntentParse(deep_reasoning_requested=True)) == settings.STYLIST_ESCALATION_MODEL
 
 
+def test_local_intent_gate_matches_routing_without_an_llm_call():
+    """Hot-path routing is now a zero-RTT keyword heuristic: escalate to Pro only
+    on an explicit deep-reasoning ask, Flash for ordinary turns."""
+    from app.core.config import settings
+    from app.services.stylist.agent import classify_intent_local
+
+    for ordinary in ("what should I wear today?", "does this go with my jeans?"):
+        assert route_model(classify_intent_local(ordinary)) == settings.STYLIST_MODEL
+
+    for deep in (
+        "plan my whole week of outfits",
+        "Think hard and reason through my capsule wardrobe",
+        "take your time and be thorough",
+    ):
+        assert classify_intent_local(deep).deep_reasoning_requested is True
+        assert route_model(classify_intent_local(deep)) == settings.STYLIST_ESCALATION_MODEL
+
+
 def test_chat_cost_prices_per_model():
     lite = chat_gemini_cost("gemini-2.5-flash-lite", 1_000_000, 0)
     flash = chat_gemini_cost("gemini-2.5-flash", 1_000_000, 0)

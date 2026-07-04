@@ -29,6 +29,9 @@ interface ChatMessage {
   pending?: boolean;
   /** Terminal error styling (quota/timeouts/etc). */
   isError?: boolean;
+  /** Client-only object URL for an attached photo shown in the sent bubble.
+   *  Display-only — the image is never persisted, so history reloads drop it. */
+  imageUrl?: string;
 }
 
 interface PendingImage {
@@ -185,7 +188,7 @@ export default function ChatPage() {
       setToolLabel(null);
       setMessages((prev) => [
         ...prev,
-        { from: 'user', text: trimmed },
+        { from: 'user', text: trimmed, imageUrl: pendingImage?.previewUrl },
         { from: 'ai', text: '', pending: true },
       ]);
 
@@ -287,6 +290,23 @@ export default function ChatPage() {
               className="max-w-[82%]"
               style={{ alignSelf: m.from === 'user' ? 'flex-end' : 'flex-start' }}
             >
+              {m.imageUrl && (
+                <div
+                  className="mb-1.5 overflow-hidden rounded-[14px]"
+                  style={{
+                    maxWidth: 180,
+                    marginLeft: m.from === 'user' ? 'auto' : 0,
+                    border: '1px solid var(--tr-20)',
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={m.imageUrl}
+                    alt="Attached photo"
+                    className="block h-auto w-full object-cover"
+                  />
+                </div>
+              )}
               <div
                 className="whitespace-pre-wrap text-white"
                 style={{
@@ -404,7 +424,7 @@ export default function ChatPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/jpeg,image/png,image/webp"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];

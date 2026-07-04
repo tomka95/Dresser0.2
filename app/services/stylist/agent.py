@@ -13,14 +13,20 @@ CONTEXT IS ASSEMBLED SERVER-SIDE, EVERY TURN, FROM THE DB:
                   extractor.py fence pattern, hardened with a per-turn nonce so
                   message text cannot forge a closing fence).
 
-MODEL ROUTING (locked decision 3): a Flash-Lite pre-parse classifies the turn;
-Flash (STYLIST_MODEL) is the default; Pro runs ONLY when the user explicitly
-asked for deep reasoning. Pre-parse failure fails OPEN to Flash, never to Pro.
+MODEL ROUTING (locked decision 3): Flash (STYLIST_MODEL) is the default; Pro
+runs ONLY when the user explicitly asked for deep reasoning. That escalation is
+an EXPLICIT ask, so a zero-latency keyword heuristic (classify_intent_local)
+gates it on the hot path — the old blocking Flash-Lite pre-parse added a whole
+LLM round-trip before the stylist could speak while only ever confirming what
+the keywords already tell us. preparse_intent is retained (below) for callers
+that want the LLM classifier, but the turn no longer pays for it. Routing still
+fails OPEN to Flash, never to Pro.
 """
 from __future__ import annotations
 
 import logging
 import secrets
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
@@ -162,6 +168,30 @@ def route_model(parse: IntentParse) -> str:
     return settings.STYLIST_MODEL
 
 
+# Explicit deep-reasoning asks are keyword-detectable — that's the ONLY thing
+# routing consumes, so we detect it locally instead of spending an LLM RTT.
+_ESCALATION_CUES = (
+    "think hard", "think carefully", "think it through", "think this through",
+    "reason through", "reason carefully", "step by step", "step-by-step",
+    "take your time", "deep dive", "carefully plan", "plan out",
+    "plan my week", "plan my whole week", "week of outfits", "whole week",
+    "be thorough", "thoroughly",
+)
+
+
+def classify_intent_local(message: str) -> IntentParse:
+    """Zero-latency replacement for the Flash-Lite pre-parse on the hot path.
+
+    Locked decision 3 escalates to Pro only on an EXPLICIT deep-reasoning ask;
+    that's the sole signal ``route_model`` reads, and it is keyword-detectable.
+    So the common turn skips the extra model round-trip entirely and the stylist
+    starts streaming sooner. Falls through to Flash for everything else — the
+    same fail-open default the LLM pre-parse used."""
+    low = message.lower()
+    deep = any(cue in low for cue in _ESCALATION_CUES)
+    return IntentParse(deep_reasoning_requested=deep)
+
+
 # ---------------------------------------------------------------------------
 # Turn inputs/outputs
 # ---------------------------------------------------------------------------
@@ -232,10 +262,14 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
     turn_usage = TurnUsage()
     serper_usage = UsageAccumulator()
 
-    parse = preparse_intent(provider, request.message, usage=turn_usage)
+    # Timing probe (real numbers, logged per turn — no client exposure). ctx =
+    # context assembly incl. DB reads; ttft = model time-to-first-token.
+    t_start = time.perf_counter()
+    t_first_token: List[float] = []  # boxed so the on_text closure can write it
+
+    # Model routing via the zero-RTT heuristic (was a blocking Flash-Lite call).
+    parse = classify_intent_local(request.message)
     model = route_model(parse)
-    if parse.injection_suspected:
-        logger.info("chat turn flagged injection_suspected (user=%s)", request.user_id)
 
     with rls_scoped_session(request.user_id) as db:
         conversation = get_or_create_conversation(
@@ -291,6 +325,8 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
         )
 
         def on_text(delta: str) -> None:
+            if not t_first_token:
+                t_first_token.append(time.perf_counter())
             emit("token", {"text": delta})
 
         def on_tool(name: str, phase: str) -> None:
@@ -310,6 +346,7 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
                 emit("outfit", result)
             return result
 
+        t_ctx = time.perf_counter()
         final_text = provider.chat(
             model=model,
             system_instruction=_system_prompt(profile_block, summary, len(request.images)),
@@ -321,6 +358,16 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
             on_usage=on_usage,
             temperature=0.5,
             max_tool_rounds=settings.CHAT_MAX_TOOL_ROUNDS,
+        )
+
+        t_end = time.perf_counter()
+        ttft_ms = (t_first_token[0] - t_ctx) * 1000 if t_first_token else -1.0
+        logger.info(
+            "chat turn timing user=%s model=%s ctx=%.0fms ttft=%.0fms total=%.0fms "
+            "tool_calls=%d images=%d",
+            request.user_id, model,
+            (t_ctx - t_start) * 1000, ttft_ms, (t_end - t_start) * 1000,
+            len(ctx.tool_log or []), len(request.images),
         )
 
         total_cost = turn_usage.cost_usd + serper_cost(serper_usage.serper_credits)

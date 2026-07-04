@@ -28,7 +28,20 @@ import io
 from dataclasses import dataclass
 from typing import Optional
 
-from PIL import Image
+from PIL import Image, ImageOps
+
+# HEIC/HEIF (the iPhone camera default) is not decodable by stock Pillow. The
+# libheif-backed pillow_heif plugin registers an Image opener so Image.open can
+# decode it; we then TRANSCODE to JPEG in validate_and_sanitize. Guarded so a
+# host without the native lib degrades to "HEIC unsupported" instead of crashing
+# every image upload at import time.
+try:  # pragma: no cover - exercised only where the native lib is present
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    _HEIF_AVAILABLE = True
+except Exception:  # noqa: BLE001 - any import/registration failure = no HEIC
+    _HEIF_AVAILABLE = False
 
 # Pillow ships its own decompression-bomb warning/error machinery; we make it a hard
 # ceiling. 40 MP comfortably covers any phone camera (48 MP sensors bin to ~12 MP
@@ -40,20 +53,34 @@ MAX_DIMENSION = 12_000
 # Raw upload byte cap — mirrors the existing /outfit-image limit (main.py).
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
-# Formats we accept AND can losslessly re-encode with Pillow. HEIC/AVIF are NOT here:
-# iOS Safari transcodes HEIC to JPEG on <input type=file> upload, and Pillow can't
-# decode HEIC without an extra native plugin — see module note / status report.
+# ISO-BMFF 'ftyp' major brands that mean "HEIC/HEIF still image" (mirrors the
+# sniffer in gmail_closet/image_guard.py). AVIF is deliberately excluded — we
+# only transcode the iPhone camera format here.
+_HEIC_BRANDS = frozenset({b"heic", b"heix", b"heif", b"hevc", b"hevx", b"mif1", b"msf1"})
+
+# Formats we accept. jpeg/png/webp are losslessly re-encodable by stock Pillow;
+# heic is decoded via the pillow_heif opener above and TRANSCODED to JPEG on the
+# way out (see validate_and_sanitize). Magic bytes decide — never the Content-Type.
 _SNIFFERS = {
     "jpeg": lambda b: b[:3] == b"\xff\xd8\xff",
     "png": lambda b: b[:8] == b"\x89PNG\r\n\x1a\n",
     "webp": lambda b: len(b) >= 12 and b[:4] == b"RIFF" and b[8:12] == b"WEBP",
+    "heic": lambda b: len(b) >= 12 and b[4:8] == b"ftyp" and b[8:12] in _HEIC_BRANDS,
 }
-# Canonical format token -> (Pillow format, content-type, file suffix).
+# Canonical format token -> (Pillow format, content-type, file suffix). HEIC has
+# no entry: it transcodes to the "jpeg" encoding (see _encode_token_for).
 _ENCODE = {
     "jpeg": ("JPEG", "image/jpeg", ".jpg"),
     "png": ("PNG", "image/png", ".png"),
     "webp": ("WEBP", "image/webp", ".webp"),
 }
+
+
+def _encode_token_for(fmt: str) -> str:
+    """Output-encoding token for a sniffed format. HEIC/HEIF is re-encoded as
+    JPEG (stock Pillow can't write HEIC, and JPEG is what every model + browser
+    downstream expects); all others keep their own format."""
+    return "jpeg" if fmt == "heic" else fmt
 
 
 class ImageValidationError(ValueError):
@@ -130,7 +157,13 @@ def validate_and_sanitize(data: bytes) -> SanitizedImage:
 
     fmt = sniff_image_format(data)
     if fmt is None:
-        raise ImageValidationError("unrecognized image format (expected JPEG, PNG, or WebP)")
+        raise ImageValidationError(
+            "unrecognized image format (expected JPEG, PNG, WebP, or HEIC)"
+        )
+    if fmt == "heic" and not _HEIF_AVAILABLE:
+        # Magic bytes say HEIC but the host lacks libheif — refuse loudly rather
+        # than let Pillow throw an opaque decode error.
+        raise ImageValidationError("HEIC isn't supported here — export the photo as JPEG")
 
     sha = hashlib.sha256(data).hexdigest()
 
@@ -150,6 +183,12 @@ def validate_and_sanitize(data: bytes) -> SanitizedImage:
             # Corrupt / truncated / not actually decodable despite a valid magic header.
             raise ImageValidationError("could not decode image")
 
+        # Bake EXIF orientation into the pixels BEFORE we strip metadata — iPhone
+        # (HEIC) photos carry rotation in the orientation tag, and dropping EXIF
+        # without applying it would leave transcoded shots sideways. No-op when
+        # there's no orientation tag, so JPEG/PNG/WebP behaviour is unchanged.
+        img = ImageOps.exif_transpose(img) or img
+
         width, height = img.size
         if width <= 0 or height <= 0:
             raise ImageValidationError("could not decode image")
@@ -160,7 +199,8 @@ def validate_and_sanitize(data: bytes) -> SanitizedImage:
 
         phash = _dhash(img)
 
-        pil_fmt, content_type, suffix = _ENCODE[fmt]
+        encode_fmt = _encode_token_for(fmt)
+        pil_fmt, content_type, suffix = _ENCODE[encode_fmt]
 
         # --- METADATA STRIP --------------------------------------------------
         # Re-encode pixels into a FRESH image. Pillow only writes EXIF/ICC when you
@@ -192,7 +232,7 @@ def validate_and_sanitize(data: bytes) -> SanitizedImage:
 
     return SanitizedImage(
         data=sanitized,
-        fmt=fmt,
+        fmt=encode_fmt,  # HEIC reports as 'jpeg' — that's what the stored bytes are
         content_type=content_type,
         suffix=suffix,
         width=width,

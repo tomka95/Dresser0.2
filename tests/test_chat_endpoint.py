@@ -352,8 +352,11 @@ def test_full_turn_persists_transcript_and_cost(db, user1, monkeypatch):
     )
 
     assert result.text == "Your white tee works great."
-    assert result.input_tokens == 300 + 900 + 1200
-    assert result.output_tokens == 10 + 20 + 30
+    # Two Flash rounds only — the hot path no longer spends a Flash-Lite pre-parse
+    # round-trip (routing is now a local keyword heuristic), so its 300/10 tokens
+    # are gone from the turn total.
+    assert result.input_tokens == 900 + 1200
+    assert result.output_tokens == 20 + 30
     assert result.cost_usd > 0
 
     conv = db.query(Conversation).one()
@@ -362,7 +365,7 @@ def test_full_turn_persists_transcript_and_cost(db, user1, monkeypatch):
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[0].content == "what tops do I own?"
     assert messages[1].content == "Your white tee works great."
-    assert messages[1].input_tokens == 2400
+    assert messages[1].input_tokens == 2100
     assert float(messages[1].cost_usd) == pytest.approx(result.cost_usd)
     assert messages[1].tool_calls[0]["name"] == "search_closet"
 
