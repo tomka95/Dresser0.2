@@ -44,7 +44,8 @@ export interface ChatOutfitPayload {
   rationale: string;
   warnings: string[];
   /** Lookbook-style review image tiled server-side from the outfit's own item
-   *  photos (pure PIL, no generation). Present only for sufficient outfits;
+   *  photos (pure PIL, no generation). Present only for COMPLETE outfits (no
+   *  unfilled required slot — low occasion-confidence alone doesn't block it);
    *  null/absent when a collage couldn't be built (missing images, storage). */
   collageUrl?: string | null;
 }

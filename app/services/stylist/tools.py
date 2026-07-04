@@ -239,11 +239,14 @@ def _tool_compose_outfit(ctx: ToolContext, args: ComposeOutfitArgs) -> Dict[str,
     payload["warnings"] = warnings + payload.get("warnings", [])
     if payload["slots"]:
         # Lookbook collage (Wave S3): one review image tiled from the outfit's
-        # OWN item photos — pure PIL, no generation. Only for a confident
-        # result (never dress up a partial outfit), and never in incognito
-        # (the upload would leave a per-user storage trace). Best-effort: a
-        # collage failure must never fail the compose.
-        if outfit.sufficient and not ctx.no_persist:
+        # OWN item photos — pure PIL, no generation. Gate on COMPLETENESS (no
+        # unfilled required slot), not on `sufficient`: a full outfit whose
+        # items merely lack occasion tags sits below the confidence floor yet
+        # still renders a full item strip — it deserves the collage too. A
+        # partial outfit (real gaps) never gets one. Never in incognito (the
+        # upload would leave a per-user storage trace). Best-effort: a collage
+        # failure must never fail the compose.
+        if not outfit.gaps and not ctx.no_persist:
             try:
                 from app.services.stylist.collage import get_or_create_outfit_collage
 
