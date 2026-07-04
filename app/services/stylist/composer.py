@@ -102,7 +102,12 @@ def occasion_family(occasion: Optional[str]) -> Optional[str]:
     if not occasion:
         return None
     low = str(occasion).lower()
-    if any(term in low for term in _ATHLETIC_OCCASIONS):
+    # WORD-level match, not substring: "brunch" must not trip on "run".
+    # Multi-word terms ("work out") still match as phrases.
+    toks = set(_tokens(low))
+    if toks & _ATHLETIC_OCCASIONS:
+        return "athletic"
+    if any(" " in term and term in low for term in _ATHLETIC_OCCASIONS):
         return "athletic"
     return None
 

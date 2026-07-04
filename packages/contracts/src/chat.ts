@@ -66,6 +66,15 @@ export interface ChatToolEvent {
   label: string;
 }
 
+/** A garment photo the user sent was routed into the photo-ingest spine and its
+ *  detected items were staged. The client renders a "ready for review" button
+ *  that deep-links to reviewUrl (`/review?sync_id=…`). Absent in incognito. */
+export interface ChatIngestEvent {
+  syncId: string;
+  itemCount: number;
+  reviewUrl: string;
+}
+
 export interface ChatDoneEvent {
   conversationId: string;
   messageId: string;
@@ -92,6 +101,7 @@ export type ChatSSEEvent =
   | { event: 'token'; data: ChatTokenEvent }
   | { event: 'tool'; data: ChatToolEvent }
   | { event: 'outfit'; data: ChatOutfitPayload }
+  | { event: 'ingest'; data: ChatIngestEvent }
   | { event: 'done'; data: ChatDoneEvent }
   | { event: 'error'; data: ChatErrorEvent };
 

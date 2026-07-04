@@ -11,6 +11,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import type {
   ChatAttachment,
   ChatConversationSummary,
+  ChatIngestEvent,
   ChatOutfitPayload,
   OutfitReasonChip,
 } from '@tailor/contracts';
@@ -32,6 +33,8 @@ interface ChatMessage {
   from: 'ai' | 'user';
   text: string;
   outfit?: ChatOutfitPayload;
+  /** Closet-add handoff: renders a "ready for review" deep-link button. */
+  ingest?: ChatIngestEvent;
   /** Still streaming in. */
   pending?: boolean;
   /** Terminal error styling (quota/timeouts/etc). */
@@ -599,6 +602,9 @@ export default function ChatPage() {
           onOutfit: (outfit) => {
             patchLast({ outfit });
           },
+          onIngest: (ingest) => {
+            patchLast({ ingest });
+          },
           onDone: () => {
             setToolLabel(null);
             setStreaming(false);
@@ -756,6 +762,22 @@ export default function ChatPage() {
                   conversationId={conversationIdRef.current}
                   closetItems={items}
                 />
+              )}
+              {m.ingest && (
+                /* Chat photo → closet handoff: deep-link to the shared review
+                   deck scoped to this sync (per-item confirm happens there). */
+                <a
+                  href={m.ingest.reviewUrl}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[13.5px] font-medium no-underline"
+                  style={{
+                    alignSelf: 'flex-start',
+                    background: 'var(--brand-teal)',
+                    color: '#fff',
+                  }}
+                >
+                  Review {m.ingest.itemCount}{' '}
+                  {m.ingest.itemCount === 1 ? 'item' : 'items'} →
+                </a>
               )}
             </div>
           ))}
