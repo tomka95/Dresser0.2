@@ -35,6 +35,8 @@ export interface SendChatMessageParams {
   message: string;
   conversationId?: string;
   attachments?: ChatAttachment[];
+  /** Incognito: server persists nothing for this turn (no DB trace). */
+  noPersist?: boolean;
   /** Abort the stream (e.g. on unmount). */
   signal?: AbortSignal;
 }
@@ -88,6 +90,7 @@ export async function sendChatMessage(
         message: params.message,
         conversationId: params.conversationId,
         attachments: params.attachments ?? [],
+        noPersist: params.noPersist ?? false,
       }),
       signal: params.signal,
     });
@@ -196,4 +199,18 @@ export async function getConversationMessages(
     `/chat/conversations/${conversationId}/messages`
   );
   return body.messages;
+}
+
+/** Delete one conversation (server cascades its messages). Returns whether a
+ *  row was actually removed. */
+export async function deleteConversation(conversationId: string): Promise<boolean> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+  const response = await fetch(
+    `${API_BASE_URL}/chat/conversations/${conversationId}`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!response.ok) throw new Error('Failed to delete conversation');
+  const body = (await response.json()) as { deleted?: boolean };
+  return Boolean(body.deleted);
 }

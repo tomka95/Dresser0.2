@@ -29,11 +29,12 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.models import Conversation
 from app.gmail_closet.usage import UsageAccumulator, serper_cost
 from app.services.stylist.costs import TurnUsage
 from app.services.stylist.persistence import (
@@ -212,6 +213,9 @@ class TurnRequest:
     images: List[ImageAttachment] = field(default_factory=list)
     # Closet items the user attached via the picker: resolved server-side.
     attached_item_ids: List[UUID] = field(default_factory=list)
+    # Incognito: run the turn but persist nothing (no conversation/message rows,
+    # no distillation). Uses an ephemeral in-memory conversation; zero DB trace.
+    no_persist: bool = False
 
 
 @dataclass
@@ -281,10 +285,18 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
     model = route_model(parse)
 
     with rls_scoped_session(request.user_id) as db:
-        conversation = get_or_create_conversation(
-            db, request.user_id, request.conversation_id,
-            first_message=request.message,
-        )
+        if request.no_persist:
+            # Incognito: an ephemeral, transient conversation — never added to
+            # the session, so it is never flushed or committed. It exists only
+            # to carry an id through this turn and the SSE contract.
+            conversation = Conversation(
+                id=uuid4(), user_id=request.user_id, title=None
+            )
+        else:
+            conversation = get_or_create_conversation(
+                db, request.user_id, request.conversation_id,
+                first_message=request.message,
+            )
         emit("meta", {"conversationId": str(conversation.id), "model": model})
 
         profile_block = assemble_profile(db, request.user_id)
@@ -306,7 +318,12 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
                     f"closet: {lines}]"
                 )
 
-        history = recent_messages(db, request.user_id, conversation.id)
+        # Incognito has no persisted transcript to replay.
+        history = (
+            []
+            if request.no_persist
+            else recent_messages(db, request.user_id, conversation.id)
+        )
         contents = _history_contents(history, genai_types)
 
         # This turn's user content: framed text (+ note) + inline image parts.
@@ -320,10 +337,12 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
         contents.append(genai_types.Content(role="user", parts=user_parts))
 
         # Persist the user message before the model runs (a failed turn still
-        # keeps what the user said; images are never persisted).
-        user_note = f"[{len(request.images)} image(s) attached] " if request.images else ""
-        append_message(db, conversation, role="user",
-                       content=user_note + request.message)
+        # keeps what the user said; images are never persisted). Incognito skips
+        # this — no user turn touches the DB.
+        if not request.no_persist:
+            user_note = f"[{len(request.images)} image(s) attached] " if request.images else ""
+            append_message(db, conversation, role="user",
+                           content=user_note + request.message)
 
         ctx = ToolContext(
             db=db,
@@ -331,6 +350,7 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
             profile=profile_block,
             attachments=list(request.images),
             usage=serper_usage,
+            no_persist=request.no_persist,
         )
 
         def on_text(delta: str) -> None:
@@ -380,22 +400,29 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
         )
 
         total_cost = turn_usage.cost_usd + serper_cost(serper_usage.serper_credits)
-        assistant_row = append_message(
-            db,
-            conversation,
-            role="assistant",
-            content=final_text,
-            tool_calls=ctx.tool_log or None,
-            outfit_json=(ctx.outfit_payloads[-1] if ctx.outfit_payloads else None),
-            model=model,
-            input_tokens=turn_usage.input_tokens,
-            output_tokens=turn_usage.output_tokens,
-            cost_usd=total_cost,
-        )
+        # Incognito persists no assistant row either — nothing about this turn is
+        # written, so there is no transcript for any later distillation to mine.
+        # Synthesize an ephemeral message id purely for the done-event contract.
+        if request.no_persist:
+            message_id = uuid4()
+        else:
+            assistant_row = append_message(
+                db,
+                conversation,
+                role="assistant",
+                content=final_text,
+                tool_calls=ctx.tool_log or None,
+                outfit_json=(ctx.outfit_payloads[-1] if ctx.outfit_payloads else None),
+                model=model,
+                input_tokens=turn_usage.input_tokens,
+                output_tokens=turn_usage.output_tokens,
+                cost_usd=total_cost,
+            )
+            message_id = assistant_row.id
 
         return TurnResult(
             conversation_id=conversation.id,
-            message_id=assistant_row.id,
+            message_id=message_id,
             text=final_text,
             outfits=list(ctx.outfit_payloads),
             input_tokens=turn_usage.input_tokens,

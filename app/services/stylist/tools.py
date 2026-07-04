@@ -63,6 +63,9 @@ class ToolContext:
     usage: Any = None                # UsageAccumulator for Serper credits
     outfit_payloads: List[Dict[str, Any]] = field(default_factory=list)
     tool_log: List[Dict[str, Any]] = field(default_factory=list)
+    # Incognito: write-tools (save_outfit, record_preference) become no-ops so
+    # the turn leaves zero DB trace — including no distilled preference signals.
+    no_persist: bool = False
 
 
 class ToolError(Exception):
@@ -240,6 +243,10 @@ def _tool_compose_outfit(ctx: ToolContext, args: ComposeOutfitArgs) -> Dict[str,
 
 
 def _tool_save_outfit(ctx: ToolContext, args: SaveOutfitArgs) -> Dict[str, Any]:
+    if ctx.no_persist:
+        # Incognito: nothing is written. Tell the model so it can be honest.
+        return {"saved": False, "reason": "incognito",
+                "message": "Outfits can't be saved in incognito mode."}
     item_ids = _parse_uuids(args.item_ids, field_name="item_ids")
     owned = get_owned_items(ctx.db, ctx.user_id, item_ids)
     if len(owned) != len(set(item_ids)):
@@ -279,6 +286,9 @@ def _tool_record_preference(ctx: ToolContext, args: RecordPreferenceArgs) -> Dic
     Server clamps everything: enum polarity (validated), bounded strings, fixed
     moderate weight. item/event references are never taken from the model.
     """
+    if ctx.no_persist:
+        # Incognito: no preference signal is distilled from this chat.
+        return {"recorded": False, "reason": "incognito"}
     signal = PreferenceSignal(
         user_id=ctx.user_id,
         signal_type="chat_stated",

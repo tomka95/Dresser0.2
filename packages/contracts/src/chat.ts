@@ -23,6 +23,9 @@ export interface ChatRequest {
   message: string;
   conversationId?: string;
   attachments?: ChatAttachment[];
+  /** Incognito: server skips all transcript persistence (no conversation or
+   *  message rows) and any distillation. Zero conversation trace in the DB. */
+  noPersist?: boolean;
 }
 
 /** One item inside a composed outfit (compact server projection). */

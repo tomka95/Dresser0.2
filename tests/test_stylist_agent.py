@@ -226,6 +226,28 @@ def test_record_preference_rejects_bad_polarity(db, user1):
     assert db.query(PreferenceSignal).count() == 0
 
 
+def test_incognito_write_tools_leave_zero_db_trace(db, user1):
+    """no_persist gates every write-tool: save_outfit and record_preference
+    become no-ops, so an incognito turn distills/saves NOTHING."""
+    a = _item(db, user1, "Shirt", "top")
+    b = _item(db, user1, "Jeans", "bottom")
+    ctx = _ctx(db, user1, no_persist=True)
+
+    saved = dispatch_tool(ctx, "save_outfit",
+                          {"item_ids": [str(a.id), str(b.id)], "title": "Work look"})
+    pref = dispatch_tool(ctx, "record_preference",
+                         {"dimension": "fit", "polarity": "dislike", "value": "skinny jeans"})
+    db.commit()
+
+    assert saved["saved"] is False and saved["reason"] == "incognito"
+    assert pref["recorded"] is False and pref["reason"] == "incognito"
+    # The airtight guarantee: no rows anywhere — not the outfit, not the
+    # accept-event, not the distilled preference signal.
+    assert db.query(SavedOutfit).count() == 0
+    assert db.query(PreferenceSignal).count() == 0
+    assert db.query(StyleEvent).filter_by(event_type="outfit_accept").count() == 0
+
+
 def test_analyze_image_requires_attachment(db, user1):
     result = dispatch_tool(_ctx(db, user1), "analyze_image", {"image_index": 0})
     assert result == {"error": "no attached image at that index"}

@@ -7,11 +7,16 @@
  * ItemImage, and supports image + closet-item attachments.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ChatAttachment, ChatOutfitPayload } from '@tailor/contracts';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import type {
+  ChatAttachment,
+  ChatConversationSummary,
+  ChatOutfitPayload,
+} from '@tailor/contracts';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
 import {
+  deleteConversation,
   getConversationMessages,
   listConversations,
   sendChatMessage,
@@ -42,6 +47,81 @@ interface PendingImage {
 
 const QUICK_PROMPTS = ['Outfit for today', 'What goes with this?', 'Pack for a trip'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+const GREETING = 'Hey — I know your closet. Ask me what to wear.';
+const INCOGNITO_GREETING =
+  "Incognito on — I won't save or remember this chat. Ask away.";
+
+/** Compact relative time for the history switcher. */
+function timeAgo(iso: string | null): string {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return `${Math.floor(d / 7)}w ago`;
+}
+
+const IncognitoIcon = ({ size = 19 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+  </svg>
+);
+const HistoryIcon = () => (
+  <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+    <line x1="3.5" y1="6" x2="3.51" y2="6" /><line x1="3.5" y1="12" x2="3.51" y2="12" /><line x1="3.5" y1="18" x2="3.51" y2="18" />
+  </svg>
+);
+const NewChatIcon = () => (
+  <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+  </svg>
+);
+const TrashIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+  </svg>
+);
+
+function HeaderButton({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={active}
+      onClick={onClick}
+      className="flex shrink-0 items-center justify-center rounded-full transition-transform active:scale-90"
+      style={{
+        width: 36,
+        height: 36,
+        color: active ? 'var(--brand-teal)' : 'rgba(255,255,255,0.85)',
+        background: active ? 'var(--mint)' : 'var(--tr-10)',
+        border: '1px solid var(--tr-20)',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
 function OutfitStrip({ outfit }: { outfit: ChatOutfitPayload }) {
   const items = Object.entries(outfit.slots);
@@ -86,6 +166,12 @@ export default function ChatPage() {
   const [attachedItemIds, setAttachedItemIds] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Sessions UX (S3): incognito mode + thread history switcher.
+  const [incognito, setIncognito] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [conversations, setConversations] = useState<ChatConversationSummary[]>([]);
+  const [activeId, setActiveId] = useState<string | undefined>(undefined);
+
   const conversationIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -97,43 +183,112 @@ export default function ChatPage() {
     }
   }, [isAuth, hasFetchedItems, fetchItems]);
 
-  // Load the latest conversation's transcript once on entry.
-  useEffect(() => {
-    if (!isAuth || historyLoaded) return;
-    let cancelled = false;
-    (async () => {
+  const refreshConversations = useCallback(async () => {
+    try {
+      setConversations(await listConversations());
+    } catch {
+      /* history is a convenience — ignore load failures */
+    }
+  }, []);
+
+  const resetStream = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setStreaming(false);
+    setToolLabel(null);
+  }, []);
+
+  const clearComposer = useCallback(() => {
+    setDraft('');
+    setPendingImage(null);
+    setAttachedItemIds([]);
+  }, []);
+
+  // Start a fresh, empty (persisted) thread.
+  const startNewChat = useCallback(() => {
+    resetStream();
+    conversationIdRef.current = undefined;
+    setActiveId(undefined);
+    setIncognito(false);
+    clearComposer();
+    setMessages([{ from: 'ai', text: GREETING }]);
+    setHistoryOpen(false);
+  }, [resetStream, clearComposer]);
+
+  // Enter incognito: ephemeral thread the server never persists.
+  const enterIncognito = useCallback(() => {
+    resetStream();
+    conversationIdRef.current = undefined;
+    setActiveId(undefined);
+    setIncognito(true);
+    clearComposer();
+    setMessages([{ from: 'ai', text: INCOGNITO_GREETING }]);
+    setHistoryOpen(false);
+  }, [resetStream, clearComposer]);
+
+  const toggleIncognito = useCallback(() => {
+    if (incognito) startNewChat();
+    else enterIncognito();
+  }, [incognito, startNewChat, enterIncognito]);
+
+  const openHistory = useCallback(() => {
+    setHistoryOpen(true);
+    void refreshConversations();
+  }, [refreshConversations]);
+
+  // Load a saved thread's transcript (leaves incognito).
+  const loadConversation = useCallback(
+    async (id: string) => {
+      resetStream();
+      setIncognito(false);
+      conversationIdRef.current = id;
+      setActiveId(id);
+      clearComposer();
+      setHistoryOpen(false);
+      setMessages([{ from: 'ai', text: '', pending: true }]);
       try {
-        const conversations = await listConversations();
-        if (cancelled) return;
-        if (conversations.length > 0) {
-          const latest = conversations[0];
-          conversationIdRef.current = latest.id;
-          const history = await getConversationMessages(latest.id);
-          if (cancelled) return;
-          setMessages(
-            history.map((m) => ({
-              from: m.role === 'assistant' ? ('ai' as const) : ('user' as const),
-              text: m.content,
-              outfit: m.outfit ?? undefined,
-            }))
-          );
-        } else {
-          setMessages([
-            { from: 'ai', text: 'Hey — I know your closet. Ask me what to wear.' },
-          ]);
-        }
+        const history = await getConversationMessages(id);
+        setMessages(
+          history.length > 0
+            ? history.map((m) => ({
+                from: m.role === 'assistant' ? ('ai' as const) : ('user' as const),
+                text: m.content,
+                outfit: m.outfit ?? undefined,
+              }))
+            : [{ from: 'ai', text: GREETING }]
+        );
       } catch {
         setMessages([
-          { from: 'ai', text: 'Hey — I know your closet. Ask me what to wear.' },
+          { from: 'ai', text: 'Could not load that chat. Try again.', isError: true },
         ]);
-      } finally {
-        if (!cancelled) setHistoryLoaded(true);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuth, historyLoaded]);
+    },
+    [resetStream, clearComposer]
+  );
+
+  const removeConversation = useCallback(
+    async (id: string) => {
+      // Optimistic remove; the row and its messages cascade server-side.
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (conversationIdRef.current === id) startNewChat();
+      try {
+        await deleteConversation(id);
+      } catch {
+        // Re-sync so the UI doesn't lie about what still exists.
+        void refreshConversations();
+      }
+    },
+    [startNewChat, refreshConversations]
+  );
+
+  // Default to a fresh chat on entry; load the conversation list only to
+  // populate the history switcher (never auto-open the latest thread).
+  useEffect(() => {
+    if (!isAuth || historyLoaded) return;
+    setMessages([{ from: 'ai', text: GREETING }]);
+    setHistoryLoaded(true);
+    void refreshConversations();
+  }, [isAuth, historyLoaded, refreshConversations]);
 
   // Keep the newest message in view.
   useEffect(() => {
@@ -231,13 +386,18 @@ export default function ChatPage() {
       void sendChatMessage(
         {
           message: trimmed,
-          conversationId: conversationIdRef.current,
+          // Incognito never threads a conversation id — each turn is ephemeral.
+          conversationId: incognito ? undefined : conversationIdRef.current,
           attachments,
+          noPersist: incognito,
           signal: controller.signal,
         },
         {
           onMeta: (meta) => {
+            // Ignore the server's (ephemeral) id in incognito — nothing to resume.
+            if (incognito) return;
             conversationIdRef.current = meta.conversationId;
+            setActiveId(meta.conversationId);
           },
           onToken: (delta) => {
             setToolLabel(null);
@@ -253,6 +413,9 @@ export default function ChatPage() {
             setToolLabel(null);
             setStreaming(false);
             patchLast({ pending: false });
+            // A persisted turn may have created/renamed a thread — refresh the
+            // switcher. Incognito wrote nothing, so there's nothing to show.
+            if (!incognito) void refreshConversations();
           },
           onError: (error) => {
             setToolLabel(null);
@@ -270,7 +433,7 @@ export default function ChatPage() {
         }
       );
     },
-    [streaming, pendingImage, attachedItemIds]
+    [streaming, pendingImage, attachedItemIds, incognito, refreshConversations]
   );
 
   if (loading || !isAuth) {
@@ -286,16 +449,47 @@ export default function ChatPage() {
         {/* Header */}
         <div
           className="flex items-center gap-3"
-          style={{ padding: '52px 24px 14px', borderBottom: '1px solid var(--tr-10)' }}
+          style={{ padding: '52px 18px 14px', borderBottom: '1px solid var(--tr-10)' }}
         >
           <Spark size={38} />
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="text-[19px] font-bold text-white">Stylist</div>
-            <div className="text-[12px]" style={{ color: 'var(--mint)' }}>
-              Knows your closet
+            <div
+              className="text-[12px]"
+              style={{ color: incognito ? 'rgba(255,255,255,0.55)' : 'var(--mint)' }}
+            >
+              {incognito ? "Incognito · won't be saved" : 'Knows your closet'}
             </div>
           </div>
+          <div className="flex items-center gap-1.5">
+            <HeaderButton label="Incognito mode" active={incognito} onClick={toggleIncognito}>
+              <IncognitoIcon />
+            </HeaderButton>
+            <HeaderButton label="Chat history" onClick={openHistory}>
+              <HistoryIcon />
+            </HeaderButton>
+            <HeaderButton label="New chat" onClick={startNewChat}>
+              <NewChatIcon />
+            </HeaderButton>
+          </div>
         </div>
+
+        {/* Incognito banner — unmistakable that nothing is being saved. */}
+        {incognito && (
+          <div
+            className="flex items-center gap-2"
+            style={{
+              padding: '9px 20px',
+              background: 'rgba(0,0,0,0.28)',
+              borderBottom: '1px solid var(--tr-10)',
+              color: 'rgba(255,255,255,0.72)',
+              fontSize: 12.5,
+            }}
+          >
+            <IncognitoIcon size={15} />
+            <span>Incognito — this chat isn&apos;t saved or remembered.</span>
+          </div>
+        )}
 
         {/* Messages */}
         <div
@@ -566,6 +760,77 @@ export default function ChatPage() {
         >
           Done
         </button>
+      </Sheet>
+
+      {/* Chat history switcher */}
+      <Sheet
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        title="Your chats"
+        sub="Tap to open · trash to delete"
+      >
+        <button
+          type="button"
+          onClick={startNewChat}
+          className="mb-1 flex w-full items-center gap-3 rounded-[12px] px-3 py-3 text-left"
+          style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
+        >
+          <span className="text-white/85">
+            <NewChatIcon />
+          </span>
+          <span className="text-[15px] font-semibold text-white">New chat</span>
+        </button>
+
+        <div className="max-h-[48vh] overflow-y-auto">
+          {conversations.length === 0 && (
+            <div className="py-8 text-center text-[13px] text-white/50">
+              No saved chats yet.
+            </div>
+          )}
+          {conversations.map((c, i) => {
+            const active = c.id === activeId;
+            return (
+              <div
+                key={c.id}
+                className="flex items-center gap-1"
+                style={{ borderTop: i === 0 ? 'none' : '1px solid var(--tr-10)' }}
+              >
+                <button
+                  type="button"
+                  onClick={() => loadConversation(c.id)}
+                  className="flex min-w-0 flex-1 flex-col gap-0.5 py-[13px] pl-1 pr-2 text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    {active && (
+                      <span
+                        className="inline-block shrink-0 rounded-full"
+                        style={{ width: 7, height: 7, background: 'var(--mint)' }}
+                        aria-hidden
+                      />
+                    )}
+                    <span
+                      className={`truncate text-[15px] ${active ? 'font-semibold' : 'font-medium'} text-white`}
+                    >
+                      {c.title || 'Untitled chat'}
+                    </span>
+                  </div>
+                  <span className="text-[12px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                    {timeAgo(c.updatedAt)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Delete ${c.title || 'chat'}`}
+                  onClick={() => removeConversation(c.id)}
+                  className="flex shrink-0 items-center justify-center rounded-full text-white/45 transition-colors active:text-white/80"
+                  style={{ width: 36, height: 36 }}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </Sheet>
 
       <BottomNavBar activeRoute="/chat" />
