@@ -127,7 +127,13 @@ async def _decode_attachments(
             status = 413 if "exceeds" in message else 422
             raise HTTPException(status_code=status, detail=message)
         images.append(
-            ImageAttachment(data=sanitized.data, mime_type=sanitized.content_type)
+            ImageAttachment(
+                data=sanitized.data,
+                mime_type=sanitized.content_type,
+                # Carry the SanitizedImage so add_photo_to_closet can reuse its
+                # true sha256/phash for ingest dedup without re-sanitizing.
+                sanitized=sanitized,
+            )
         )
     return images, item_ids
 

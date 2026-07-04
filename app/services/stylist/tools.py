@@ -22,8 +22,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from app.utils.image_validation import SanitizedImage
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
@@ -50,6 +53,11 @@ class ImageAttachment:
 
     data: bytes
     mime_type: str
+    # The SanitizedImage this attachment was decoded from (sha256/phash/dims).
+    # Carried so add_photo_to_closet can hand the ingest spine the SAME sanitized
+    # object with its true original-bytes sha256 (best dedup) instead of
+    # re-sanitizing. Optional: the bridge re-sanitizes ``data`` when absent.
+    sanitized: Optional["SanitizedImage"] = None
 
 
 @dataclass
@@ -88,6 +96,11 @@ class SearchClosetArgs(BaseModel):
 
 
 class AnalyzeImageArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    image_index: int = Field(0, ge=0, le=10)
+
+
+class AddToClosetArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     image_index: int = Field(0, ge=0, le=10)
 
@@ -194,6 +207,50 @@ def _tool_analyze_image(ctx: ToolContext, args: AnalyzeImageArgs) -> Dict[str, A
     }
 
 
+_ADD_TO_CLOSET_MESSAGES = {
+    "duplicate": "Looks like that photo's already in your closet — nothing new to add.",
+    "no_garments": "I couldn't pick out any garments from that photo to add.",
+    "nothing_staged": "I couldn't add those from that photo — try a clearer shot.",
+}
+
+
+def _tool_add_photo_to_closet(ctx: ToolContext, args: AddToClosetArgs) -> Dict[str, Any]:
+    """Route an attached, already-detected chat photo into the photo-ingest spine.
+
+    Honest-stylist: the model is instructed to OFFER first and call this only
+    after the user says yes — the tool itself never auto-adds silently, and the
+    staged items still require the user's per-item confirm in the review deck.
+    """
+    if ctx.no_persist:
+        # Incognito: no closet write, no detect session, no storage upload. Tell
+        # the model so it can be honest rather than claiming it added anything.
+        return {"added": False, "reason": "incognito",
+                "message": "I can't add to your closet in incognito mode."}
+    if args.image_index >= len(ctx.attachments):
+        raise ToolError("no attached image at that index")
+    attachment = ctx.attachments[args.image_index]
+
+    from app.services.stylist.chat_ingest import add_chat_photo_to_closet
+
+    handoff = add_chat_photo_to_closet(ctx.user_id, attachment)
+    if not handoff.added:
+        return {
+            "added": False,
+            "reason": handoff.reason,
+            "message": _ADD_TO_CLOSET_MESSAGES.get(
+                handoff.reason or "", "I couldn't add those to your closet."
+            ),
+        }
+    # syncId/reviewUrl are surfaced to the client by the agent's executor as an
+    # `ingest` SSE event → the "ready for review" button.
+    return {
+        "added": True,
+        "syncId": handoff.sync_id,
+        "itemCount": handoff.staged,
+        "reviewUrl": f"/review?sync_id={handoff.sync_id}",
+    }
+
+
 def _tool_product_search(ctx: ToolContext, args: ProductSearchArgs) -> Dict[str, Any]:
     from app.gmail_closet.shopping_search import search_products
 
@@ -251,7 +308,7 @@ def _tool_compose_outfit(ctx: ToolContext, args: ComposeOutfitArgs) -> Dict[str,
                 from app.services.stylist.collage import get_or_create_outfit_collage
 
                 payload["collageUrl"] = get_or_create_outfit_collage(
-                    ctx.user_id, outfit.slots
+                    ctx.user_id, outfit.slots, occasion=args.occasion
                 )
             except Exception as exc:
                 logger.warning(
@@ -335,6 +392,7 @@ def _tool_record_preference(ctx: ToolContext, args: RecordPreferenceArgs) -> Dic
 _TOOLS: Dict[str, tuple[type[BaseModel], Callable[[ToolContext, Any], Dict[str, Any]]]] = {
     "search_closet": (SearchClosetArgs, _tool_search_closet),
     "analyze_image": (AnalyzeImageArgs, _tool_analyze_image),
+    "add_photo_to_closet": (AddToClosetArgs, _tool_add_photo_to_closet),
     "product_search": (ProductSearchArgs, _tool_product_search),
     "compose_outfit": (ComposeOutfitArgs, _tool_compose_outfit),
     "save_outfit": (SaveOutfitArgs, _tool_save_outfit),
@@ -345,6 +403,7 @@ _TOOLS: Dict[str, tuple[type[BaseModel], Callable[[ToolContext, Any], Dict[str, 
 TOOL_LABELS = {
     "search_closet": "checking your closet…",
     "analyze_image": "looking at your photo…",
+    "add_photo_to_closet": "adding to your closet…",
     "product_search": "searching the shops…",
     "compose_outfit": "composing an outfit…",
     "save_outfit": "saving your outfit…",
@@ -381,6 +440,25 @@ def tool_declarations() -> List[Dict[str, Any]]:
             "description": (
                 "Describe the garments in an image the user attached to THIS "
                 "message. image_index is 0-based."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"image_index": {"type": "integer"}},
+            },
+        },
+        {
+            "name": "add_photo_to_closet",
+            "description": (
+                "Add the garment(s) in an image the user attached to THIS message "
+                "into the user's closet. Call this ONLY after analyze_image has "
+                "found garments AND the user has explicitly agreed to add them — "
+                "never add without offering first. image_index is 0-based. The "
+                "detected items are STAGED for the user to review and confirm "
+                "(they are not silently saved); the result carries a syncId and a "
+                "reviewUrl the client turns into a 'ready for review' button. "
+                "Returns added=false with a reason when the photo is already in "
+                "the closet, has no garments, or the user is in incognito mode — "
+                "relay that honestly instead of claiming success."
             ),
             "parameters": {
                 "type": "object",

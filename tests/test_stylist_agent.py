@@ -8,7 +8,16 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine, SessionLocal
-from app.models import ClothingItem, PreferenceSignal, SavedOutfit, StyleEvent, User
+from app.models import (
+    ClothingItem,
+    IngestCandidate,
+    IngestRun,
+    PhotoDetectSession,
+    PreferenceSignal,
+    SavedOutfit,
+    StyleEvent,
+    User,
+)
 from app.services.ai_provider import AIProvider
 from app.services.stylist.agent import frame_untrusted, preparse_intent, route_model
 from app.services.stylist.costs import TurnUsage, chat_gemini_cost
@@ -268,6 +277,102 @@ def test_analyze_image_wraps_result_as_untrusted(db, user1, monkeypatch):
     assert "untrusted_content" in result
     assert result["untrusted_content"]["garments"][0]["name"] == "Blue Tee"
     assert "ignore it" in result["untrusted_content"]["note"]
+
+
+# ---------------------------------------------------------------------------
+# add_photo_to_closet: chat image -> ingest spine bridge (Wave S3e)
+# ---------------------------------------------------------------------------
+def _real_image_attachment(color=(120, 30, 30)):
+    """A genuinely-sanitized chat attachment (the bridge cuts real pixels)."""
+    import io
+
+    from PIL import Image
+
+    from app.services.stylist.tools import ImageAttachment
+    from app.utils.image_validation import validate_and_sanitize
+
+    buf = io.BytesIO()
+    Image.new("RGB", (128, 128), color).save(buf, "JPEG")
+    sanitized = validate_and_sanitize(buf.getvalue())
+    return ImageAttachment(
+        data=sanitized.data, mime_type=sanitized.content_type, sanitized=sanitized
+    )
+
+
+def _stub_detect(monkeypatch, garments):
+    """Point the ingest spine's detector at a fixed result; force storage off so
+    no real upload runs and generation stays disarmed (no background thread)."""
+    import app.photo_closet.ingest_service as ingest_service
+    import app.services.stylist.chat_ingest as bridge
+    from app.photo_closet.detection import DetectionResult, GarmentRegion
+
+    result = DetectionResult(
+        person_count=1,
+        garments=[GarmentRegion(**g) for g in garments],
+    )
+    monkeypatch.setattr(
+        ingest_service, "detect_garments_with_regions", lambda **kw: result
+    )
+    monkeypatch.setattr(bridge, "_storage_client", lambda: None)
+
+
+def test_add_photo_to_closet_stages_candidates_and_returns_sync(db, user1, monkeypatch):
+    _stub_detect(monkeypatch, [
+        {"name": "Red Tee", "category": "top", "color": "red",
+         "box_2d": [40, 40, 520, 600], "confidence_overall": 0.9},
+        {"name": "Blue Jeans", "category": "bottom", "color": "blue",
+         "box_2d": [520, 60, 980, 560], "confidence_overall": 0.85},
+    ])
+    ctx = _ctx(db, user1, attachments=[_real_image_attachment()])
+
+    result = dispatch_tool(ctx, "add_photo_to_closet", {"image_index": 0})
+
+    assert result["added"] is True
+    assert result["itemCount"] == 2
+    assert result["reviewUrl"] == f"/review?sync_id={result['syncId']}"
+
+    # Routed through the SHARED spine: a run + pending candidates the review deck
+    # (GET /gmail/ingest/candidates?sync_id=) will serve.
+    from uuid import UUID
+
+    sync_id = UUID(result["syncId"])
+    run = db.query(IngestRun).filter_by(sync_id=sync_id).one()
+    assert run.source_type == "photo"
+    cands = db.query(IngestCandidate).filter_by(user_id=user1.id, sync_id=sync_id).all()
+    assert {c.name for c in cands} == {"Red Tee", "Blue Jeans"}
+    assert all(c.status == "pending" and c.source_type == "photo" for c in cands)
+
+
+def test_add_photo_to_closet_incognito_leaves_zero_trace(db, user1, monkeypatch):
+    """no_persist short-circuits BEFORE the spine: no detect session, no run, no
+    candidate — the chat zero-trace guarantee extends to closet writes."""
+    _stub_detect(monkeypatch, [
+        {"name": "Red Tee", "category": "top", "box_2d": [40, 40, 520, 600],
+         "confidence_overall": 0.9},
+    ])
+    ctx = _ctx(db, user1, no_persist=True, attachments=[_real_image_attachment()])
+
+    result = dispatch_tool(ctx, "add_photo_to_closet", {"image_index": 0})
+
+    assert result["added"] is False and result["reason"] == "incognito"
+    assert db.query(PhotoDetectSession).count() == 0
+    assert db.query(IngestRun).count() == 0
+    assert db.query(IngestCandidate).count() == 0
+
+
+def test_add_photo_to_closet_requires_attachment(db, user1):
+    result = dispatch_tool(_ctx(db, user1), "add_photo_to_closet", {"image_index": 0})
+    assert result == {"error": "no attached image at that index"}
+
+
+def test_add_photo_to_closet_reports_no_garments(db, user1, monkeypatch):
+    _stub_detect(monkeypatch, [])  # detector finds nothing
+    ctx = _ctx(db, user1, attachments=[_real_image_attachment()])
+
+    result = dispatch_tool(ctx, "add_photo_to_closet", {"image_index": 0})
+
+    assert result["added"] is False and result["reason"] == "no_garments"
+    assert db.query(IngestCandidate).count() == 0
 
 
 # ---------------------------------------------------------------------------

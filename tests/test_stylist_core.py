@@ -310,7 +310,12 @@ def test_athletic_footwear_gate_rejects_non_athletic_shoes():
 
     assert occasion_family("hit the gym") == "athletic"
     assert occasion_family("running errands") == "athletic"   # 'running' term (acceptable over-trigger)
+    assert occasion_family("work out") == "athletic"          # multi-word phrase
     assert occasion_family("dinner") is None
+    # WORD-boundary matching: substrings of athletic terms must not trip the
+    # hard gate ("brunch" contains "run" — that emptied every pool in prod).
+    assert occasion_family("brunch") is None
+    assert occasion_family("bar crawl") is None               # not 'train' etc.
 
     flats = ClothingItem(user_id=uuid.uuid4(), name="Ballet Flats", category="footwear")
     trainers = ClothingItem(user_id=uuid.uuid4(), name="Running Trainers", category="footwear",

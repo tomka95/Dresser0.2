@@ -11,6 +11,7 @@ import type {
   ChatDoneEvent,
   ChatErrorEvent,
   ChatHistoryMessage,
+  ChatIngestEvent,
   ChatMetaEvent,
   ChatOutfitPayload,
   ChatToolEvent,
@@ -27,6 +28,7 @@ export interface ChatStreamHandlers {
   onToken?: (text: string) => void;
   onTool?: (tool: ChatToolEvent) => void;
   onOutfit?: (outfit: ChatOutfitPayload) => void;
+  onIngest?: (ingest: ChatIngestEvent) => void;
   onDone?: (done: ChatDoneEvent) => void;
   onError?: (error: ChatErrorEvent) => void;
 }
@@ -140,6 +142,9 @@ export async function sendChatMessage(
         break;
       case 'outfit':
         handlers.onOutfit?.(data as ChatOutfitPayload);
+        break;
+      case 'ingest':
+        handlers.onIngest?.(data as ChatIngestEvent);
         break;
       case 'done':
         sawTerminal = true;
