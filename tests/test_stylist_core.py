@@ -260,3 +260,60 @@ def test_color_harmony_neutrals_and_clash():
                      color_primary_hex="#10c010")
     assert color_harmony(a, b) == 0.5          # neutral pairs with anything
     assert color_harmony(b, c) < 0             # red/green: saturated mid-distance clash
+
+
+# ---------------------------------------------------------------------------
+# Occasion-family quality gate: never force-fill a gym request with clashing items
+# ---------------------------------------------------------------------------
+def test_gym_request_refuses_to_force_fill_non_athletic_closet(db, user1):
+    # The reported failure case: a closet with nothing athletic.
+    _item(db, user1, "Ballet Flats", "footwear", formality=3, color_primary="black")
+    _item(db, user1, "Wide-Leg Jeans", "bottom", formality=2, color_primary="blue")
+    _item(db, user1, "Yankees Cap", "accessory", formality=1, color_primary="navy")
+    _item(db, user1, "Plain Tee", "top", formality=1, color_primary="white")
+
+    outfit = compose_outfit(db, user1.id, ProfileBlock(), occasion="gym", formality_target=1)
+    names = {i.name for i in outfit.slots.values()}
+
+    # None of the inappropriate items may be jammed into the outfit.
+    assert "Ballet Flats" not in names          # non-athletic footwear rejected
+    assert "Wide-Leg Jeans" not in names        # not activewear
+    assert "Yankees Cap" not in names           # not activewear
+    # The closet genuinely lacks gym pieces -> honest signal, not a forced look.
+    assert outfit.sufficient is False
+    assert "bottom" in outfit.gaps and "footwear" in outfit.gaps
+    payload = outfit.to_payload()
+    assert payload["sufficient"] is False
+    assert payload["confidence"] < 0.6
+    assert any("gym" in w for w in payload["warnings"])
+
+
+def test_gym_request_composes_from_activewear(db, user1):
+    _item(db, user1, "Nike Running Tank", "top", formality=1, color_primary="black")
+    _item(db, user1, "Athletic Shorts", "bottom", formality=1, color_primary="black",
+          material="polyester")
+    _item(db, user1, "Running Sneakers", "footwear", formality=1, color_primary="white")
+    # A decoy non-athletic item that must be ignored for a gym request.
+    _item(db, user1, "Dress Loafers", "footwear", formality=4, color_primary="brown")
+
+    outfit = compose_outfit(db, user1.id, ProfileBlock(), occasion="gym", formality_target=1)
+    names = {i.name for i in outfit.slots.values()}
+
+    assert outfit.sufficient is True
+    assert outfit.slots["footwear"].name == "Running Sneakers"  # not the loafers
+    assert "Dress Loafers" not in names
+    assert {"top", "bottom", "footwear"} <= set(outfit.slots)
+
+
+def test_athletic_footwear_gate_rejects_non_athletic_shoes():
+    from app.services.stylist.composer import _is_athletic_item, occasion_family
+
+    assert occasion_family("hit the gym") == "athletic"
+    assert occasion_family("running errands") == "athletic"   # 'running' term (acceptable over-trigger)
+    assert occasion_family("dinner") is None
+
+    flats = ClothingItem(user_id=uuid.uuid4(), name="Ballet Flats", category="footwear")
+    trainers = ClothingItem(user_id=uuid.uuid4(), name="Running Trainers", category="footwear",
+                            sub_category="sneakers")
+    assert _is_athletic_item(flats, "footwear") is False
+    assert _is_athletic_item(trainers, "footwear") is True

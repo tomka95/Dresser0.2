@@ -61,6 +61,82 @@ _NEUTRALS = frozenset(
 # Fields a hard avoid-token is matched against (word-level, case-insensitive).
 _AVOID_FIELDS = ("category", "sub_category", "color_primary", "material", "pattern", "name")
 
+# --- Occasion FAMILIES with hard composition rules --------------------------
+# Most occasions are soft-scored (a tag nudges an item up, nothing is blocked).
+# A FAMILY, by contrast, carries a category/attribute requirement the outfit
+# MUST satisfy — so a gym request is filled only with activewear, never with
+# whatever happens to be closest. Requests outside a family keep soft scoring.
+_ATHLETIC_OCCASIONS = frozenset({
+    "gym", "workout", "work out", "working out", "training", "train", "exercise",
+    "run", "running", "jog", "jogging", "yoga", "pilates", "crossfit", "hiit",
+    "cycling", "spin", "spinning", "sport", "sports", "athletic", "lifting",
+    "weightlifting", "cardio", "tennis", "basketball", "soccer",
+})
+# Signals that an item is activewear / athletic-appropriate (matched against the
+# item's descriptive fields + its occasion tags).
+_ATHLETIC_TOKENS = frozenset({
+    "athletic", "activewear", "active", "sport", "sports", "gym", "training",
+    "workout", "performance", "running", "run", "track", "jogger", "joggers",
+    "sweatpant", "sweatpants", "sweatshirt", "hoodie", "legging", "leggings",
+    "tights", "tank", "jersey", "compression", "yoga", "spandex", "lycra",
+    "polyester", "dri-fit", "drifit", "trainer", "trainers", "sneaker",
+    "sneakers", "cleat", "cleats", "gymwear",
+})
+# Footwear that is decisively NOT gym-appropriate, even if some other token on
+# the item (a brand, a colour) happened to look athletic.
+_NONATHLETIC_FOOTWEAR_TOKENS = frozenset({
+    "flat", "flats", "heel", "heels", "pump", "pumps", "loafer", "loafers",
+    "oxford", "oxfords", "brogue", "brogues", "derby", "boot", "boots",
+    "sandal", "sandals", "mule", "mules", "espadrille", "espadrilles",
+    "wingtip", "clog", "clogs", "slipper", "slippers", "moccasin", "boat",
+})
+
+# Below this, an outfit is not presented as a confident recommendation.
+_CONFIDENCE_FLOOR = 0.6
+
+
+def occasion_family(occasion: Optional[str]) -> Optional[str]:
+    """Map a free-text occasion to a family with HARD composition rules, or None
+    for the default soft-scored behaviour. Extend here as new families earn
+    dedicated rules (formal/black-tie is the obvious next one)."""
+    if not occasion:
+        return None
+    low = str(occasion).lower()
+    if any(term in low for term in _ATHLETIC_OCCASIONS):
+        return "athletic"
+    return None
+
+
+def _descriptive_tokens(item: ClothingItem) -> set:
+    """All word-level tokens from an item's descriptive fields + occasion tags."""
+    toks: set = set()
+    for field_name in _AVOID_FIELDS:
+        toks.update(_tokens(getattr(item, field_name, None)))
+    for occ in (getattr(item, "occasions", None) or []):
+        toks.update(_tokens(str(occ)))
+    return toks
+
+
+def _is_athletic_item(item: ClothingItem, slot: Optional[str]) -> bool:
+    """Activewear check: the item must carry an athletic signal, and a footwear
+    item additionally must not be an obviously non-athletic shoe (flats, heels,
+    loafers, boots…). This is what rejects 'flats + jeans + a baseball cap' from
+    a gym request rather than jamming them in."""
+    toks = _descriptive_tokens(item)
+    if slot == "footwear" and (toks & _NONATHLETIC_FOOTWEAR_TOKENS):
+        return False
+    return bool(toks & _ATHLETIC_TOKENS)
+
+
+def _occasion_family_allows(item: ClothingItem, slot: Optional[str], family: Optional[str]) -> bool:
+    """Hard occasion-family gate applied while building the candidate pool. None
+    family = allow everything (unchanged soft-scoring path)."""
+    if family is None:
+        return True
+    if family == "athletic":
+        return _is_athletic_item(item, slot)
+    return True
+
 
 @dataclass
 class ComposedOutfit:
@@ -68,6 +144,13 @@ class ComposedOutfit:
     score: float = 0.0
     reasons: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    # Quality signal (set by compose_outfit). ``sufficient`` is False when a
+    # REQUIRED slot could not be filled with an appropriate item — the closet
+    # genuinely lacks the pieces for this request, and the agent must say so
+    # instead of presenting a forced outfit. ``gaps`` names the missing slots.
+    sufficient: bool = True
+    confidence: float = 1.0
+    gaps: List[str] = field(default_factory=list)
 
     def to_payload(self) -> Dict[str, Any]:
         return {
@@ -75,6 +158,11 @@ class ComposedOutfit:
             "itemIds": [str(item.id) for item in self.slots.values()],
             "rationale": self.rationale,
             "warnings": self.warnings,
+            # Honesty signal the model MUST respect (see the stylist persona's
+            # grounding rules): never dress up a low-confidence result as good.
+            "sufficient": self.sufficient,
+            "confidence": round(self.confidence, 2),
+            "gaps": list(self.gaps),
         }
 
     @property
@@ -239,8 +327,10 @@ def _candidate_pool(
     season: Optional[str],
     profile: ProfileBlock,
     exclude_ids: set[UUID],
+    family: Optional[str] = None,
 ) -> Dict[str, List[ClothingItem]]:
-    """Per-slot candidates, already hard-filtered (constraints/formality/warmth)."""
+    """Per-slot candidates, already hard-filtered (constraints/formality/warmth,
+    and — for an occasion FAMILY like athletic — appropriateness)."""
     band = (
         (max(1, formality_target - 1), min(5, formality_target + 1))
         if formality_target is not None
@@ -265,6 +355,7 @@ def _candidate_pool(
             and not violates_hard_constraints(it, profile.hard_avoids)
             and _formality_ok(it, formality_target)
             and _warmth_ok(it, warmth_target)
+            and _occasion_family_allows(it, slot, family)
         ]
     return pool
 
@@ -319,6 +410,7 @@ def compose_outfit(
     if warmth_target is not None:
         warmth_target = max(1, min(3, int(warmth_target)))
 
+    family = occasion_family(occasion)
     exclude_ids = set(exclude_item_ids or [])
     outfit = ComposedOutfit()
     anchor_ids: set[UUID] = set()
@@ -352,6 +444,7 @@ def compose_outfit(
         season=season,
         profile=profile,
         exclude_ids=exclude_ids | anchor_ids,
+        family=family,
     )
 
     # Base: dress vs separates. A dress anchor forces the dress route; a top or
@@ -375,14 +468,20 @@ def compose_outfit(
         fill_order.append("outerwear")
     fill_order.append("accessory")
 
+    # Which slots this request REQUIRES (accessory/outerwear are optional).
+    required_slots = [s for s in fill_order if s in (base_slots + ["footwear"])]
+
     for slot in fill_order:
         if slot in outfit.slots:
             continue
         picked = _pick(pool.get(slot, []), outfit.slots, anchor_ids, score_kwargs)
         if picked is None:
             if slot in ("top", "bottom", "dress", "footwear"):
+                # Name the occasion in the gap so the agent can be specific: an
+                # empty athletic pool means "no gym-appropriate X", not just "no X".
+                qualifier = f"{occasion}-appropriate " if (occasion and family) else ""
                 outfit.warnings.append(
-                    f"no owned {slot} fits this request — a gap worth shopping for"
+                    f"no {qualifier}owned {slot} in your closet — a gap worth shopping for"
                 )
             continue
         item, score, notes = picked
@@ -391,10 +490,43 @@ def compose_outfit(
         detail = f" ({notes[0]})" if notes else ""
         outfit.reasons.append(f"{item.name} as the {slot}{detail}.")
 
+    # --- Quality signal: did we actually build something appropriate? ---------
+    # A required slot left unfilled means the closet lacks a suitable piece — the
+    # outfit is NOT sufficient and the agent must be honest about the gap rather
+    # than present a partial/forced look as finished.
+    unfilled_required = [s for s in required_slots if s not in outfit.slots]
+    outfit.gaps = unfilled_required
+    filled_required = [s for s in required_slots if s in outfit.slots]
+    coverage = len(filled_required) / len(required_slots) if required_slots else 1.0
+
+    if occasion and filled_required:
+        # How many filled required slots actually SUIT the occasion (family-gated
+        # picks are appropriate by construction; otherwise credit an occasion tag).
+        occ_low = occasion.lower()
+        supportive = 0
+        for s in filled_required:
+            it = outfit.slots[s]
+            tagged = it.occasions and occ_low in [str(o).lower() for o in it.occasions]
+            if family is not None or tagged:
+                supportive += 1
+        occasion_fit = supportive / len(filled_required)
+        outfit.confidence = coverage * (0.55 + 0.45 * occasion_fit)
+    else:
+        outfit.confidence = coverage
+
+    outfit.sufficient = not unfilled_required and outfit.confidence >= _CONFIDENCE_FLOOR
+
+    if occasion:
+        outfit.reasons.insert(0, f"Built for {occasion}.")
     if formality_target is not None:
         outfit.reasons.append(
             f"Everything sits within one step of formality {formality_target}."
         )
-    if occasion:
-        outfit.reasons.insert(0, f"Built for {occasion}.")
+    if not outfit.sufficient:
+        gap_txt = ", ".join(unfilled_required) if unfilled_required else "a good match"
+        qualifier = f"{occasion}-appropriate " if (occasion and family) else ""
+        outfit.reasons.append(
+            f"Heads up: your closet is missing {qualifier}{gap_txt} — this is a "
+            "partial idea, not a finished outfit."
+        )
     return outfit

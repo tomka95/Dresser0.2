@@ -374,7 +374,13 @@ def tool_declarations() -> List[Dict[str, Any]]:
                 "Compose a full outfit from the user's OWNED items, honoring the "
                 "formality band (1 casual - 5 formal), warmth (1 hot - 3 cold), "
                 "occasion, the user's hard constraints and preferences. Use "
-                "anchor_item_ids to build around specific items."
+                "anchor_item_ids to build around specific items. It will NOT "
+                "force-fill a slot with an inappropriate item: for an occasion it "
+                "can't dress well (e.g. a gym request with no activewear) it "
+                "leaves that slot empty and returns sufficient=false plus a gaps "
+                "list. Read those fields and be honest with the user when the "
+                "closet lacks the right pieces — do not present a partial or "
+                "low-confidence result as a finished outfit."
             ),
             "parameters": {
                 "type": "object",
