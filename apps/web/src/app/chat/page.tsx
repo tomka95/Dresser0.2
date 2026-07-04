@@ -82,6 +82,7 @@ export default function ChatPage() {
   const [toolLabel, setToolLabel] = useState<string | null>(null);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
+  const [attachingImage, setAttachingImage] = useState(false);
   const [attachedItemIds, setAttachedItemIds] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -151,15 +152,36 @@ export default function ChatPage() {
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const result = String(reader.result || '');
       const comma = result.indexOf(',');
       if (comma < 0) return;
-      setPendingImage({
-        dataBase64: result.slice(comma + 1),
-        mimeType: file.type || 'image/jpeg',
-        previewUrl: URL.createObjectURL(file),
-      });
+      // ORIGINAL bytes go to the server untouched — the API transcodes HEIC
+      // server-side. The client decode below is ONLY for a displayable preview.
+      const dataBase64 = result.slice(comma + 1);
+      const mimeType = file.type || 'image/jpeg';
+
+      // Browsers can't paint HEIC in <img>, so a raw object-URL renders blank.
+      // Decode HEIC/HEIF to a JPEG blob client-side and preview that instead.
+      const looksHeic =
+        /\.(heic|heif)$/i.test(file.name) || /^image\/hei[cf]/i.test(file.type);
+      let previewUrl = '';
+      if (looksHeic) {
+        setAttachingImage(true);
+        try {
+          const { heicTo } = await import('heic-to/next');
+          const jpeg = await heicTo({ blob: file, type: 'image/jpeg', quality: 0.8 });
+          previewUrl = URL.createObjectURL(jpeg);
+        } catch {
+          // Decode failed — send anyway (server still transcodes); just no thumb.
+          previewUrl = '';
+        } finally {
+          setAttachingImage(false);
+        }
+      } else {
+        previewUrl = URL.createObjectURL(file);
+      }
+      setPendingImage({ dataBase64, mimeType, previewUrl });
     };
     reader.readAsDataURL(file);
   }, []);
@@ -345,19 +367,39 @@ export default function ChatPage() {
 
         {/* Quick prompts + composer */}
         <div style={{ padding: '12px 16px 14px' }}>
-          {(pendingImage || attachedItems.length > 0) && (
+          {(pendingImage || attachingImage || attachedItems.length > 0) && (
             <div className="mb-2 flex items-center gap-2 overflow-x-auto scrollbar-hide">
-              {pendingImage && (
+              {attachingImage && !pendingImage && (
                 <div
-                  className="relative shrink-0 overflow-hidden rounded-[10px]"
+                  className="flex shrink-0 items-center justify-center rounded-[10px]"
                   style={{ width: 44, height: 44, border: '1px solid var(--tr-20)' }}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={pendingImage.previewUrl}
-                    alt="Attached"
-                    className="h-full w-full object-cover"
+                  <span
+                    className="inline-block h-4 w-4 animate-spin rounded-full"
+                    style={{ border: '2px solid var(--tr-20)', borderTopColor: 'var(--mint)' }}
                   />
+                </div>
+              )}
+              {pendingImage && (
+                <div
+                  className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[10px]"
+                  style={{ width: 44, height: 44, border: '1px solid var(--tr-20)' }}
+                >
+                  {pendingImage.previewUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={pendingImage.previewUrl}
+                      alt="Attached"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    // Decode failed — bytes still send; show a neutral photo glyph.
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                      <circle cx="8.5" cy="8.5" r="1.5" />
+                      <path d="M21 15l-5-5L5 21" />
+                    </svg>
+                  )}
                   <button
                     type="button"
                     aria-label="Remove image"
