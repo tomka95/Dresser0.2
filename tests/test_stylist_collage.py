@@ -266,15 +266,31 @@ def test_compose_attaches_collage_url(db, user, monkeypatch):
     assert ctx.outfit_payloads[-1]["collageUrl"] == "http://cdn/collage.jpg"
 
 
-def test_insufficient_outfit_gets_no_collage(db, user, monkeypatch):
+def test_partial_outfit_with_gaps_gets_no_collage(db, user, monkeypatch):
     _closet(db, user, with_footwear=False)  # missing required slot
     monkeypatch.setattr(
         "app.services.stylist.collage.get_or_create_outfit_collage",
-        lambda *a, **k: pytest.fail("collage must not run for insufficient outfits"),
+        lambda *a, **k: pytest.fail("collage must not run for a partial outfit"),
     )
     payload = dispatch_tool(_ctx(db, user), "compose_outfit", {})
     assert payload["sufficient"] is False
+    assert payload["gaps"]  # a REAL gap, not just low confidence
     assert "collageUrl" not in payload
+
+
+def test_complete_but_low_confidence_outfit_gets_collage(db, user, monkeypatch):
+    """Regression: an occasion request over an untagged closet fills every slot
+    (gaps=[]) but lands below the confidence floor (0.55) -> sufficient=False.
+    The collage gates on COMPLETENESS, so it must still be attached."""
+    _closet(db, user)
+    monkeypatch.setattr(
+        "app.services.stylist.collage.get_or_create_outfit_collage",
+        lambda user_id, slots: "http://cdn/collage.jpg",
+    )
+    payload = dispatch_tool(_ctx(db, user), "compose_outfit", {"occasion": "date night"})
+    assert payload["sufficient"] is False      # low occasion confidence…
+    assert payload["gaps"] == []               # …but the outfit is complete
+    assert payload["collageUrl"] == "http://cdn/collage.jpg"
 
 
 def test_incognito_gets_no_collage(db, user, monkeypatch):
