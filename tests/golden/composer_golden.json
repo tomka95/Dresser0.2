@@ -1,0 +1,278 @@
+{
+  "anchor_dress": {
+    "confidence": 0.78,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-00000000000d",
+      "00000000-0000-0000-0000-000000000009",
+      "00000000-0000-0000-0000-00000000000c",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Built for evening. Oxford Shoes as the footwear. Grey Blazer as the outerwear. Leather Belt as the accessory. Everything sits within one step of formality 4.",
+    "score": 7.0,
+    "slots": {
+      "accessory": "Leather Belt",
+      "dress": "Silk Dress",
+      "footwear": "Oxford Shoes",
+      "outerwear": "Grey Blazer"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "anchor_jeans": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000005",
+      "00000000-0000-0000-0000-000000000004",
+      "00000000-0000-0000-0000-000000000008",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Nike Running Tank as the top. Leather Sneakers as the footwear. Leather Belt as the accessory. Everything sits within one step of formality 2.",
+    "score": 6.5,
+    "slots": {
+      "accessory": "Leather Belt",
+      "bottom": "Black Jeans",
+      "footwear": "Leather Sneakers",
+      "top": "Nike Running Tank"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "anchor_two_tops": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000001",
+      "00000000-0000-0000-0000-00000000000f",
+      "00000000-0000-0000-0000-000000000008",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Blue Chinos as the bottom. Leather Sneakers as the footwear. Leather Belt as the accessory. Everything sits within one step of formality 2.",
+    "score": 7.0,
+    "slots": {
+      "accessory": "Leather Belt",
+      "bottom": "Blue Chinos",
+      "footwear": "Leather Sneakers",
+      "top": "White Tee"
+    },
+    "sufficient": true,
+    "warnings": [
+      "couldn't place 'Oxford Shirt' in a slot"
+    ]
+  },
+  "avoid_neon": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000004",
+      "00000000-0000-0000-0000-000000000007",
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "rationale": "Nike Running Tank as the top. Athletic Shorts as the bottom. Running Sneakers as the footwear. Everything sits within one step of formality 1.",
+    "score": 4.5,
+    "slots": {
+      "bottom": "Athletic Shorts",
+      "footwear": "Running Sneakers",
+      "top": "Nike Running Tank"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "casual_1": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000004",
+      "00000000-0000-0000-0000-000000000007",
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "rationale": "Nike Running Tank as the top. Athletic Shorts as the bottom. Running Sneakers as the footwear. Everything sits within one step of formality 1.",
+    "score": 4.5,
+    "slots": {
+      "bottom": "Athletic Shorts",
+      "footwear": "Running Sneakers",
+      "top": "Nike Running Tank"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "cold_outerwear": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000004",
+      "00000000-0000-0000-0000-000000000007",
+      "00000000-0000-0000-0000-00000000000a",
+      "00000000-0000-0000-0000-00000000000b"
+    ],
+    "rationale": "Nike Running Tank as the top. Athletic Shorts as the bottom. Running Sneakers as the footwear. Down Parka as the outerwear. Everything sits within one step of formality 1.",
+    "score": 7.5,
+    "slots": {
+      "bottom": "Athletic Shorts",
+      "footwear": "Running Sneakers",
+      "outerwear": "Down Parka",
+      "top": "Nike Running Tank"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "dinner_2": {
+    "confidence": 0.55,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000004",
+      "00000000-0000-0000-0000-00000000000f",
+      "00000000-0000-0000-0000-000000000008",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Built for dinner. Nike Running Tank as the top. Blue Chinos as the bottom. Leather Sneakers as the footwear. Leather Belt as the accessory. Everything sits within one step of formality 2. Heads up: your closet is missing a good match \u2014 this is a partial idea, not a finished outfit.",
+    "score": 6.0,
+    "slots": {
+      "accessory": "Leather Belt",
+      "bottom": "Blue Chinos",
+      "footwear": "Leather Sneakers",
+      "top": "Nike Running Tank"
+    },
+    "sufficient": false,
+    "warnings": []
+  },
+  "evening_4": {
+    "confidence": 0.78,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-00000000000d",
+      "00000000-0000-0000-0000-000000000009",
+      "00000000-0000-0000-0000-00000000000c",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Built for evening. Silk Dress as the dress (tagged for evening). Oxford Shoes as the footwear. Grey Blazer as the outerwear. Leather Belt as the accessory. Everything sits within one step of formality 4.",
+    "score": 8.5,
+    "slots": {
+      "accessory": "Leather Belt",
+      "dress": "Silk Dress",
+      "footwear": "Oxford Shoes",
+      "outerwear": "Grey Blazer"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "exclude_sneakers": {
+    "confidence": 0.67,
+    "gaps": [
+      "footwear"
+    ],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000004",
+      "00000000-0000-0000-0000-00000000000f",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Nike Running Tank as the top. Blue Chinos as the bottom. Leather Belt as the accessory. Everything sits within one step of formality 2. Heads up: your closet is missing footwear \u2014 this is a partial idea, not a finished outfit.",
+    "score": 3.5,
+    "slots": {
+      "accessory": "Leather Belt",
+      "bottom": "Blue Chinos",
+      "top": "Nike Running Tank"
+    },
+    "sufficient": false,
+    "warnings": [
+      "no owned footwear in your closet \u2014 a gap worth shopping for"
+    ]
+  },
+  "formal_4": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-00000000000d",
+      "00000000-0000-0000-0000-000000000009",
+      "00000000-0000-0000-0000-00000000000c",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Silk Dress as the dress. Oxford Shoes as the footwear. Grey Blazer as the outerwear. Leather Belt as the accessory. Everything sits within one step of formality 4.",
+    "score": 6.5,
+    "slots": {
+      "accessory": "Leather Belt",
+      "dress": "Silk Dress",
+      "footwear": "Oxford Shoes",
+      "outerwear": "Grey Blazer"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "gym_1": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000004",
+      "00000000-0000-0000-0000-000000000007",
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "rationale": "Built for gym. Nike Running Tank as the top (tagged for gym). Athletic Shorts as the bottom (tagged for gym). Running Sneakers as the footwear (tagged for gym). Everything sits within one step of formality 1.",
+    "score": 10.5,
+    "slots": {
+      "bottom": "Athletic Shorts",
+      "footwear": "Running Sneakers",
+      "top": "Nike Running Tank"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "hot_no_outerwear": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000001",
+      "00000000-0000-0000-0000-000000000007",
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "rationale": "White Tee as the top. Athletic Shorts as the bottom. Running Sneakers as the footwear. Everything sits within one step of formality 1.",
+    "score": 5.0,
+    "slots": {
+      "bottom": "Athletic Shorts",
+      "footwear": "Running Sneakers",
+      "top": "White Tee"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "prefer_white": {
+    "confidence": 1.0,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000002",
+      "00000000-0000-0000-0000-00000000000f",
+      "00000000-0000-0000-0000-000000000008",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Oxford Shirt as the top (matches your liked color). Blue Chinos as the bottom. Leather Sneakers as the footwear (matches your liked color). Leather Belt as the accessory. Everything sits within one step of formality 2.",
+    "score": 8.7,
+    "slots": {
+      "accessory": "Leather Belt",
+      "bottom": "Blue Chinos",
+      "footwear": "Leather Sneakers",
+      "top": "Oxford Shirt"
+    },
+    "sufficient": true,
+    "warnings": []
+  },
+  "work_3": {
+    "confidence": 0.85,
+    "gaps": [],
+    "itemIds": [
+      "00000000-0000-0000-0000-000000000002",
+      "00000000-0000-0000-0000-000000000006",
+      "00000000-0000-0000-0000-000000000009",
+      "00000000-0000-0000-0000-00000000000e"
+    ],
+    "rationale": "Built for work. Oxford Shirt as the top (tagged for work). Wool Slacks as the bottom (tagged for work). Oxford Shoes as the footwear. Leather Belt as the accessory. Everything sits within one step of formality 3.",
+    "score": 10.0,
+    "slots": {
+      "accessory": "Leather Belt",
+      "bottom": "Wool Slacks",
+      "footwear": "Oxford Shoes",
+      "top": "Oxford Shirt"
+    },
+    "sufficient": true,
+    "warnings": []
+  }
+}

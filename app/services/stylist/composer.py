@@ -40,7 +40,12 @@ from sqlalchemy.orm import Session
 from app.models import ClothingItem
 from app.services.enrichment import normalize_category
 from app.services.stylist.profile import ProfileBlock
-from app.services.stylist.retrieval import get_owned_items, search_closet_items, serialize_item
+from app.services.stylist.retrieval import (
+    _category_values,
+    get_owned_items,
+    search_closet_items,
+    serialize_item,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -392,23 +397,76 @@ def _pick(
     return best
 
 
-def compose_outfit(
-    db: Session,
-    user_id: UUID,
-    profile: ProfileBlock,
+# Per-slot category value-sets, mirroring the DB category filter EXACTLY
+# (``ClothingItem.category.in_(_category_values(cats))``). The slot value-sets are
+# disjoint after the legacy fold, so an item buckets into at most one slot.
+_SLOT_CATEGORY_VALUES: Dict[str, frozenset] = {
+    slot: frozenset(_category_values(list(cats)) or ())
+    for slot, cats in SLOT_CATEGORIES.items()
+}
+
+
+def _bucket_pool(
+    pool: List[ClothingItem],
     *,
-    occasion: Optional[str] = None,
+    formality_target: Optional[int],
+    warmth_target: Optional[int],
+    profile: ProfileBlock,
+    exclude_ids: set,
+    family: Optional[str],
+) -> Dict[str, List[ClothingItem]]:
+    """Bucket a flat in-memory pool into per-slot candidates, applying the SAME
+    hard filters ``_candidate_pool`` applied in the DB path (constraints /
+    formality / warmth / occasion-family) — pure, no DB. Bucketing mirrors the
+    query's ``category.in_(...)`` so an item lands in the identical slot.
+
+    ``_pick`` selects by ``max(score, str(id))`` and is order-independent, so the
+    within-slot order here does not affect the composed outfit.
+    """
+    result: Dict[str, List[ClothingItem]] = {slot: [] for slot in SLOT_CATEGORIES}
+    for it in pool:
+        if it.id in exclude_ids:
+            continue
+        if violates_hard_constraints(it, profile.hard_avoids):
+            continue
+        if not _formality_ok(it, formality_target):
+            continue
+        if not _warmth_ok(it, warmth_target):
+            continue
+        slot = None
+        for s, values in _SLOT_CATEGORY_VALUES.items():
+            if it.category in values:
+                slot = s
+                break
+        if slot is None:
+            continue
+        if not _occasion_family_allows(it, slot, family):
+            continue
+        result[slot].append(it)
+    return result
+
+
+def assemble_from_pool(
+    pool: List[ClothingItem],
+    *,
     formality_target: Optional[int] = None,
     warmth_target: Optional[int] = None,
-    season: Optional[str] = None,
-    anchor_item_ids: Optional[List[UUID]] = None,
-    exclude_item_ids: Optional[List[UUID]] = None,
+    occasion: Optional[str] = None,
+    profile: ProfileBlock,
+    anchor_ids: frozenset = frozenset(),
 ) -> ComposedOutfit:
-    """Compose one outfit from the caller's closet under the rules above.
+    """Greedy slot assembly over an IN-MEMORY item pool — no DB, no LLM, no I/O.
 
-    Anchors are resolved through :func:`get_owned_items` — a foreign or unknown
-    id simply doesn't resolve, and the tool layer reports it, so a coerced id
-    can never pull another user's item into an outfit.
+    This is the pure core of :func:`compose_outfit`: anchor placement, dress-vs-
+    separates, the fill loop, and the quality signal (score / confidence /
+    sufficient / gaps). It exists so a batch job (e.g. wardrobe-gap /
+    marginal-outfit-unlock) can score a candidate against a closet with the exact
+    same rules the chat composer uses, without touching Postgres.
+
+    ``pool`` is a flat list already scoped to the caller's closet and pre-filtered
+    for season / user-excludes by the caller (``compose_outfit`` does the DB
+    loads). ``anchor_ids`` marks pool members that MUST be placed first and locked;
+    they are excluded from candidate consideration for the remaining slots.
     """
     if formality_target is not None:
         formality_target = max(1, min(5, int(formality_target)))
@@ -416,11 +474,12 @@ def compose_outfit(
         warmth_target = max(1, min(3, int(warmth_target)))
 
     family = occasion_family(occasion)
-    exclude_ids = set(exclude_item_ids or [])
     outfit = ComposedOutfit()
-    anchor_ids: set[UUID] = set()
+    placed_anchor_ids: set[UUID] = set()
 
-    anchors = get_owned_items(db, user_id, anchor_item_ids or [])
+    # Anchors are the pool members named by anchor_ids, kept in pool order (the
+    # caller appends them in closet-resolution order, matching the DB path).
+    anchors = [it for it in pool if it.id in anchor_ids]
     for anchor in anchors:
         if violates_hard_constraints(anchor, profile.hard_avoids):
             outfit.warnings.append(
@@ -432,7 +491,7 @@ def compose_outfit(
             outfit.warnings.append(f"couldn't place '{anchor.name}' in a slot")
             continue
         outfit.slots[slot] = anchor
-        anchor_ids.add(anchor.id)
+        placed_anchor_ids.add(anchor.id)
 
     score_kwargs = dict(
         formality_target=formality_target,
@@ -440,15 +499,12 @@ def compose_outfit(
         occasion=occasion,
         profile=profile,
     )
-    pool = _candidate_pool(
-        db,
-        user_id,
+    pool_by_slot = _bucket_pool(
+        pool,
         formality_target=formality_target,
         warmth_target=warmth_target,
-        occasion=occasion,
-        season=season,
         profile=profile,
-        exclude_ids=exclude_ids | anchor_ids,
+        exclude_ids=set(anchor_ids),
         family=family,
     )
 
@@ -456,9 +512,9 @@ def compose_outfit(
     # bottom anchor forces separates; otherwise compare best-candidate scores.
     use_dress = "dress" in outfit.slots
     if not use_dress and not ({"top", "bottom"} & set(outfit.slots)):
-        dress_best = _pick(pool["dress"], outfit.slots, anchor_ids, score_kwargs)
-        top_best = _pick(pool["top"], outfit.slots, anchor_ids, score_kwargs)
-        bottom_best = _pick(pool["bottom"], outfit.slots, anchor_ids, score_kwargs)
+        dress_best = _pick(pool_by_slot["dress"], outfit.slots, anchor_ids, score_kwargs)
+        top_best = _pick(pool_by_slot["top"], outfit.slots, anchor_ids, score_kwargs)
+        bottom_best = _pick(pool_by_slot["bottom"], outfit.slots, anchor_ids, score_kwargs)
         separates_score = (
             (top_best[1] if top_best else -99) + (bottom_best[1] if bottom_best else -99)
         )
@@ -479,7 +535,7 @@ def compose_outfit(
     for slot in fill_order:
         if slot in outfit.slots:
             continue
-        picked = _pick(pool.get(slot, []), outfit.slots, anchor_ids, score_kwargs)
+        picked = _pick(pool_by_slot.get(slot, []), outfit.slots, anchor_ids, score_kwargs)
         if picked is None:
             if slot in ("top", "bottom", "dress", "footwear"):
                 # Name the occasion in the gap so the agent can be specific: an
@@ -535,3 +591,66 @@ def compose_outfit(
             "partial idea, not a finished outfit."
         )
     return outfit
+
+
+def compose_outfit(
+    db: Session,
+    user_id: UUID,
+    profile: ProfileBlock,
+    *,
+    occasion: Optional[str] = None,
+    formality_target: Optional[int] = None,
+    warmth_target: Optional[int] = None,
+    season: Optional[str] = None,
+    anchor_item_ids: Optional[List[UUID]] = None,
+    exclude_item_ids: Optional[List[UUID]] = None,
+) -> ComposedOutfit:
+    """Compose one outfit from the caller's closet under the rules above.
+
+    Anchors are resolved through :func:`get_owned_items` — a foreign or unknown
+    id simply doesn't resolve, and the tool layer reports it, so a coerced id
+    can never pull another user's item into an outfit.
+
+    This is the DB-bound shell: it clamps the request, loads the anchors and the
+    per-slot candidate pool from Postgres (season + category + formality-band
+    filtering happen in SQL), flattens them into one in-memory pool, and hands
+    off to the pure :func:`assemble_from_pool` for the actual rule-driven
+    assembly. The split lets a batch job reuse the identical assembly logic
+    without a database.
+    """
+    if formality_target is not None:
+        formality_target = max(1, min(5, int(formality_target)))
+    if warmth_target is not None:
+        warmth_target = max(1, min(3, int(warmth_target)))
+
+    family = occasion_family(occasion)
+    exclude_ids = set(exclude_item_ids or [])
+
+    anchors = get_owned_items(db, user_id, anchor_item_ids or [])
+    anchor_ids = {a.id for a in anchors}
+
+    pool_by_slot = _candidate_pool(
+        db,
+        user_id,
+        formality_target=formality_target,
+        warmth_target=warmth_target,
+        occasion=occasion,
+        season=season,
+        profile=profile,
+        exclude_ids=exclude_ids | anchor_ids,
+        family=family,
+    )
+    # Flatten the DB-filtered candidates and append the resolved anchors (in
+    # get_owned_items order). assemble_from_pool re-buckets by the same category
+    # rule, excludes the anchors from candidate slots, and places them first.
+    flat: List[ClothingItem] = [it for items in pool_by_slot.values() for it in items]
+    flat.extend(anchors)
+
+    return assemble_from_pool(
+        flat,
+        formality_target=formality_target,
+        warmth_target=warmth_target,
+        occasion=occasion,
+        profile=profile,
+        anchor_ids=frozenset(anchor_ids),
+    )
