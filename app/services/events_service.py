@@ -68,6 +68,11 @@ EVENT_TYPES: frozenset[str] = frozenset(
         # Session bookends
         "session_start",
         "session_end",
+        # Shopping feed (Wave F2). impression/expand/save/dismiss/click_out/wishlist_add
+        # above are reused by the feed (card_type/feed_position/exploration/session_id ride
+        # in `properties`). rate_swipe is the feed's like/dislike swipe on a card — a
+        # behavioural taste signal the F3 learning loop reads.
+        "rate_swipe",
     }
 )
 

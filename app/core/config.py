@@ -350,6 +350,63 @@ class Settings(BaseSettings):
     # ENRICHMENT_MAX_LLM_CALLS_PER_RUN). Decay + recompute are pure-Python + free.
     DISTILL_MAX_NARRATIVE_CALLS_PER_RUN: int = 1000
 
+    # --- Shopping feed: Stage-1 ranker + wardrobe-gap job (Wave F2) ---------
+    # The feed scores each product with an INTERPRETABLE linear model (no learned
+    # weights). All coefficients live HERE, never inlined in the ranker, so a weight
+    # change is one edit and the golden test (tests/test_ranker_golden.py) makes the
+    # effect on scoring visible. Feed serve + gap job are both $0 API (pgvector + CPU).
+    #
+    #   score = W_TASTE·taste_match + W_GAP·wardrobe_gap + W_PRICE·price_fit
+    #           + W_QUALITY·quality_recency − W_FATIGUE·fatigue
+    RANKING_W_TASTE: float = 0.40      # cosine(product, taste-blend), the primary signal
+    RANKING_W_GAP: float = 0.25        # marginal outfits unlocked vs the current closet
+    RANKING_W_PRICE: float = 0.15      # gaussian fit to the user's budget band
+    RANKING_W_QUALITY: float = 0.12    # freshness / in-stock / verified-image quality
+    RANKING_W_FATIGUE: float = 0.18    # subtractive: decays a product seen too often
+
+    # taste-blend = α·liked-centroid ⊕ β·closet-centroid ⊕ γ·archetype-centroid.
+    # α grows and γ shrinks with behavioural evidence (schedule g = exp(−evidence/SCALE)):
+    # a cold-start user is all-archetype; a user with likes + a closet is taste-driven.
+    RANKING_BLEND_ALPHA: float = 0.60          # warm-state weight on liked-items centroid
+    RANKING_BLEND_BETA: float = 0.40           # weight on the closet centroid (when present)
+    RANKING_BLEND_GAMMA: float = 0.15          # warm-state weight on archetype centroid
+    RANKING_BLEND_EVIDENCE_SCALE: float = 8.0  # behavioural signals for ~63% warm-up
+
+    # wardrobe_gap term = log(1+unlock_count) normalised per user, + a bonus when the
+    # product fills an L1 occasion the closet covers ZERO of (an empty-context unlock).
+    RANKING_GAP_OCCASION_BONUS: float = 0.25
+
+    # price_fit = gaussian(price; centre=budget mid, σ=RANKING_PRICE_SIGMA_FRAC·mid).
+    # A missing price or an unknown band scores neutral (RANKING_PRICE_NEUTRAL).
+    RANKING_PRICE_SIGMA_FRAC: float = 0.5
+    RANKING_PRICE_NEUTRAL: float = 0.5
+
+    # fatigue = 1 − exp(−DECAY·impressions) from style_events (per user,product).
+    RANKING_FATIGUE_DECAY: float = 0.35
+
+    # Re-rank layer. MMR trades relevance vs diversity over product embeddings
+    # (λ=1 pure relevance, λ=0 pure diversity). Category calibration nudges the feed's
+    # category mix toward the user's closet+occasions mix. An exploration slice
+    # (ε of positions) injects adjacent-archetype/category items, each FLAGGED so its
+    # impression is learnable-apart in style_events.
+    RANKING_MMR_LAMBDA: float = 0.70
+    RANKING_EXPLORATION_EPSILON: float = 0.18   # 15–20% of feed positions are exploration
+    RANKING_CATEGORY_CALIBRATION: float = 0.5   # 0 = ignore closet mix, 1 = match it hard
+
+    # Feed composition. ~70% product cards, ~30% outfit cards (owned items + 1 buyable).
+    RANKING_OUTFIT_CARD_RATIO: float = 0.30
+    RANKING_FEED_PAGE_SIZE: int = 24
+    # A user needs at least this many closet items before outfit cards are built (below
+    # it there is nothing to compose against → cold-start "starter looks", product-only).
+    RANKING_OUTFIT_MIN_CLOSET: int = 4
+
+    # wardrobe-gap job combinatorics caps (bound the nightly CPU cost):
+    #   CANDIDATE_K : top-K products by taste_match scored per user (the candidate pool).
+    #   SLOT_TOP_M  : per slot, keep only the top-M embedding-diverse owned representatives
+    #                 before the marginal-unlock grid — caps assemble_from_pool's fan-out.
+    RANKING_GAP_CANDIDATE_K: int = 400
+    RANKING_GAP_SLOT_TOP_M: int = 15
+
     # Defense-in-depth (locked decision 1): run agent tool DB access on an
     # RLS-ENFORCED connection (SET LOCAL role authenticated + request.jwt.claims)
     # so Postgres RLS backstops the app-level WHERE user_id. Fail-loud: if the

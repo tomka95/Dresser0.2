@@ -12,6 +12,7 @@ export * from './departments';
 export * from './sizes';
 export * from './preferences';
 export * from './chat';
+export * from './shop';
 
 
 
