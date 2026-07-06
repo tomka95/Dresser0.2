@@ -1,0 +1,359 @@
+{
+  "cold_start_archetype": {
+    "blend_weights": {
+      "archetype": 1.0,
+      "closet": 0.0,
+      "liked": 0.0
+    },
+    "ranked_order": [
+      {
+        "exploration": false,
+        "id": "p_gap_filler"
+      },
+      {
+        "exploration": false,
+        "id": "p_archetype"
+      },
+      {
+        "exploration": false,
+        "id": "p_bottom_gap"
+      },
+      {
+        "exploration": false,
+        "id": "p_liked_hit"
+      },
+      {
+        "exploration": false,
+        "id": "p_closet_twin"
+      },
+      {
+        "exploration": false,
+        "id": "p_offtaste"
+      },
+      {
+        "exploration": false,
+        "id": "p_neutral"
+      },
+      {
+        "exploration": false,
+        "id": "p_pricey"
+      },
+      {
+        "exploration": false,
+        "id": "p_fatigued"
+      }
+    ],
+    "scores": {
+      "p_archetype": {
+        "fatigue": 0.0,
+        "gap": 0.078866,
+        "price": 0.149252,
+        "quality": 0.06,
+        "taste": 0.399745,
+        "total": 0.687864
+      },
+      "p_bottom_gap": {
+        "fatigue": 0.0,
+        "gap": 0.25,
+        "price": 0.125291,
+        "quality": 0.096,
+        "taste": 0.257143,
+        "total": 0.728433
+      },
+      "p_closet_twin": {
+        "fatigue": 0.295312,
+        "gap": 0.125,
+        "price": 0.14703,
+        "quality": 0.096,
+        "taste": 0.2,
+        "total": 0.514874
+      },
+      "p_fatigued": {
+        "fatigue": 0.985004,
+        "gap": 0.157732,
+        "price": 0.15,
+        "quality": 0.108,
+        "taste": 0.2,
+        "total": 0.438432
+      },
+      "p_gap_filler": {
+        "fatigue": 0.0,
+        "gap": 0.25,
+        "price": 0.138467,
+        "quality": 0.084,
+        "taste": 0.261721,
+        "total": 0.734189
+      },
+      "p_liked_hit": {
+        "fatigue": 0.0,
+        "gap": 0.183122,
+        "price": 0.14703,
+        "quality": 0.108,
+        "taste": 0.220092,
+        "total": 0.658243
+      },
+      "p_neutral": {
+        "fatigue": 0.503415,
+        "gap": 0.078866,
+        "price": 0.125291,
+        "quality": 0.072,
+        "taste": 0.3,
+        "total": 0.485542
+      },
+      "p_offtaste": {
+        "fatigue": 0.0,
+        "gap": 0.0,
+        "price": 0.15,
+        "quality": 0.06,
+        "taste": 0.2201,
+        "total": 0.4301
+      },
+      "p_pricey": {
+        "fatigue": 0.0,
+        "gap": 0.157732,
+        "price": 0.0,
+        "quality": 0.072,
+        "taste": 0.220823,
+        "total": 0.450556
+      }
+    }
+  },
+  "mid_some_evidence": {
+    "blend_weights": {
+      "archetype": 0.089982,
+      "closet": 0.507978,
+      "liked": 0.40204
+    },
+    "ranked_order": [
+      {
+        "exploration": false,
+        "id": "p_bottom_gap"
+      },
+      {
+        "exploration": false,
+        "id": "p_gap_filler"
+      },
+      {
+        "exploration": false,
+        "id": "p_liked_hit"
+      },
+      {
+        "exploration": false,
+        "id": "p_closet_twin"
+      },
+      {
+        "exploration": false,
+        "id": "p_archetype"
+      },
+      {
+        "exploration": false,
+        "id": "p_fatigued"
+      },
+      {
+        "exploration": false,
+        "id": "p_pricey"
+      },
+      {
+        "exploration": false,
+        "id": "p_neutral"
+      },
+      {
+        "exploration": false,
+        "id": "p_offtaste"
+      }
+    ],
+    "scores": {
+      "p_archetype": {
+        "fatigue": 0.0,
+        "gap": 0.078866,
+        "price": 0.149252,
+        "quality": 0.06,
+        "taste": 0.235316,
+        "total": 0.523434
+      },
+      "p_bottom_gap": {
+        "fatigue": 0.0,
+        "gap": 0.25,
+        "price": 0.125291,
+        "quality": 0.096,
+        "taste": 0.37981,
+        "total": 0.851101
+      },
+      "p_closet_twin": {
+        "fatigue": 0.295312,
+        "gap": 0.125,
+        "price": 0.14703,
+        "quality": 0.096,
+        "taste": 0.37678,
+        "total": 0.691654
+      },
+      "p_fatigued": {
+        "fatigue": 0.985004,
+        "gap": 0.157732,
+        "price": 0.15,
+        "quality": 0.108,
+        "taste": 0.338073,
+        "total": 0.576505
+      },
+      "p_gap_filler": {
+        "fatigue": 0.0,
+        "gap": 0.25,
+        "price": 0.138467,
+        "quality": 0.084,
+        "taste": 0.351279,
+        "total": 0.823746
+      },
+      "p_liked_hit": {
+        "fatigue": 0.0,
+        "gap": 0.183122,
+        "price": 0.14703,
+        "quality": 0.108,
+        "taste": 0.353771,
+        "total": 0.791922
+      },
+      "p_neutral": {
+        "fatigue": 0.503415,
+        "gap": 0.078866,
+        "price": 0.125291,
+        "quality": 0.072,
+        "taste": 0.352895,
+        "total": 0.538437
+      },
+      "p_offtaste": {
+        "fatigue": 0.0,
+        "gap": 0.0,
+        "price": 0.15,
+        "quality": 0.06,
+        "taste": 0.202765,
+        "total": 0.412765
+      },
+      "p_pricey": {
+        "fatigue": 0.0,
+        "gap": 0.157732,
+        "price": 0.0,
+        "quality": 0.072,
+        "taste": 0.340637,
+        "total": 0.570369
+      }
+    }
+  },
+  "warm_taste_driven": {
+    "blend_weights": {
+      "archetype": 0.003565,
+      "closet": 0.404278,
+      "liked": 0.592156
+    },
+    "ranked_order": [
+      {
+        "exploration": false,
+        "id": "p_bottom_gap"
+      },
+      {
+        "exploration": false,
+        "id": "p_gap_filler"
+      },
+      {
+        "exploration": false,
+        "id": "p_liked_hit"
+      },
+      {
+        "exploration": false,
+        "id": "p_closet_twin"
+      },
+      {
+        "exploration": false,
+        "id": "p_archetype"
+      },
+      {
+        "exploration": false,
+        "id": "p_fatigued"
+      },
+      {
+        "exploration": false,
+        "id": "p_pricey"
+      },
+      {
+        "exploration": false,
+        "id": "p_neutral"
+      },
+      {
+        "exploration": false,
+        "id": "p_offtaste"
+      }
+    ],
+    "scores": {
+      "p_archetype": {
+        "fatigue": 0.0,
+        "gap": 0.078866,
+        "price": 0.149252,
+        "quality": 0.06,
+        "taste": 0.206681,
+        "total": 0.494799
+      },
+      "p_bottom_gap": {
+        "fatigue": 0.0,
+        "gap": 0.25,
+        "price": 0.125291,
+        "quality": 0.096,
+        "taste": 0.390191,
+        "total": 0.861481
+      },
+      "p_closet_twin": {
+        "fatigue": 0.295312,
+        "gap": 0.125,
+        "price": 0.14703,
+        "quality": 0.096,
+        "taste": 0.343519,
+        "total": 0.658392
+      },
+      "p_fatigued": {
+        "fatigue": 0.985004,
+        "gap": 0.157732,
+        "price": 0.15,
+        "quality": 0.108,
+        "taste": 0.375768,
+        "total": 0.6142
+      },
+      "p_gap_filler": {
+        "fatigue": 0.0,
+        "gap": 0.25,
+        "price": 0.138467,
+        "quality": 0.084,
+        "taste": 0.362542,
+        "total": 0.83501
+      },
+      "p_liked_hit": {
+        "fatigue": 0.0,
+        "gap": 0.183122,
+        "price": 0.14703,
+        "quality": 0.108,
+        "taste": 0.383709,
+        "total": 0.821861
+      },
+      "p_neutral": {
+        "fatigue": 0.503415,
+        "gap": 0.078866,
+        "price": 0.125291,
+        "quality": 0.072,
+        "taste": 0.339468,
+        "total": 0.52501
+      },
+      "p_offtaste": {
+        "fatigue": 0.0,
+        "gap": 0.0,
+        "price": 0.15,
+        "quality": 0.06,
+        "taste": 0.2001,
+        "total": 0.4101
+      },
+      "p_pricey": {
+        "fatigue": 0.0,
+        "gap": 0.157732,
+        "price": 0.0,
+        "quality": 0.072,
+        "taste": 0.375218,
+        "total": 0.60495
+      }
+    }
+  }
+}

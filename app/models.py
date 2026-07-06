@@ -998,6 +998,39 @@ class AffiliateConversion(Base):
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 
+class UserWardrobeGap(Base):
+    """Precomputed marginal-outfit-unlock for the shopping feed (Wave F2).
+
+    One row per (user, candidate product), written by the nightly wardrobe-gap job
+    (scripts/dev_wardrobe_gap.py -> app.ranking.gap). ``unlock_count`` is how many
+    wardrobe CONTEXTS (occasion × formality × warmth over the IL climate calendar) the
+    product newly satisfies against what the user ALREADY owns — the marginality signal
+    the ranker's ``wardrobe_gap`` term reads. ``gap_context`` carries the preview payload
+    (which occasions/categories it fills + example owned-item ids). PER-USER: RLS
+    auth.uid() = user_id (migration 0024).
+
+    Pure record. The job that fills it and the ranker that reads it live in app.ranking,
+    on the correct side of the import-linter wall — no payout/commission field is
+    reachable from here. Monetization happens only at click time, in app/monetization.
+    """
+
+    __tablename__ = "user_wardrobe_gap"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "product_id", name="user_wardrobe_gap_user_product_key"),
+        Index("idx_user_wardrobe_gap_user_unlock", "user_id", text("unlock_count DESC")),
+        Index("idx_user_wardrobe_gap_user_computed", "user_id", "computed_at"),
+        CheckConstraint("unlock_count >= 0", name="user_wardrobe_gap_unlock_nonneg_check"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(GUID(), ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    unlock_count = Column(Integer, nullable=False, default=0)
+    gap_context = Column(_jsonb(), nullable=False, default=dict)
+    computed_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+
 class StyleEvent(Base):
     """Interaction event log for the AI Stylist (Branch C writes).
 
