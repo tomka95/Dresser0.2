@@ -25,4 +25,5 @@ pgvector>=0.2.4
 bcrypt>=4.0.0
 boto3>=1.28.0
 supabase>=2.0.0
+import-linter>=2.0  # dev/CI: enforces the ranking<->monetization structural boundary (.importlinter)
 

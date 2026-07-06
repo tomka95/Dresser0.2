@@ -239,6 +239,23 @@ class Settings(BaseSettings):
     EVENTS_MAX_PROPERTIES_BYTES: int = 4096
     EVENTS_RATE_LIMIT_PER_MINUTE: int = 600
 
+    # --- Monetization (Wave F1c) -------------------------------------------
+    # The /out/{click_id} redirect wraps a product URL into an affiliate link at
+    # click time. Account IDs are STUBS today (empty) — until Guy fills them the wrap
+    # resolver returns the plain product URL. Secrets via env only. Only the
+    # destination URL + opaque click_id ever leave us (no user id / email / closet).
+    #   SOVRN_SITE_ID   : Sovrn/VigLink site id -> enables the Sovrn wrap (CUID=click_id).
+    #   SKIMLINKS_PUBLISHER_ID : Skimlinks publisher id -> enables the Skimlinks wrap.
+    #   MONETIZATION_DIRECT_DEEPLINK_ENABLED : allow per-program deep-links (SHEIN/AliExpress).
+    #   CLICK_RATE_LIMIT_PER_MINUTE : per-user ceiling on POST /clicks + GET /out hits.
+    SOVRN_SITE_ID: Optional[str] = None
+    SKIMLINKS_PUBLISHER_ID: Optional[str] = None
+    MONETIZATION_DIRECT_DEEPLINK_ENABLED: bool = True
+    CLICK_RATE_LIMIT_PER_MINUTE: int = 120
+    # Per-program direct affiliate ids (deep-link tier). Empty stubs today.
+    SHEIN_AFFILIATE_ID: Optional[str] = None
+    ALIEXPRESS_AFFILIATE_ID: Optional[str] = None
+
     # --- Onboarding seed (Wave S1) -----------------------------------------
     # POST /onboarding/seed writes the tap-only onboarding result into the S0
     # Style Profile tables (style_profiles.facts, style_preferences,

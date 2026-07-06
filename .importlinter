@@ -1,0 +1,33 @@
+# Structural boundary between the shopping-feed RANKER and MONETIZATION (Wave F1c).
+#
+# The feed ranker (app.ranking, F2) and the outfit composer/compat score garments on
+# taste / wardrobe-gap / price / fatigue. They must be PHYSICALLY UNABLE to import the
+# monetization module — no code path from ranking can read a payout, commission, or
+# affiliate-network field. Monetization happens only at click time, behind /out.
+#
+# app.ranking is an empty placeholder today (F1c) so F2's ranker is born inside this wall.
+# Run locally / in CI: `lint-imports` (reads this file). Enforced in the test suite too
+# (tests/test_monetization_boundary.py).
+
+[importlinter]
+root_package = app
+
+[importlinter:contract:ranking-not-monetization]
+name = Ranking and composer must not import monetization
+type = forbidden
+source_modules =
+    app.ranking
+    app.services.stylist.composer
+    app.services.stylist.compat
+forbidden_modules =
+    app.monetization
+
+[importlinter:contract:monetization-not-ranking]
+name = Monetization must not import ranking or the composer
+type = forbidden
+source_modules =
+    app.monetization
+forbidden_modules =
+    app.ranking
+    app.services.stylist.composer
+    app.services.stylist.compat
