@@ -28,7 +28,7 @@ from app.gmail_closet.review_service import (
     confirm_candidates,
     list_pending_candidates,
 )
-from app.gmail_closet.usage import get_user_cost_summary
+from app.platform.usage import get_user_cost_summary
 from app.models import GoogleAccount, IngestRun, User
 from app.services.events_service import EventValidationError, log_event
 

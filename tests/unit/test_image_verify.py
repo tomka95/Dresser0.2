@@ -12,7 +12,7 @@ the threshold fold, skip semantics, and the media-resolution setting mapping.
 """
 import logging
 
-import app.services.ai_provider as ai_provider
+import app.platform.ai_provider as ai_provider
 from app.core.config import settings
 from app.gmail_closet.image_verify import (
     VerifyBudget,

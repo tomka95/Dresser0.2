@@ -9,7 +9,7 @@ from functools import partial
 from typing import Optional
 from uuid import uuid4
 
-from app.services.ai_provider import get_ai_provider
+from app.platform.ai_provider import get_ai_provider
 from app.utils.supabase_storage import SupabaseStorageClient
 
 logger = logging.getLogger(__name__)

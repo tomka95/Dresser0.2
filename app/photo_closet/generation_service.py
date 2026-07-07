@@ -44,7 +44,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.gmail_closet.image_verify import VerifyBudget, verify_generated_image
-from app.gmail_closet.usage import UsageAccumulator, record_fill_usage
+from app.platform.usage import UsageAccumulator, record_fill_usage
 from app.models import ClothingItem, IngestCandidate, IngestRun
 from app.photo_closet.dedup import dedup_check
 from app.services.image_generation.base import (

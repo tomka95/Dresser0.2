@@ -104,7 +104,7 @@ def embed_product(db, product: Product, *, provider=None) -> bool:
         return False
 
     if provider is None:
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         provider = get_ai_provider()
 

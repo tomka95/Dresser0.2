@@ -426,11 +426,26 @@ class Settings(BaseSettings):
     # clear configuration error rather than silently pointing the app at a local DB.
     # The connection URL is assembled in app/db.py, which is the single place that
     # decides between the configured remote DB and an explicit local-dev opt-in.
+    # Every env var db.py consults lives here (P3.1) -- db.py never reads os.environ
+    # for configuration, so there is exactly one source of truth per var.
+    DATABASE_URL: Optional[str] = None
+    DATABASE_URI: Optional[str] = None  # legacy alias, checked after DATABASE_URL
     DB_USER: Optional[str] = None
     DB_PASSWORD: Optional[str] = None
     DB_HOST: Optional[str] = None
     DB_PORT: Optional[int] = None
     DB_NAME: Optional[str] = None
+
+    # Explicit local-dev opt-in (see app/db.py._local_mode). Kept as raw strings
+    # (not bool) so the truthy-string parsing in db.py is byte-for-byte identical
+    # to the pre-P3.1 os.getenv() behavior -- pydantic's own bool coercion accepts
+    # a slightly different string set and would be a silent behavior change here.
+    LOCAL_DB: Optional[str] = None
+    USE_SQLITE: Optional[str] = None
+    # Dev/test-only escape hatch letting the test suite point at a remote DB
+    # (app/db.py._guard_test_engine normally refuses this). Same raw-string-truthy
+    # reasoning as above.
+    ALLOW_REMOTE_TEST_DB: Optional[str] = None
 
     SUPABASE_S3_ENDPOINT: Optional[str] = None
     SUPABASE_S3_ACCESS_KEY: Optional[str] = None

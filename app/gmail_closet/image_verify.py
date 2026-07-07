@@ -288,7 +288,7 @@ def verify_image(
     try:
         from google.genai import types
 
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         image_part = {
             "inline_data": {
@@ -308,7 +308,7 @@ def verify_image(
         # Record REAL token usage (the call completed and was billed) for cost tracking.
         if usage is not None:
             try:
-                from app.gmail_closet.usage import usage_tokens
+                from app.platform.usage import usage_tokens
 
                 in_tok, out_tok = usage_tokens(resp)
                 usage.add_verify(in_tok, out_tok, model=model)  # single-image = Flash-Lite
@@ -399,7 +399,7 @@ def verify_generated_image(
     try:
         from google.genai import types
 
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         reference_part = {
             "inline_data": {
@@ -427,7 +427,7 @@ def verify_generated_image(
         # Record REAL token usage (the call completed and was billed) for cost tracking.
         if usage is not None:
             try:
-                from app.gmail_closet.usage import usage_tokens
+                from app.platform.usage import usage_tokens
 
                 in_tok, out_tok = usage_tokens(resp)
                 usage.add_verify(in_tok, out_tok, model=model)  # pair = GENERATION_VERIFY_MODEL (Flash)

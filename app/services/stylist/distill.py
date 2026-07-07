@@ -290,7 +290,7 @@ def run_chat_distill(
             return stats
 
         if provider is None:
-            from app.services.ai_provider import get_ai_provider
+            from app.platform.ai_provider import get_ai_provider
 
             provider = get_ai_provider()
 
@@ -622,7 +622,7 @@ def regenerate_narrative(
     regenerated = False
     if prefs:
         if provider is None:
-            from app.services.ai_provider import get_ai_provider
+            from app.platform.ai_provider import get_ai_provider
 
             provider = get_ai_provider()
         summaries = _recent_summaries(db, user_id)

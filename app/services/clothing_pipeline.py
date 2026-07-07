@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
-from app.services.ai_provider import get_ai_provider
+from app.platform.ai_provider import get_ai_provider
 from app.utils.image_loader import ImageLoader
 
 logger = logging.getLogger(__name__)

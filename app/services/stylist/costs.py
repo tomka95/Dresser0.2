@@ -1,7 +1,7 @@
 """Per-turn cost accounting for the stylist chat (reuses the usage helpers).
 
 Token counts come from each Gemini call's ``usage_metadata`` via the existing
-``app.gmail_closet.usage.usage_tokens`` reader — recorded, never estimated.
+``app.platform.usage.usage_tokens`` reader — recorded, never estimated.
 Dollars are computed at THE MODEL THAT RAN EACH CALL (Lite pre-parse, Flash
 compose/chat, Pro escalation), mirroring the per-model pricing discipline of
 ``UsageAccumulator.add_verify``. Rates live in config so pricing edits need no
@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 
 from app.core.config import settings
-from app.gmail_closet.usage import usage_tokens  # re-exported for callers
+from app.platform.usage import usage_tokens  # re-exported for callers
 
 __all__ = ["chat_gemini_cost", "TurnUsage", "usage_tokens"]
 

@@ -272,7 +272,7 @@ def verify_archetype_image(
     Never raises — a failed/unparseable call returns passed=False so the caller regens."""
     from google.genai import types
 
-    from app.services.ai_provider import get_ai_provider
+    from app.platform.ai_provider import get_ai_provider
 
     user_text = (
         f"Target archetype: {arch.label} ({dept} department).\n"

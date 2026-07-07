@@ -60,7 +60,7 @@ from app.gmail_closet.image_resolver import (
 from app.gmail_closet.image_verify import VerifyBudget
 from app.gmail_closet.product_image_cache import lookup_verified, make_cache_key
 from app.gmail_closet.shopping_search import SearchBudget
-from app.gmail_closet.usage import UsageAccumulator, record_fill_usage
+from app.platform.usage import UsageAccumulator, record_fill_usage
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
 
 logger = logging.getLogger(__name__)
