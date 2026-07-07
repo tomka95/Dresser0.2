@@ -44,7 +44,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Protocol, runtime_checkable
 
 import httpx
 
@@ -115,6 +115,50 @@ class SearchBudget:
     def remaining(self) -> int:
         with self._lock:
             return self._remaining
+
+
+# ---------------------------------------------------------------------------
+# THE SEAM (P3.4, ARCHITECTURE_AUDIT R6) — Protocol + Null default + registry +
+# factory dispatch, the same shape as GenerationProvider
+# (app/services/image_generation/base.py) and FeedProvider
+# (app/gmail_closet/feed_provider.py). Converged from the previous ad hoc
+# if/elif-over-free-functions dispatch inside search_products() below.
+#
+#     SearchProvider.search(query, brand, name) -> List[ShopCandidate]
+#
+# Providers are selected by settings.SEARCH_PROVIDER (or an explicit ``name``
+# override) via get_search_provider(). Falls back to NullSearchProvider —
+# a guaranteed empty result, never raises — when search is disabled, the
+# resolved name is unknown, or the provider's credential(s) are missing.
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class SearchProvider(Protocol):
+    """A query -> ranked ShopCandidate list lookup.
+
+    Implementations own their OWN locale resolution (DataForSEO's numeric
+    location_code vs Serper's 2-letter gl) — search_products() passes only
+    query/brand/name, mirroring how _search_serper/_search_dataforseo already
+    computed locale internally before this seam existed.
+    """
+
+    name: str
+
+    def search(self, query: str, brand: Optional[str], name: Optional[str]) -> List[ShopCandidate]:
+        ...
+
+
+class NullSearchProvider:
+    """The shipped-safe default: search not available -> every call is a miss.
+
+    Keeps the seam a no-op (empty result, no exception) when disabled, the
+    provider name is unknown, or its required credential(s) are absent.
+    """
+
+    name = "null"
+
+    def search(self, query: str, brand: Optional[str], name: Optional[str]) -> List[ShopCandidate]:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -274,33 +318,32 @@ def search_products(
 ) -> List[ShopCandidate]:
     """Provider-agnostic shopping search → ranked retailer page candidates (links only).
 
-    Dispatches to SEARCH_PROVIDER ('serper' default, or 'dataforseo'). No-ops (returns
-    []) when search is disabled, the provider's credentials are missing, the provider
-    is unknown, the per-run SearchBudget is exhausted, or anything errors. NEVER raises
-    into the resolver. The HTTP error path logs status + redacted body for BOTH
-    providers (their APIs return a JSON status/message even on errors).
+    Dispatches through get_search_provider() (SEARCH_PROVIDER, 'serper' default, or
+    'dataforseo'). No-ops (returns []) when search is disabled, the provider's
+    credentials are missing, the provider is unknown, the per-run SearchBudget is
+    exhausted, or anything errors. NEVER raises into the resolver. The HTTP error
+    path logs status + redacted body for BOTH providers (their APIs return a JSON
+    status/message even on errors).
 
     ``usage`` (an optional UsageAccumulator) counts one Serper CREDIT per ISSUED Serper
     query — recorded right after the per-run budget is consumed, so it reflects real
     billable calls (not no-ops) for per-sync cost tracking.
+
+    NOTE (P3.4): the disabled / unknown-provider / missing-credential checks now live
+    in get_search_provider() (the same factory shape as GenerationProvider), so they
+    run before the empty-query check below rather than after it as in the pre-P3.4
+    ad hoc ordering. The returned value ([] in every one of those cases) and all
+    budget/usage side effects are unchanged; the only possible difference is which
+    info/warning log line fires first in the degenerate case of an empty query AND a
+    misconfigured provider — not a case any real garment item hits.
     """
-    if not settings.GMAIL_SEARCH_ENABLED:
+    provider_obj = get_search_provider()
+    if isinstance(provider_obj, NullSearchProvider):
         return []
-    provider = (settings.SEARCH_PROVIDER or "serper").strip().lower()
+    provider = provider_obj.name
 
     query = build_query(brand, name, color)
     if not query:
-        return []
-
-    # Credential / provider preflight (no budget consumed on misconfiguration).
-    if provider == "serper" and not settings.SERPER_API_KEY:
-        logger.info("shopping search skipped: SERPER_API_KEY not set")
-        return []
-    if provider == "dataforseo" and not (settings.DATAFORSEO_LOGIN and settings.DATAFORSEO_PASSWORD):
-        logger.info("shopping search skipped: DATAFORSEO credentials not configured")
-        return []
-    if provider not in ("serper", "dataforseo"):
-        logger.warning("shopping search skipped: unknown SEARCH_PROVIDER=%r", provider)
         return []
 
     # Cost cap: consume one unit per ISSUED query.
@@ -318,10 +361,7 @@ def search_products(
             pass
 
     try:
-        if provider == "serper":
-            candidates = _search_serper(query, brand, name)
-        else:
-            candidates = _search_dataforseo(query, brand, name)
+        candidates = provider_obj.search(query, brand, name)
         # Host gating already dropped denied/landing hosts at parse time; now rank so
         # known retailers are tried before unknown fallback hosts.
         candidates = _rank_candidates(candidates)
@@ -415,3 +455,64 @@ def _poll_task(http: httpx.Client, task_id: str, auth) -> Optional[dict]:
                     return data
         time.sleep(settings.GMAIL_SEARCH_POLL_INTERVAL)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Concrete providers (thin wrappers over the _search_* dispatch functions above)
+# ---------------------------------------------------------------------------
+
+class SerperSearchProvider:
+    name = "serper"
+
+    def search(self, query: str, brand: Optional[str], name: Optional[str]) -> List[ShopCandidate]:
+        return _search_serper(query, brand, name)
+
+
+class DataForSeoSearchProvider:
+    name = "dataforseo"
+
+    def search(self, query: str, brand: Optional[str], name: Optional[str]) -> List[ShopCandidate]:
+        return _search_dataforseo(query, brand, name)
+
+
+# Provider name -> required settings attribute(s) (ALL must be truthy). Also the
+# registry of KNOWN provider names for dispatch, mirroring
+# GenerationProvider's _PROVIDER_KEY_SETTING.
+_PROVIDER_REQUIRED_SETTINGS = {
+    "serper": ("SERPER_API_KEY",),
+    "dataforseo": ("DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"),
+}
+
+
+def get_search_provider(name: Optional[str] = None) -> SearchProvider:
+    """Return the active SearchProvider (Null unless deliberately configured).
+
+    Dispatches on ``name`` (explicit override) or settings.SEARCH_PROVIDER
+    (default 'serper'). Falls back to NullSearchProvider when:
+      * GMAIL_SEARCH_ENABLED is false and no explicit name was given (shipped
+        default);
+      * the resolved name is not a known provider (warn);
+      * the provider's required credential(s) are not configured (info —
+        matches the pre-P3.4 "shopping search skipped: ... not set" logging).
+    Never raises.
+    """
+    if name is None and not settings.GMAIL_SEARCH_ENABLED:
+        return NullSearchProvider()
+
+    resolved = (name or settings.SEARCH_PROVIDER or "serper").strip().lower()
+    required = _PROVIDER_REQUIRED_SETTINGS.get(resolved)
+    if required is None:
+        logger.warning("shopping search: unknown SEARCH_PROVIDER=%r -> null provider", resolved)
+        return NullSearchProvider()
+
+    missing = [attr for attr in required if not getattr(settings, attr, None)]
+    if missing:
+        logger.info(
+            "shopping search skipped: %s credential(s) not configured: %s",
+            resolved, ", ".join(missing),
+        )
+        return NullSearchProvider()
+
+    if resolved == "serper":
+        return SerperSearchProvider()
+    return DataForSeoSearchProvider()
