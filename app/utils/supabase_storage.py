@@ -1,10 +1,23 @@
-import os
 import uuid
 from pathlib import Path
 from typing import Optional
 
 import boto3
 from botocore.client import Config
+
+from app.core.config import settings
+
+
+def _require(value: Optional[str], name: str) -> str:
+    """Fetch a required setting, raising KeyError(name) if unset.
+
+    Matches the pre-P3.1 `os.environ[name]` failure mode exactly (same exception
+    type + message) now that these values are sourced from `settings` instead of
+    the environment directly.
+    """
+    if value is None:
+        raise KeyError(name)
+    return value
 
 
 class SupabaseStorageClient:
@@ -13,9 +26,9 @@ class SupabaseStorageClient:
     """
 
     def __init__(self, bucket: str, public_base_url: Optional[str] = None):
-        endpoint = os.environ["SUPABASE_S3_ENDPOINT"]
-        access_key = os.environ["SUPABASE_S3_ACCESS_KEY"]
-        secret_key = os.environ["SUPABASE_S3_SECRET_KEY"]
+        endpoint = _require(settings.SUPABASE_S3_ENDPOINT, "SUPABASE_S3_ENDPOINT")
+        access_key = _require(settings.SUPABASE_S3_ACCESS_KEY, "SUPABASE_S3_ACCESS_KEY")
+        secret_key = _require(settings.SUPABASE_S3_SECRET_KEY, "SUPABASE_S3_SECRET_KEY")
 
         self.bucket = bucket
         self.public_base_url = public_base_url
@@ -31,8 +44,8 @@ class SupabaseStorageClient:
 
     @classmethod
     def from_env(cls) -> "SupabaseStorageClient":
-        bucket = os.environ["SUPABASE_S3_BUCKET"]
-        public_base_url = os.getenv("SUPABASE_PUBLIC_BASE_URL")
+        bucket = _require(settings.SUPABASE_S3_BUCKET, "SUPABASE_S3_BUCKET")
+        public_base_url = settings.SUPABASE_PUBLIC_BASE_URL
         return cls(bucket=bucket, public_base_url=public_base_url)
 
     def upload_file(

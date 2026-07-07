@@ -8,6 +8,7 @@ non-local host while running under pytest, unless ALLOW_REMOTE_TEST_DB=1 is set.
 
 import pytest
 
+from app.core.config import settings
 from app.db import _make_engine, DatabaseConfigError
 
 REMOTE = "postgresql+psycopg2://u:p@db.example.supabase.co:5432/postgres?sslmode=require"
@@ -31,5 +32,9 @@ def test_sqlite_is_allowed():
 
 
 def test_explicit_override_allows_remote(monkeypatch):
-    monkeypatch.setenv("ALLOW_REMOTE_TEST_DB", "1")
+    # ALLOW_REMOTE_TEST_DB now flows through the `settings` singleton (P3.1), which
+    # is built once at import time -- monkeypatch.setenv() alone would arrive too
+    # late. Patch the resolved setting directly, same pattern as the Supabase-auth
+    # fixtures in conftest.py.
+    monkeypatch.setattr(settings, "ALLOW_REMOTE_TEST_DB", "1")
     _make_engine(REMOTE)  # must not raise when explicitly overridden

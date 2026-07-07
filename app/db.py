@@ -4,14 +4,18 @@ import logging
 import os
 import sys
 import uuid
-from dotenv import load_dotenv
 from sqlalchemy import CHAR, MetaData, create_engine, text, TypeDecorator
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
-load_dotenv()
+from app.core.config import settings
+
+# NOTE: no explicit load_dotenv() here (P3.1). `settings` (app.core.config) is the
+# single source of truth for every env var this module consults, and pydantic-settings
+# already loads `.env` for those fields. Nothing else in app/ reads os.environ for
+# configuration, so a second dotenv load bought nothing but a duplicate source.
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,14 @@ def _under_pytest() -> bool:
 
     `pytest` is imported into sys.modules before any test/conftest collection, so
     this is reliable even at import time of this module.
+
+    NOTE (P3.1): PYTEST_CURRENT_TEST is deliberately read via os.getenv, not
+    `settings`, and is the one intentional exception to "no raw os.environ reads
+    for config" in this module. It is a dynamic, pytest-injected process signal
+    (set/cleared around each individual test) rather than a static config value a
+    developer sets in `.env` -- routing it through the Settings singleton (built
+    once at import time) would freeze whatever value happened to exist at that
+    instant instead of reflecting the live per-test state.
     """
     return "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST") is not None
 
@@ -99,7 +111,7 @@ def _guard_test_engine(url: str) -> None:
         return
     if not _is_remote_url(url):
         return
-    if _truthy(os.getenv("ALLOW_REMOTE_TEST_DB")):
+    if _truthy(settings.ALLOW_REMOTE_TEST_DB):
         logger.warning(
             "ALLOW_REMOTE_TEST_DB is set: permitting the test suite to use a "
             "REMOTE database (%s). create_all()/drop_all() can mutate it.",
@@ -145,14 +157,14 @@ def _local_mode() -> str | None:
     convenience alias USE_SQLITE=1). There is no automatic/implicit local mode:
     without one of these flags an unreachable configured DB is a hard failure.
     """
-    raw = (os.getenv("LOCAL_DB") or "").strip().lower()
+    raw = (settings.LOCAL_DB or "").strip().lower()
     if raw in ("sqlite", "postgres"):
         return raw
     if raw:
         raise DatabaseConfigError(
             f"LOCAL_DB={raw!r} is not valid. Use LOCAL_DB=sqlite or LOCAL_DB=postgres."
         )
-    if (os.getenv("USE_SQLITE") or "").strip().lower() in _TRUTHY:
+    if _truthy(settings.USE_SQLITE):
         return "sqlite"
     return None
 
@@ -180,15 +192,15 @@ def _build_database_url() -> str:
         )
         return _LOCAL_POSTGRES_URL
 
-    url = (os.getenv("DATABASE_URL") or os.getenv("DATABASE_URI") or "").strip()
+    url = (settings.DATABASE_URL or settings.DATABASE_URI or "").strip()
     if url:
         return url
 
-    user = os.getenv("DB_USER")
-    password = os.getenv("DB_PASSWORD")
-    host = os.getenv("DB_HOST")
-    port = os.getenv("DB_PORT", "5432")
-    name = os.getenv("DB_NAME")
+    user = settings.DB_USER
+    password = settings.DB_PASSWORD
+    host = settings.DB_HOST
+    port = settings.DB_PORT or 5432
+    name = settings.DB_NAME
     missing = [
         key
         for key, value in (
