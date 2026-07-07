@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { CloudRain, Plus, Sun } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { getCurrentUser } from '@/lib/api/auth';
 import { useClosetStore } from '@/stores/useClosetStore';
@@ -28,13 +28,13 @@ import { useOnline } from '@/lib/useOnline';
 import { logEvent } from '@/lib/api/events';
 import {
   getShopFeed,
-  openProduct,
   ShopAuthError,
   type Card,
   type ProductCard,
   type OutfitCard,
   type ShopFraming,
 } from '@/lib/api/shop';
+import { useAffiliateOpen } from '@/components/shop/useAffiliateOpen';
 import { AppShell } from '@/components/layout/AppShell';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
@@ -45,6 +45,7 @@ import {
   Sheet,
   Spark,
   Icon,
+  ItemTile,
   ImageFill,
   ErrorState,
   OfflineScreen,
@@ -65,6 +66,7 @@ export default function HomePage() {
   const online = useOnline();
   const pushToast = useToastStore((s) => s.toast);
 
+  const items = useClosetStore((s) => s.items);
   const fetchItems = useClosetStore((s) => s.fetchItems);
   const hasFetchedItems = useClosetStore((s) => s.hasFetchedItems);
 
@@ -86,6 +88,8 @@ export default function HomePage() {
   // Expanded product sheet (goes-with preview + Shop CTA).
   const [expanded, setExpanded] = useState<ProductCard | null>(null);
   const [opening, setOpening] = useState(false);
+  // F5 interstitial — commission disclosure before the /out hop.
+  const { open: openWithInterstitial, minting, interstitial } = useAffiliateOpen();
 
   // Impressions already logged (feedPosition-keyed) so scroll re-renders don't double-count.
   const seen = useRef<Set<number>>(new Set());
@@ -182,6 +186,7 @@ export default function HomePage() {
       productId: string,
       surface: string,
       card: Card,
+      display: { brand: string; name: string; price: number },
     ) => {
       setOpening(true);
       logEvent({
@@ -196,20 +201,30 @@ export default function HomePage() {
         },
       });
       try {
-        // Real monetized redirect (mint click → top-level nav to /out/{clickId}).
-        await openProduct(productId, surface);
-        // openProduct navigates away; nothing after this runs on success.
+        // Real monetized redirect: mint click → F5 interstitial (disclosure) →
+        // top-level nav to /out/{clickId}. No destination URL is built here.
+        await openWithInterstitial(productId, surface, {
+          brand: display.brand,
+          detail: `${display.name} · $${display.price}`,
+        });
+        // The interstitial owns navigation from here.
       } catch {
         setOpening(false);
         pushToast({ tone: 'error', title: 'Couldn’t open this product. Try again.' });
       }
     },
-    [pushToast],
+    [openWithInterstitial, pushToast],
   );
 
   if (loading || !isAuth) return null;
 
   const starter = framing === 'starter_looks';
+  const closetStrip = items.slice(0, 8);
+  const today = new Date().toLocaleDateString(undefined, {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+  });
 
   return (
     <AppShell>
@@ -217,7 +232,13 @@ export default function HomePage() {
         {/* Greeting */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="m-0 text-[31px] font-bold tracking-[-0.9px] text-white">
+            <div
+              className="uppercase"
+              style={{ color: M.ghost, fontSize: 11, fontWeight: 650, letterSpacing: '0.13em' }}
+            >
+              {today}
+            </div>
+            <h1 className="m-0 mt-1 text-[31px] font-bold tracking-[-0.9px] text-white">
               Hey, {firstName ?? 'there'}
             </h1>
           </div>
@@ -228,6 +249,45 @@ export default function HomePage() {
             onClick={() => setDrawerOpen(true)}
           />
         </div>
+
+        {/* Bento: weather + calendar tiles. MOCK — there is no weather/calendar
+            backend, so these are clearly labeled "sample" and never imply live
+            data. The ranked feed below is the REAL /shop surface. */}
+        {online && !starter && (
+          <HomeBentoTiles />
+        )}
+
+        {/* Closet strip — REAL closet items (client store). Skipped while empty
+            so a cold-start user isn't shown an empty rail. */}
+        {closetStrip.length > 0 && (
+          <>
+            <div className="mx-0.5 mb-3 mt-6 flex items-baseline justify-between">
+              <span className="text-[17px] font-semibold tracking-[-0.3px] text-white">
+                Your closet
+              </span>
+              <button
+                type="button"
+                onClick={() => router.push('/closet')}
+                className="text-[12.5px] font-semibold"
+                style={{ color: 'var(--mint)' }}
+              >
+                See all {items.length}
+              </button>
+            </div>
+            <div className="flex gap-2.5 overflow-x-auto pb-1" style={{ margin: '0 -20px', padding: '0 20px 4px' }}>
+              {closetStrip.map((it) => (
+                <div key={it.id} style={{ width: 108, flexShrink: 0 }}>
+                  <ItemTile
+                    name={it.name}
+                    brand={it.brand}
+                    imageUrl={it.imageUrl}
+                    onClick={() => router.push(`/closet/${it.id}`)}
+                  />
+                </div>
+              ))}
+            </div>
+          </>
+        )}
 
         {/* Feed header — framing-aware. LOCKED trust line under both. */}
         <div style={{ marginTop: 22 }}>
@@ -288,7 +348,11 @@ export default function HomePage() {
                       onImpression={logImpression}
                       onBuy={() =>
                         c.buyable &&
-                        handleOpenProduct(c.buyable.productId, 'home_outfit_card', c)
+                        handleOpenProduct(c.buyable.productId, 'home_outfit_card', c, {
+                          brand: c.buyable.brand,
+                          name: c.buyable.name,
+                          price: c.buyable.price,
+                        })
                       }
                     />
                   ),
@@ -358,10 +422,14 @@ export default function HomePage() {
                 variant="primary"
                 size="lg"
                 fullWidth
-                pending={opening}
+                pending={opening || minting}
                 icon={<Icon name="ArrowChevronRightMD" size={16} />}
                 onClick={() =>
-                  handleOpenProduct(expanded.product.productId, 'home_product_sheet', expanded)
+                  handleOpenProduct(expanded.product.productId, 'home_product_sheet', expanded, {
+                    brand: expanded.product.brand,
+                    name: expanded.product.name,
+                    price: expanded.product.price,
+                  })
                 }
               >
                 Shop {expanded.product.brand} · ${expanded.product.price}
@@ -384,6 +452,9 @@ export default function HomePage() {
       />
 
       <BottomNavBar activeRoute="/home" />
+
+      {/* F5 interstitial — commission disclosure before the server-resolved /out hop. */}
+      {interstitial}
     </AppShell>
   );
 }
@@ -546,6 +617,61 @@ function OutfitFeedCard({
             </Btn>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Bento tiles — weather + calendar. MOCK: Tailor has no weather or calendar
+ * backend, so these render fixed sample content and carry a "sample" tag so they
+ * never read as live data. They exist for layout fidelity with the F1 bento; wire
+ * to real endpoints if/when they exist.
+ */
+function HomeBentoTiles() {
+  return (
+    <div className="grid gap-3" style={{ gridTemplateColumns: '1.15fr 1fr', marginTop: 20 }}>
+      {/* Weather (sample) */}
+      <div style={{ ...M.glass(24), padding: '15px 16px', position: 'relative' }}>
+        <span
+          className="absolute uppercase"
+          style={{ top: 10, right: 12, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.1em', color: M.ghost }}
+        >
+          sample
+        </span>
+        <div className="flex items-center gap-2.5">
+          <Sun size={26} style={{ color: '#f5d78e' }} />
+          <div>
+            <div className="text-[21px] font-bold tracking-[-0.4px] text-white">21°</div>
+            <div style={{ color: M.faint, fontSize: 11.5 }}>Clear until 18:00</div>
+          </div>
+        </div>
+        <div className="mt-2.5 flex items-center gap-1.5" style={{ color: M.faint, fontSize: 11.5 }}>
+          <CloudRain size={13} style={{ color: M.ghost }} /> Drizzle after 20:00 — bring a layer
+        </div>
+      </div>
+      {/* Calendar (sample) */}
+      <div style={{ ...M.glass(24), padding: '15px 16px', position: 'relative' }}>
+        <span
+          className="absolute uppercase"
+          style={{ top: 10, right: 12, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.1em', color: M.ghost }}
+        >
+          sample
+        </span>
+        <div
+          className="uppercase"
+          style={{ color: M.ghost, fontSize: 10, fontWeight: 650, letterSpacing: '0.13em' }}
+        >
+          Today
+        </div>
+        <div className="mt-1.5 text-[13.5px] font-semibold text-white" style={{ lineHeight: 1.35 }}>
+          Design review
+          <br />
+          <span style={{ color: M.faint, fontWeight: 450, fontSize: 12 }}>10:00 · office</span>
+        </div>
+        <div className="mt-1.5" style={{ color: M.faint, fontSize: 12 }}>
+          Dinner · 20:30
+        </div>
       </div>
     </div>
   );

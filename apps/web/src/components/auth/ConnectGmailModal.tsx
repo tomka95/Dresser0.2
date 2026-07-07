@@ -4,17 +4,23 @@
  * ConnectGmailModal — the Gmail-connect consent dialog, on the unified §0
  * DialogFrame surface (deep-glass, centered medallion → title → copy → action
  * stack). Four designed states, unchanged in behaviour:
- *   disconnected (CTA) · connecting (spinner) · connected (success → review) · error (retry).
+ *   disconnected (CTA) · connecting (spinner) · connected (success → review) · error (retry)
+ *   · denied (permission declined — a calm, non-error off-ramp).
  * Connection state itself is REAL (driven by /gmail/oauth/status via the parent);
  * this component renders whichever state it's told. Props/callbacks are preserved.
+ *
+ * `denied` is deliberately distinct from `error`: `error` means the OAuth window
+ * closed/broke and retry is the answer; `denied` means the user consciously said
+ * no to inbox access — so it's amber (caution, not failure) and offers an
+ * add-by-photo off-ramp plus a way to revisit permissions, never a bare "Try again".
  */
 
 import React from "react";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, Shield } from "lucide-react";
 import { Btn, DialogFrame, GmailGlyph, Spark, Thinking, type DialogTone } from "@/components/ds";
 import { GoogleIcon } from "@/components/icons/GoogleIcon";
 
-export type GmailModalState = "disconnected" | "connecting" | "connected" | "error";
+export type GmailModalState = "disconnected" | "connecting" | "connected" | "error" | "denied";
 
 interface ConnectGmailModalProps {
   open: boolean;
@@ -24,6 +30,16 @@ interface ConnectGmailModalProps {
   onClose: () => void;
   onConnect: () => void;
   onReview: () => void;
+  /**
+   * Optional handler for the `denied` state's primary off-ramp ("Add by photo
+   * instead"). Falls back to onClose so existing consumers keep compiling.
+   */
+  onAddByPhoto?: () => void;
+  /**
+   * Optional handler for the `denied` state's "Review permissions" action.
+   * Falls back to onConnect (re-open the Google consent) if not provided.
+   */
+  onReviewPermissions?: () => void;
 }
 
 export function ConnectGmailModal({
@@ -33,6 +49,8 @@ export function ConnectGmailModal({
   onClose,
   onConnect,
   onReview,
+  onAddByPhoto,
+  onReviewPermissions,
 }: ConnectGmailModalProps) {
   // The dialog can't be dismissed by outside-click / escape while connecting.
   const onOpenChange = (isOpen: boolean) => {
@@ -89,6 +107,23 @@ export function ConnectGmailModal({
           </Btn>
           <Btn variant="ghost" fullWidth size="md" onClick={onClose}>
             Not now
+          </Btn>
+        </>
+      );
+      break;
+    case "denied":
+      icon = <Shield size={24} />;
+      iconTone = "amber";
+      title = "Permission declined";
+      sub =
+        "You said no to inbox access — fair. You can still add clothes by photo, or grant read-only receipts later in Settings.";
+      actions = (
+        <>
+          <Btn variant="glass" fullWidth size="md" onClick={onAddByPhoto ?? onClose}>
+            Add by photo instead
+          </Btn>
+          <Btn variant="ghost" fullWidth size="md" onClick={onReviewPermissions ?? onConnect}>
+            Review permissions
           </Btn>
         </>
       );

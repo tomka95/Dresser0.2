@@ -20,7 +20,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Pencil, Ruler, Settings as SettingsIcon } from 'lucide-react';
+import { Luggage, Pencil, Ruler, Settings as SettingsIcon, Users } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { getCurrentUser, type CurrentUserResponse } from '@/lib/api/auth';
 import { useClosetStore } from '@/stores/useClosetStore';
@@ -271,8 +271,24 @@ export default function ProfilePage() {
               <EntryRow
                 icon={<SettingsIcon size={16} />}
                 title="Settings"
-                last
                 onClick={() => router.push('/settings')}
+              />
+            </div>
+
+            {/* Explore previews — roadmap surfaces, clearly labeled as previews. */}
+            <div style={{ ...M.glass(24), padding: '4px 16px', marginTop: 12 }}>
+              <EntryRow
+                icon={<Luggage size={16} />}
+                title="Packing list"
+                sub="Preview · pack a trip from your closet"
+                onClick={() => router.push('/packing')}
+              />
+              <EntryRow
+                icon={<Users size={16} />}
+                title="Creator closets"
+                sub="Preview · browse and shop a creator"
+                last
+                onClick={() => router.push('/creator/lenamoreau')}
               />
             </div>
           </>

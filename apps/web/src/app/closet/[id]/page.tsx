@@ -125,6 +125,10 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
 
   const [isSaving, setIsSaving] = useState(false);
 
+  // Snapshot of the last-saved server values so Undo can PATCH them back verbatim.
+  // Seeded on load; refreshed after every successful save.
+  const savedRef = React.useRef<ClosetItemUpdate | null>(null);
+
   // Seed once authenticated.
   useEffect(() => {
     if (!isAuthed) return;
@@ -145,6 +149,16 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
         setCurrency(item.currency);
         setFaved(!!item.isFavorite); // seed from the persisted flag
         setFieldConf(readFieldConfidence(item)); // real per-field scores if any
+        // Baseline for Undo — the values as they stand on the server right now.
+        savedRef.current = {
+          name: item.name,
+          category: (item.category as Category) ?? 'other',
+          eventSource: 'closet_detail',
+          ...(item.brand ? { brand: item.brand } : {}),
+          ...(item.color ? { color: item.color } : {}),
+          ...(item.size ? { size: item.size } : {}),
+          ...(item.unitPrice != null ? { unitPrice: item.unitPrice } : {}),
+        };
         setLoadedOnce(true);
       })
       .catch(() => {
@@ -160,23 +174,64 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   const currencySymbol = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : '$';
   const fromGmail = !!merchant; // receipts carry a merchant; Gmail is our receipt source
 
+  // Build the PATCH body from the current form. Shared by save + confirm so the
+  // "confirmed" value written back is exactly what the user sees.
+  const buildUpdates = (): ClosetItemUpdate => {
+    const updates: ClosetItemUpdate = {
+      name: form.name.trim(),
+      category,
+      eventSource: 'closet_detail',
+    };
+    if (form.brand.trim()) updates.brand = form.brand.trim();
+    if (form.color.trim()) updates.color = form.color.trim();
+    if (form.size.trim()) updates.size = form.size.trim();
+    const price = Number(form.unitPrice);
+    if (form.unitPrice.trim() && Number.isFinite(price)) updates.unitPrice = price;
+    return updates;
+  };
+
   const handleSave = async () => {
     setIsSaving(true);
+    // Capture the previous saved state BEFORE we overwrite it — this is what Undo
+    // restores.
+    const previous = savedRef.current;
     try {
-      const updates: ClosetItemUpdate = {
-        name: form.name.trim(),
-        category,
-        eventSource: 'closet_detail',
-      };
-      if (form.brand.trim()) updates.brand = form.brand.trim();
-      if (form.color.trim()) updates.color = form.color.trim();
-      if (form.size.trim()) updates.size = form.size.trim();
-      const price = Number(form.unitPrice);
-      if (form.unitPrice.trim() && Number.isFinite(price)) updates.unitPrice = price;
-
+      const updates = buildUpdates();
       await updateItem(id, updates);
+      savedRef.current = updates;
       setEditingField(null);
-      pushToast({ tone: 'success', title: 'Changes saved' });
+      pushToast({
+        tone: 'success',
+        title: 'Saved',
+        // Real revert: PATCH the previous values back and re-seed the form from
+        // the restored item. No-op only if we never had a prior snapshot.
+        action: previous
+          ? {
+              label: 'Undo',
+              onClick: async () => {
+                try {
+                  const restored = await updateItem(id, { ...previous, eventSource: 'closet_detail' });
+                  setForm({
+                    name: restored.name,
+                    brand: restored.brand ?? '',
+                    color: restored.color ?? '',
+                    size: restored.size ?? '',
+                    unitPrice: restored.unitPrice != null ? String(restored.unitPrice) : '',
+                  });
+                  setCategory((restored.category as Category) ?? 'other');
+                  savedRef.current = previous;
+                  pushToast({ tone: 'success', title: 'Reverted' });
+                } catch (err) {
+                  pushToast({
+                    tone: 'error',
+                    title: 'Couldn’t undo',
+                    sub: err instanceof Error ? err.message : undefined,
+                  });
+                }
+              },
+            }
+          : undefined,
+      });
     } catch (err) {
       pushToast({
         tone: 'error',
@@ -212,6 +267,38 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
       // 'return' / 'delete' — no backend endpoints yet. Stay honest: never fake a
       // successful delete/return.
       pushToast({ tone: 'info', title: 'Not available yet', sub: 'This action isn’t wired up yet.' });
+    }
+  };
+
+  // C5 · Confidence review — confirm a single low-confidence field. This is REAL:
+  // it PATCHes the current (confirmed) value for that field, then clears the local
+  // low-confidence flag so the amber cue retires (the value is now user-verified).
+  // Only fields that carry a genuine sub-0.7 backend score ever reach here.
+  const [confirmingField, setConfirmingField] = useState<string | null>(null);
+  const handleConfirmField = async (confKey: string, editable: EditableField | 'category') => {
+    setConfirmingField(confKey);
+    try {
+      const updates: ClosetItemUpdate = { name: form.name.trim(), category, eventSource: 'closet_detail' };
+      if (editable === 'brand' && form.brand.trim()) updates.brand = form.brand.trim();
+      if (editable === 'color' && form.color.trim()) updates.color = form.color.trim();
+      if (editable === 'size' && form.size.trim()) updates.size = form.size.trim();
+      if (editable === 'unitPrice') {
+        const price = Number(form.unitPrice);
+        if (form.unitPrice.trim() && Number.isFinite(price)) updates.unitPrice = price;
+      }
+      await updateItem(id, updates);
+      // Retire the amber flag for this field only — value is confirmed now.
+      setFieldConf((c) => ({ ...c, [confKey]: 1 }));
+      savedRef.current = buildUpdates();
+      pushToast({ tone: 'success', title: 'Confirmed' });
+    } catch (err) {
+      pushToast({
+        tone: 'error',
+        title: 'Couldn’t confirm',
+        sub: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setConfirmingField(null);
     }
   };
 
@@ -503,9 +590,15 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
                       {row.value}
                     </span>
                   )}
-                  {low && !isEditingThis && (
-                    <span
-                      className="inline-flex items-center"
+                  {low && !isEditingThis && row.editable !== null && row.editable !== 'category' && (
+                    <button
+                      type="button"
+                      disabled={confirmingField === row.confKey}
+                      onClick={() =>
+                        handleConfirmField(row.confKey, row.editable as EditableField)
+                      }
+                      aria-label={`Confirm ${row.label.toLowerCase()}`}
+                      className="inline-flex items-center transition-transform active:scale-95 disabled:opacity-50"
                       style={{
                         height: 25,
                         padding: '0 10px',
@@ -515,10 +608,11 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
                         background: 'rgba(240,162,59,0.14)',
                         color: '#f0b566',
                         border: '1px solid rgba(240,162,59,0.4)',
+                        cursor: 'pointer',
                       }}
                     >
-                      Confirm
-                    </span>
+                      {confirmingField === row.confKey ? 'Saving…' : 'Confirm'}
+                    </button>
                   )}
                   {row.editable !== null && !isEditingThis && (
                     <button

@@ -19,7 +19,21 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bell, BookOpen, ChevronRight, Lock, LogOut, Ruler, RotateCw, SlidersHorizontal, Trash2 } from 'lucide-react';
+import {
+  Bell,
+  BookOpen,
+  ChevronRight,
+  Link2,
+  Lock,
+  LogOut,
+  Palette,
+  PersonStanding,
+  Ruler,
+  RotateCw,
+  SlidersHorizontal,
+  Trash2,
+  Wallet,
+} from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { signOut } from '@/lib/auth';
 import { getCurrentUser } from '@/lib/api/auth';
@@ -78,10 +92,12 @@ interface RowProps {
   control?: React.ReactNode;
   first?: boolean;
   danger?: boolean;
+  /** Small pill after the label (e.g. "Preview" for roadmap screens). */
+  badge?: string;
   onClick?: () => void;
 }
 
-function Row({ icon, label, sub, value, control, first, danger, onClick }: RowProps) {
+function Row({ icon, label, sub, value, control, first, danger, badge, onClick }: RowProps) {
   const inner = (
     <>
       <span
@@ -97,11 +113,27 @@ function Row({ icon, label, sub, value, control, first, danger, onClick }: RowPr
         {icon}
       </span>
       <span className="min-w-0 flex-1">
-        <span
-          className="block text-[14.5px] font-medium"
-          style={{ color: danger ? '#ff8087' : '#fff', letterSpacing: '-0.1px' }}
-        >
-          {label}
+        <span className="flex items-center gap-2">
+          <span
+            className="block text-[14.5px] font-medium"
+            style={{ color: danger ? '#ff8087' : '#fff', letterSpacing: '-0.1px' }}
+          >
+            {label}
+          </span>
+          {badge && (
+            <span
+              className="rounded-full text-[10px] font-semibold uppercase"
+              style={{
+                padding: '2px 7px',
+                letterSpacing: '0.06em',
+                color: 'rgba(255,255,255,0.55)',
+                background: 'rgba(255,255,255,0.08)',
+                border: '1px solid rgba(255,255,255,0.12)',
+              }}
+            >
+              {badge}
+            </span>
+          )}
         </span>
         {sub && <span className="mt-0.5 block text-[12px] leading-snug text-white/[0.55]">{sub}</span>}
       </span>
@@ -151,7 +183,6 @@ export default function SettingsPage() {
   const [gmailHint, setGmailHint] = useState<string | null>(null);
 
   const [syncFreq, setSyncFreq] = useState<string>('daily');
-  const [notifications, setNotifications] = useState(false);
   const [measurement, setMeasurement] = useState<string>('metric');
   const [sizeSystem, setSizeSystem] = useState<string>('EU');
 
@@ -163,7 +194,6 @@ export default function SettingsPage() {
   // Hydrate local prefs after mount (SSR-safe).
   useEffect(() => {
     setSyncFreq(readPref('syncFreq', 'daily'));
-    setNotifications(readPref('notifications', false));
     setMeasurement(readPref('measurement', 'metric'));
     setSizeSystem(readPref('sizeSystem', 'EU'));
   }, []);
@@ -220,7 +250,12 @@ export default function SettingsPage() {
               onClick={() => router.push('/profile/edit')}
             />
             <Row icon={<Lock size={16} />} label="Change password" onClick={() => router.push('/settings/password')} />
-            <Row icon={<Ruler size={16} />} label="Sizes & fit" onClick={() => router.push('/settings/sizes')} />
+            <Row
+              icon={<Bell size={16} />}
+              label="Notifications"
+              sub="Daily look, finds, price drops"
+              onClick={() => router.push('/settings/notifications')}
+            />
             <Row
               icon={<Trash2 size={16} />}
               label="Delete account"
@@ -263,30 +298,52 @@ export default function SettingsPage() {
               value={syncLabel}
               onClick={() => setSyncPickerOpen(true)}
             />
+            <Row
+              icon={<Link2 size={16} />}
+              label="More connectors"
+              sub="Outlook, Amazon, Photos — coming"
+              onClick={() => router.push('/settings/connectors')}
+            />
           </Group>
 
-          <Group title="Preferences">
+          <Group title="Styling">
             <Row
               first
               icon={<SlidersHorizontal size={16} />}
               label="My style profile"
               onClick={() => router.push('/settings/style')}
             />
+            <Row icon={<Ruler size={16} />} label="Sizes & fit" onClick={() => router.push('/settings/sizes')} />
             <Row
-              icon={<Bell size={16} />}
-              label="Notifications"
-              control={
-                <DSSwitch
-                  checked={notifications}
-                  aria-label="Notifications"
-                  onChange={(v) => {
-                    setNotifications(v);
-                    writePref('notifications', v);
-                  }}
-                />
-              }
+              icon={<Wallet size={16} />}
+              label="Budget bands"
+              sub="Set what's comfortable"
+              onClick={() => router.push('/settings/budget')}
             />
-            <Row icon={<BookOpen size={16} />} label="Units" value={unitsLabel} onClick={() => setUnitsPickerOpen(true)} />
+            <Row
+              icon={<PersonStanding size={16} />}
+              label="Body shape"
+              sub="Optional — for fit advice"
+              badge="Preview"
+              onClick={() => router.push('/settings/body')}
+            />
+            <Row
+              icon={<Palette size={16} />}
+              label="Color analysis"
+              sub="Find your season"
+              badge="Preview"
+              onClick={() => router.push('/settings/color')}
+            />
+          </Group>
+
+          <Group title="App">
+            <Row
+              first
+              icon={<BookOpen size={16} />}
+              label="Units"
+              value={unitsLabel}
+              onClick={() => setUnitsPickerOpen(true)}
+            />
           </Group>
 
           <Group>

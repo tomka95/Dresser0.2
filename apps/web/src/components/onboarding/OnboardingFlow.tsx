@@ -1,13 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChevronLeft, RotateCw } from 'lucide-react';
+import { Check, ChevronLeft, RotateCw } from 'lucide-react';
 
 import { Btn, M, SuccessPop, StateBlock } from '@/components/ds';
 import { useOnboardingStore, ONBOARDING_STEPS } from '@/stores/useOnboardingStore';
 import { seedOnboarding } from '@/lib/api/onboarding';
 import { STEPS } from './steps';
+import { ResumeCard } from './ResumeCard';
 
 /**
  * OnboardingFlow — the 6-step container (§2). Its OWN full-screen flow: a
@@ -29,6 +30,17 @@ export function OnboardingFlow() {
   const back = useOnboardingStore((s) => s.back);
   const setCompleted = useOnboardingStore((s) => s.setCompleted);
   const reset = useOnboardingStore((s) => s.reset);
+
+  // O9 — rehydrate any localStorage draft on mount, then decide whether to show the
+  // resume card. `hydrated` gates the first paint so we never flash step 1 before a
+  // saved draft has been read back in.
+  const hydrated = useOnboardingStore((s) => s.hydrated);
+  const resumable = useOnboardingStore((s) => s.resumable);
+  const hydrateDraft = useOnboardingStore((s) => s.hydrateDraft);
+  const clearResumable = useOnboardingStore((s) => s.clearResumable);
+  useEffect(() => {
+    hydrateDraft();
+  }, [hydrateDraft]);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +85,27 @@ export function OnboardingFlow() {
     } else {
       next();
     }
+  }
+
+  // Wait for the draft rehydration to run before the first paint so a returning
+  // user never sees step 1 flash before their saved progress loads.
+  if (!hydrated) {
+    return <Backdrop />;
+  }
+
+  // ── O9 · Resume mid-flow — a saved draft exists; offer continue / start over ─
+  if (resumable && phase === 'flow') {
+    return (
+      <Backdrop>
+        <ResumeCard
+          step={step}
+          onContinue={clearResumable}
+          onStartOver={() => {
+            reset(); // clears the draft + resumable, back to step 1
+          }}
+        />
+      </Backdrop>
+    );
   }
 
   // ── Completion states (O8) — success + commit-error ───────────────────────
@@ -229,7 +262,7 @@ export function OnboardingFlow() {
  * the app-bg fallback. `center` vertically centers its child (used by the
  * completion states); otherwise the child owns its own column layout.
  */
-function Backdrop({ children, center = false }: { children: React.ReactNode; center?: boolean }) {
+function Backdrop({ children, center = false }: { children?: React.ReactNode; center?: boolean }) {
   return (
     <div
       className="relative h-full min-h-full w-full overflow-hidden"

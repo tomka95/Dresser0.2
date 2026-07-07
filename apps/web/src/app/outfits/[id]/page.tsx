@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check } from 'lucide-react';
+import { Check, CloudSun } from 'lucide-react';
 
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
@@ -177,6 +177,26 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
           </p>
         )}
 
+        {/* Weather stamp — HONEST: there's no weather backend yet, so this is a
+            placeholder styling stamp, not a fabricated live reading. */}
+        <div className="mt-3.5 flex items-center gap-2">
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full text-[11.5px] font-semibold"
+            style={{
+              padding: '5px 12px',
+              background: 'rgba(255,255,255,0.06)',
+              border: '1px solid rgba(255,255,255,0.12)',
+              color: 'rgba(255,255,255,0.8)',
+            }}
+            title="Live weather styling is coming soon — this is a placeholder"
+          >
+            <CloudSun size={13} style={{ color: 'var(--mint)' }} /> Weather-aware
+          </span>
+          <span className="text-[11.5px]" style={{ color: M.faint }}>
+            Live weather coming soon
+          </span>
+        </div>
+
         {/* AI note */}
         <div style={{ ...M.ai(22), padding: '14px 16px', marginTop: 14 }} className="flex gap-3">
           <span style={{ color: 'var(--mint)', marginTop: 2 }}>
@@ -189,38 +209,48 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
           </div>
         </div>
 
-        {/* Item rows */}
+        {/* Item rows — tap the row to open the piece; the swap glyph routes to
+            the stylist (HONEST: there's no in-place outfit-edit backend, so
+            swap-per-piece hands off to chat, which owns the real swap loop). */}
         {its.length > 0 && (
           <div className="mt-3.5 flex flex-col gap-2.5">
             {its.map((item) => (
-              <button
+              <div
                 key={item.id}
-                type="button"
-                onClick={() => router.push(`/closet/${item.id}`)}
-                className="flex w-full items-center gap-3 rounded-[16px] p-2.5 text-left"
+                className="flex w-full items-center gap-3 rounded-[16px] p-2.5"
                 style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}
               >
-                <div className="shrink-0 overflow-hidden rounded-[10px]" style={{ width: 40, height: 48 }}>
-                  <ItemImage src={item.imageUrl} alt={item.name} fit="cover" />
-                </div>
-                <div className="flex-1">
-                  <div className="text-[13.5px] font-semibold text-white">{item.name}</div>
-                  {item.brand && (
-                    <div
-                      className="font-accent uppercase"
-                      style={{ color: M.faint, fontSize: 11, letterSpacing: '0.5px' }}
-                    >
-                      {item.brand}
-                    </div>
-                  )}
-                </div>
-                <span
-                  className="rounded-full"
-                  style={{ width: 8, height: 8, background: 'var(--mint)', boxShadow: '0 0 0 3px rgba(75,226,214,0.16)' }}
-                  title="In your closet"
-                  aria-hidden
-                />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => router.push(`/closet/${item.id}`)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                >
+                  <div className="shrink-0 overflow-hidden rounded-[10px]" style={{ width: 40, height: 48 }}>
+                    <ItemImage src={item.imageUrl} alt={item.name} fit="cover" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-semibold text-white">{item.name}</div>
+                    {item.brand && (
+                      <div
+                        className="font-accent uppercase"
+                        style={{ color: M.faint, fontSize: 11, letterSpacing: '0.5px' }}
+                      >
+                        {item.brand}
+                      </div>
+                    )}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Swap ${item.name} — ask the stylist`}
+                  title="Swap this piece with the stylist"
+                  onClick={() => router.push('/chat')}
+                  className="flex shrink-0 items-center justify-center rounded-full text-white/45 transition-colors active:text-white/80"
+                  style={{ width: 34, height: 34 }}
+                >
+                  <Icon name="ArrowArrowsReload01" size={15} />
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -285,6 +315,15 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
         >
           Wearing this
         </Btn>
+        <Btn
+          variant="glass"
+          size="lg"
+          aria-label="Swap pieces with the stylist"
+          title="Swap pieces with the stylist"
+          icon={<Icon name="ArrowArrowsReload01" size={18} />}
+          onClick={() => router.push('/chat')}
+          style={{ width: 54, padding: 0 }}
+        />
       </div>
     </AppShell>
   );

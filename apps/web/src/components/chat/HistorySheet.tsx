@@ -4,20 +4,44 @@ import { useState } from 'react';
 import { PenLine, Trash2 } from 'lucide-react';
 import type { ChatConversationSummary } from '@tailor/contracts';
 
-import { Btn, DialogFrame, Icon, Sheet } from '@/components/ds';
+import { Btn, DialogFrame, ErrorState, Icon, Sheet, Sk } from '@/components/ds';
 
 import { timeAgo } from './types';
+
+/** One shimmering placeholder row — matches a real conversation row's layout. */
+function SkeletonRow() {
+  return (
+    <div
+      className="flex items-center gap-3"
+      style={{ padding: '12.5px 4px' }}
+      aria-hidden
+    >
+      <Sk w={36} h={36} r={12} />
+      <div className="flex-1">
+        <Sk w="52%" h={12} />
+        <Sk w="30%" h={9} style={{ marginTop: 7 }} />
+      </div>
+    </div>
+  );
+}
 
 /**
  * Chat history switcher: new-chat · list of saved threads (open on tap) · delete
  * (behind a §0 DialogFrame confirm — the design shows one). Deletion itself is
  * the parent's job; this only gates it on confirmation.
+ *
+ * Load status is surfaced, not swallowed: a tail skeleton row while the list is
+ * loading, and a retry-able error banner if the fetch failed (the parent owns
+ * the fetch and passes loading/error/onRetry).
  */
 export function HistorySheet({
   open,
   onClose,
   conversations,
   activeId,
+  loading = false,
+  error = false,
+  onRetry,
   onNewChat,
   onOpenConversation,
   onDeleteConversation,
@@ -26,6 +50,9 @@ export function HistorySheet({
   onClose: () => void;
   conversations: ChatConversationSummary[];
   activeId?: string;
+  loading?: boolean;
+  error?: boolean;
+  onRetry?: () => void;
   onNewChat: () => void;
   onOpenConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
@@ -48,7 +75,7 @@ export function HistorySheet({
         </button>
 
         <div className="max-h-[48vh] overflow-y-auto">
-          {conversations.length === 0 && (
+          {conversations.length === 0 && !loading && !error && (
             <div className="py-8 text-center text-[13px] text-white/50">No saved chats yet.</div>
           )}
           {conversations.map((c) => {
@@ -98,6 +125,21 @@ export function HistorySheet({
               </div>
             );
           })}
+
+          {/* Tail skeleton while the list loads (shown even alongside cached rows). */}
+          {loading && <SkeletonRow />}
+
+          {/* Surfaced load error — not swallowed. Older/newer chats may be missing. */}
+          {error && !loading && (
+            <div className="mt-2.5">
+              <ErrorState
+                compact
+                title="Couldn’t load your chats"
+                sub="They’re safe — the list just didn’t load."
+                onRetry={onRetry}
+              />
+            </div>
+          )}
         </div>
       </Sheet>
 

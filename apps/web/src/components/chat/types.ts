@@ -11,6 +11,8 @@ export interface ChatMessage {
   pending?: boolean;
   /** Terminal error styling (quota/timeouts/etc). */
   isError?: boolean;
+  /** Composed offline — held in the send-queue until connectivity returns. */
+  queued?: boolean;
   /** Client-only object URL for an attached photo shown in the sent bubble.
    *  Display-only — the image is never persisted, so history reloads drop it. */
   imageUrl?: string;

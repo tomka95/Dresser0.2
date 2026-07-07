@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Hourglass } from 'lucide-react';
 
 import { Spark, TypingDots } from '@/components/ds';
 
@@ -90,6 +90,16 @@ export function ChatMessage({
           style={{ color: '#ff9096' }}
         >
           <AlertCircle size={12} /> Didn&rsquo;t send
+        </div>
+      )}
+
+      {/* Offline-queued send — honest: it hasn't sent, and says when it will. */}
+      {isUser && m.queued && (
+        <div
+          className="mt-1.5 flex items-center justify-end gap-1.5 text-[11.5px]"
+          style={{ color: '#f0b566' }}
+        >
+          <Hourglass size={12} /> Queued &mdash; sends when you&rsquo;re back
         </div>
       )}
 

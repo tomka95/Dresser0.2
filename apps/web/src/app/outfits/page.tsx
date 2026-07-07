@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { Check } from 'lucide-react';
 
 import { track } from '@/lib/analytics';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
@@ -265,6 +266,36 @@ export default function OutfitsPage() {
                         <StylistMark size={11} /> Add {outfit.recommendedItems[0].name.toLowerCase()} to finish
                       </div>
                     )}
+
+                    {/* Feedback parity with chat — HONEST: these route to the
+                        stylist (which owns the real reject/swap/worn loop).
+                        No persistence is faked here. */}
+                    <div className="mt-2.5 flex gap-1.5">
+                      <Btn
+                        variant="mint"
+                        size="xs"
+                        icon={<Check size={11} />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          track('outfit_feedback_to_chat', { outfit_id: outfit.id, action: 'worn' });
+                          router.push('/chat');
+                        }}
+                      >
+                        Wore it
+                      </Btn>
+                      <Btn
+                        variant="glass"
+                        size="xs"
+                        icon={<Icon name="ArrowArrowsReload01" size={11} />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          track('outfit_feedback_to_chat', { outfit_id: outfit.id, action: 'swap' });
+                          router.push('/chat');
+                        }}
+                      >
+                        Swap
+                      </Btn>
+                    </div>
                   </div>
 
                   {/* Like — local only ("Saved on this device"). */}

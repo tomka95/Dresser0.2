@@ -13,7 +13,7 @@
  */
 
 import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Download, Trash2 } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
 import { Btn, DialogFrame, Field, M, TopBar } from '@/components/ds';
@@ -39,6 +39,51 @@ export default function DeleteAccountPage() {
       <div style={{ padding: '62px 20px 40px' }}>
         <TopBar title="Delete account" />
         <div className="h-4" />
+
+        {/* Export my data — the calmer escape hatch, offered before deletion.
+            HONEST-DISABLED: there is no data-export endpoint yet, so this points
+            to support instead of faking a download. */}
+        <div style={{ ...M.glass(24), padding: '16px 18px' }}>
+          <div className="flex items-start gap-3.5">
+            <span
+              className="flex shrink-0 items-center justify-center rounded-xl"
+              style={{
+                width: 36,
+                height: 36,
+                background: 'rgba(255,255,255,0.08)',
+                border: '1px solid rgba(255,255,255,0.09)',
+                color: M.soft,
+              }}
+            >
+              <Download size={16} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[14.5px] font-medium text-white">Export my data</div>
+              <div className="mt-1 text-[12.5px] leading-relaxed text-white/[0.55]">
+                Prefer a pause over deleting? Take your closet, outfits and style profile with you.
+              </div>
+            </div>
+          </div>
+          <Btn
+            variant="glass"
+            fullWidth
+            size="md"
+            className="mt-3.5"
+            disabled
+            title="Data export isn't available yet"
+          >
+            Export coming soon
+          </Btn>
+          <div className="mt-2 text-[11.5px] leading-snug text-white/[0.36]">
+            Self-serve export isn&rsquo;t wired yet. To request a copy today, email{' '}
+            <a href="mailto:support@tailor.app" className="text-white/[0.55] underline">
+              support@tailor.app
+            </a>
+            .
+          </div>
+        </div>
+
+        <div className="h-3.5" />
 
         <div
           style={{

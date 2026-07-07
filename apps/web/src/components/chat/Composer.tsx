@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { ImagePlus, Send, Shirt, X } from 'lucide-react';
+import { Hourglass, ImagePlus, Send, Shirt, X } from 'lucide-react';
 
 import { Sheet } from '@/components/ds';
 import { ItemImage } from '@/components/ui/ItemImage';
@@ -21,6 +21,7 @@ export function Composer({
   onSend,
   streaming,
   disabled = false,
+  offline = false,
   incognito = false,
   pendingImage,
   attachingImage,
@@ -37,6 +38,8 @@ export function Composer({
   onSend: () => void;
   streaming: boolean;
   disabled?: boolean;
+  /** Offline: text still composes+queues, but attachments can't be held. */
+  offline?: boolean;
   incognito?: boolean;
   pendingImage: PendingImage | null;
   attachingImage: boolean;
@@ -53,6 +56,10 @@ export function Composer({
 
   const armed = draft.trim().length > 0 || !!pendingImage || attachedItems.length > 0;
   const inputsDisabled = streaming || disabled;
+  // Offline: text can still compose (it queues), but attachments can't — their
+  // bytes are ephemeral. Send is armed on text alone so it can be queued.
+  const attachDisabled = inputsDisabled || offline;
+  const textArmed = offline ? draft.trim().length > 0 : armed;
   const hasTray = pendingImage != null || attachingImage || attachedItems.length > 0;
 
   return (
@@ -152,7 +159,8 @@ export function Composer({
           type="button"
           aria-label="Attach a photo"
           onClick={() => fileInputRef.current?.click()}
-          disabled={inputsDisabled}
+          disabled={attachDisabled}
+          title={offline ? 'Photos can’t be attached while offline' : undefined}
           className="flex shrink-0 items-center justify-center rounded-full text-white/75 disabled:opacity-40"
           style={{ width: 38, height: 38, background: 'rgba(255,255,255,0.07)' }}
         >
@@ -162,7 +170,8 @@ export function Composer({
           type="button"
           aria-label="Attach from closet"
           onClick={() => setPickerOpen(true)}
-          disabled={inputsDisabled}
+          disabled={attachDisabled}
+          title={offline ? 'Attachments can’t be added while offline' : undefined}
           className="flex shrink-0 items-center justify-center rounded-full text-white/75 disabled:opacity-40"
           style={{ width: 38, height: 38, background: 'rgba(255,255,255,0.07)' }}
         >
@@ -172,11 +181,13 @@ export function Composer({
           value={draft}
           onChange={(e) => onDraftChange(e.target.value)}
           placeholder={
-            disabled
-              ? 'Sends when you’re back online…'
-              : streaming
-                ? 'Stylist is replying…'
-                : 'Ask about your closet…'
+            offline
+              ? 'Type — it’ll send when you’re back…'
+              : disabled
+                ? 'Sends when you’re back online…'
+                : streaming
+                  ? 'Stylist is replying…'
+                  : 'Ask about your closet…'
           }
           disabled={inputsDisabled}
           className="min-w-0 flex-1 border-none bg-transparent text-white outline-none placeholder:text-white/40"
@@ -184,20 +195,22 @@ export function Composer({
         />
         <button
           type="submit"
-          aria-label="Send"
-          disabled={inputsDisabled || !armed}
+          aria-label={offline ? 'Queue message' : 'Send'}
+          disabled={inputsDisabled || !textArmed}
           className="flex shrink-0 items-center justify-center rounded-full transition-transform active:scale-90 disabled:cursor-not-allowed"
           style={{
             width: 40,
             height: 40,
-            background: armed
-              ? 'linear-gradient(165deg, #52e8dc, #2cc9bc)'
+            background: textArmed
+              ? offline
+                ? 'rgba(240,162,59,0.9)'
+                : 'linear-gradient(165deg, #52e8dc, #2cc9bc)'
               : 'rgba(255,255,255,0.08)',
-            color: armed ? '#06302d' : 'rgba(255,255,255,0.36)',
-            boxShadow: armed ? '0 8px 20px -6px rgba(75,226,214,0.5)' : 'none',
+            color: textArmed ? '#06302d' : 'rgba(255,255,255,0.36)',
+            boxShadow: textArmed && !offline ? '0 8px 20px -6px rgba(75,226,214,0.5)' : 'none',
           }}
         >
-          <Send size={17} />
+          {offline ? <Hourglass size={17} /> : <Send size={17} />}
         </button>
       </form>
 

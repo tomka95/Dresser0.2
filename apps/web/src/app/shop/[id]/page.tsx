@@ -17,13 +17,12 @@
  */
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Bookmark, ExternalLink } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Bell, Bookmark, ExternalLink } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { logEvent } from '@/lib/api/events';
 import {
   getShopFeed,
-  openProduct,
   ShopAuthError,
   type Card,
   type ProductCard,
@@ -32,7 +31,9 @@ import {
 import { AppShell } from '@/components/layout/AppShell';
 import { ItemImage } from '@/components/ui/ItemImage';
 import { Btn, DSButton, RoundBtn, Spark, Icon, TopBar, ItemTile, SkDetail, M, NAV_CLEAR } from '@/components/ds';
-import { getShopProduct, type ShopProduct } from '@/lib/mock/shop';
+import { useAffiliateOpen } from '@/components/shop/useAffiliateOpen';
+import { WhyThisRecSheet } from '@/components/profile/WhyThisRecSheet';
+import { getShopProduct, SHOP_PRODUCTS, type ShopProduct } from '@/lib/mock/shop';
 
 interface ShopDetailPageProps {
   params: { id: string };
@@ -89,14 +90,26 @@ function findInCards(cards: Card[], id: string): ProductCard | null {
 
 export default function ShopDetailPage({ params }: ShopDetailPageProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { session, loading } = useRequireAuth();
+
+  // OOS is PRESENTATIONAL only — the feed carries no stock field. The design's
+  // out-of-stock state (notify-me + in-stock alternatives) is reachable via
+  // ?state=oos so the UI can be previewed honestly; it's never inferred from real
+  // backend data because there is none to infer it from.
+  const oos = searchParams.get('state') === 'oos';
 
   const [resolving, setResolving] = useState(true);
   const [product, setProduct] = useState<ResolvedProduct | null>(null);
   const [size, setSize] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [notified, setNotified] = useState(false);
   const [opening, setOpening] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
+
+  // F5 interstitial — the branded commission-disclosure screen before the /out hop.
+  const { open: openWithInterstitial, minting, interstitial } = useAffiliateOpen();
 
   const isAuth = !!session;
 
@@ -185,15 +198,22 @@ export default function ShopDetailPage({ params }: ShopDetailPageProps) {
       source: 'product_detail',
     });
     try {
-      // Real monetized redirect — mint click → top-level nav to /out/{clickId}.
-      await openProduct(product.realProductId, 'product_detail');
-      // Navigates away on success.
+      // Real monetized redirect — mint click, then the F5 interstitial shows the
+      // commission disclosure and does the top-level nav to /out/{clickId}.
+      await openWithInterstitial(product.realProductId, 'product_detail', {
+        brand: product.brand,
+        detail: `${product.name} · $${product.price}`,
+      });
+      // The interstitial owns navigation from here.
     } catch {
       setOpening(false);
       setSavedNote('Couldn’t open the shop link. Try again.');
       setTimeout(() => setSavedNote(null), 2500);
     }
   };
+
+  // In-stock alternatives for the OOS state — mock catalog, excluding this item.
+  const alternatives: ShopProduct[] = SHOP_PRODUCTS.filter((p) => p.id !== params.id).slice(0, 2);
 
   return (
     <AppShell>
@@ -232,7 +252,27 @@ export default function ShopDetailPage({ params }: ShopDetailPageProps) {
             style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent 50%)' }}
             aria-hidden
           />
-          {product.unlockCount != null && (
+          {oos && (
+            <span
+              className="absolute"
+              style={{
+                top: 14,
+                left: 14,
+                padding: '6px 13px',
+                borderRadius: 999,
+                background: 'rgba(0,0,0,0.6)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                border: '1px solid rgba(255,255,255,0.22)',
+                color: '#fff',
+                fontSize: 11.5,
+                fontWeight: 650,
+              }}
+            >
+              Out of stock{product.recommendedSize ? ` in ${product.recommendedSize}` : ''}
+            </span>
+          )}
+          {!oos && product.unlockCount != null && (
             <span
               className="absolute inline-flex items-center gap-1.5"
               style={{
@@ -266,16 +306,30 @@ export default function ShopDetailPage({ params }: ShopDetailPageProps) {
           </div>
         </div>
 
-        {/* AI rationale */}
+        {/* AI rationale — with a "Why?" affordance opening the transparency sheet. */}
         {product.reason && (
           <div
             className="mt-4 flex items-start gap-2.5 rounded-[14px]"
             style={{ padding: '13px 14px', ...M.ai(14) }}
           >
             <Spark size={15} />
-            <span className="text-[13.5px] leading-snug" style={{ color: M.soft }}>
+            <span className="flex-1 text-[13.5px] leading-snug" style={{ color: M.soft }}>
               {product.reason}
             </span>
+            <button
+              type="button"
+              onClick={() => setWhyOpen(true)}
+              className="shrink-0 rounded-full text-[12px] font-semibold active:scale-95"
+              style={{
+                padding: '3px 11px',
+                color: 'var(--mint)',
+                background: 'rgba(75,226,214,0.1)',
+                border: '1px solid rgba(75,226,214,0.3)',
+                transition: 'transform 200ms var(--spring)',
+              }}
+            >
+              Why?
+            </button>
           </div>
         )}
 
@@ -298,8 +352,72 @@ export default function ShopDetailPage({ params }: ShopDetailPageProps) {
           </>
         )}
 
+        {/* Out-of-stock — notify-me + in-stock alternatives. PRESENTATIONAL only:
+            there is no stock field in the feed, so "notify me" is a device-local
+            acknowledgement and alternatives come from the mock catalog. */}
+        {oos && (
+          <div style={{ marginTop: 18 }}>
+            <div
+              className="flex items-center gap-2.5 rounded-2xl"
+              style={{
+                padding: '11px 14px',
+                background: 'rgba(75,226,214,0.10)',
+                border: '1px solid rgba(75,226,214,0.28)',
+              }}
+            >
+              <Bell size={15} style={{ color: 'var(--mint)', flexShrink: 0 }} />
+              <span className="flex-1 text-[12.8px] leading-snug text-white">
+                {notified
+                  ? 'We’ll flag it here if it comes back (this device).'
+                  : `Back-in-stock alerts${product.recommendedSize ? ` for size ${product.recommendedSize}` : ''}.`}
+              </span>
+              {!notified && (
+                <button
+                  type="button"
+                  onClick={() => setNotified(true)}
+                  className="whitespace-nowrap text-[12.5px] font-semibold"
+                  style={{ color: 'var(--mint)' }}
+                >
+                  Notify me
+                </button>
+              )}
+            </div>
+
+            <div className="mt-4 mb-2.5 flex items-baseline justify-between">
+              <span className="text-[15.5px] font-semibold text-white">Similar, in stock</span>
+              <span className="text-[11px]" style={{ color: M.ghost }}>
+                samples
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {alternatives.map((s) => (
+                <ItemTile
+                  key={s.id}
+                  name={s.name}
+                  brand={s.brand}
+                  imageUrl={s.img}
+                  onClick={() => router.push(`/shop/${s.id}`)}
+                  badge={
+                    <span
+                      className="rounded-full font-bold"
+                      style={{
+                        padding: '4px 9px',
+                        background: 'rgba(75,226,214,0.9)',
+                        color: '#06302d',
+                        fontSize: 10,
+                      }}
+                    >
+                      ${s.price}
+                    </span>
+                  }
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Size selector — only when the source provides sizes (mock catalog). */}
-        {product.sizes && product.sizes.length > 0 && (
+        {!oos && product.sizes && product.sizes.length > 0 && (
           <>
             <div
               className="mt-5 mb-2.5 text-[12.5px] font-semibold"
@@ -372,23 +490,48 @@ export default function ShopDetailPage({ params }: ShopDetailPageProps) {
         >
           <Bookmark size={20} fill={saved ? 'currentColor' : 'none'} />
         </button>
-        {canBuy ? (
-          <Btn
-            variant="primary"
-            size="lg"
-            fullWidth
-            pending={opening}
-            icon={<ExternalLink size={16} />}
-            onClick={handleBuy}
-          >
-            Shop {product.brand} · ${product.price}
+        {oos ? (
+          <Btn variant="glass" size="lg" fullWidth disabled title="Out of stock">
+            Out of stock
           </Btn>
+        ) : canBuy ? (
+          <div className="flex-1">
+            <Btn
+              variant="primary"
+              size="lg"
+              fullWidth
+              pending={opening || minting}
+              icon={<ExternalLink size={16} />}
+              onClick={handleBuy}
+            >
+              Shop {product.brand} · ${product.price}
+            </Btn>
+            <div className="mt-2 text-center text-[11px]" style={{ color: M.ghost }}>
+              Opens {product.brand} · Tailor may earn a commission — never affects ranking
+            </div>
+          </div>
         ) : (
           <Btn variant="glass" size="lg" fullWidth disabled title="No shopping link yet">
             Shopping links coming soon
           </Btn>
         )}
       </div>
+
+      {/* F5 interstitial — commission disclosure before the server-resolved /out hop. */}
+      {interstitial}
+
+      {/* §7 · P3 — transparency sheet. The real headline seeds the top reason;
+          the rest are illustrative (no per-rec explanation endpoint yet). */}
+      <WhyThisRecSheet
+        open={whyOpen}
+        onClose={() => setWhyOpen(false)}
+        subject={`${product.name} · ${product.brand}`}
+        reasons={
+          product.reason
+            ? [{ conf: 0.9, text: product.reason, evidence: 'the main reason Tailor surfaced this' }]
+            : undefined
+        }
+      />
     </AppShell>
   );
 }

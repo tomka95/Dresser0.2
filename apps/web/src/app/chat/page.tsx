@@ -73,11 +73,21 @@ export default function ChatPage() {
   // Rate-limited (server 429) → show the quota screen instead of the transcript.
   const [rateLimited, setRateLimited] = useState(false);
 
+  // Offline send-queue: text composed while offline is held here (shown as a
+  // "Queued — sends when you're back" bubble) and flushed in order on reconnect.
+  // Attachments aren't queued (their object URLs / bytes are ephemeral); the
+  // composer only queues text while offline.
+  const [queuedSends, setQueuedSends] = useState<string[]>([]);
+
   // Sessions UX (S3): incognito mode + thread history switcher.
   const [incognito, setIncognito] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [conversations, setConversations] = useState<ChatConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
+  // History-list load status — surfaced in the sheet (skeleton / retry), no
+  // longer swallowed. Tracks the switcher's own fetch, not the transcript.
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
 
   const conversationIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -90,10 +100,15 @@ export default function ChatPage() {
   }, [isAuth, hasFetchedItems, fetchItems]);
 
   const refreshConversations = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError(false);
     try {
       setConversations(await listConversations());
     } catch {
-      /* history is a convenience — ignore load failures */
+      // Surface it in the sheet (retry affordance) instead of swallowing.
+      setHistoryError(true);
+    } finally {
+      setHistoryLoading(false);
     }
   }, []);
 
@@ -245,9 +260,24 @@ export default function ChatPage() {
   }, []);
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, opts?: { fromQueue?: boolean }) => {
       const trimmed = text.trim();
-      if (!trimmed || streaming) return;
+      if (!trimmed) return;
+
+      // Offline: don't fail the send — hold it in the queue and show an honest
+      // "Queued" bubble. It flushes in order once connectivity returns. (Only
+      // user-typed sends land here; queued flushes bypass this and go straight
+      // out.) Attachments aren't queued.
+      if (!online && !opts?.fromQueue) {
+        setDraft('');
+        setPendingImage(null);
+        setAttachedItemIds([]);
+        setQueuedSends((prev) => [...prev, trimmed]);
+        setMessages((prev) => [...prev, { from: 'user', text: trimmed, queued: true }]);
+        return;
+      }
+
+      if (streaming) return;
 
       const attachments: ChatAttachment[] = [];
       if (pendingImage) {
@@ -337,8 +367,24 @@ export default function ChatPage() {
         }
       );
     },
-    [streaming, pendingImage, attachedItemIds, incognito, refreshConversations]
+    [online, streaming, pendingImage, attachedItemIds, incognito, refreshConversations]
   );
+
+  // Flush the offline queue on reconnect: strip the "queued" pending bubbles and
+  // re-send each held message in order (one at a time — send() no-ops while a
+  // stream is in flight, and this effect re-runs as streaming settles).
+  useEffect(() => {
+    if (!online || streaming || queuedSends.length === 0) return;
+    const [next, ...rest] = queuedSends;
+    setQueuedSends(rest);
+    // Drop the placeholder "Queued" bubble for this message; send() re-appends
+    // the real user bubble + streaming AI bubble.
+    setMessages((prev) => {
+      const idx = prev.findIndex((m) => m.queued && m.text === next);
+      return idx < 0 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+    });
+    send(next, { fromQueue: true });
+  }, [online, streaming, queuedSends, send]);
 
   if (loading || !isAuth) {
     return null;
@@ -385,7 +431,8 @@ export default function ChatPage() {
 
         {incognito && <IncognitoBanner />}
 
-        {/* Offline banner — sends queue in the composer's disabled state. */}
+        {/* Offline banner — the composer stays typeable; sends queue and flush
+            on reconnect (see queuedSends). */}
         {!online && (
           <div style={{ padding: '10px 16px 0' }}>
             <div
@@ -439,7 +486,7 @@ export default function ChatPage() {
               onDraftChange={setDraft}
               onSend={() => send(draft)}
               streaming={streaming}
-              disabled={!online}
+              offline={!online}
               incognito={incognito}
               pendingImage={pendingImage}
               attachingImage={attachingImage}
@@ -460,6 +507,9 @@ export default function ChatPage() {
         onClose={() => setHistoryOpen(false)}
         conversations={conversations}
         activeId={activeId}
+        loading={historyLoading}
+        error={historyError}
+        onRetry={refreshConversations}
         onNewChat={startNewChat}
         onOpenConversation={loadConversation}
         onDeleteConversation={removeConversation}
