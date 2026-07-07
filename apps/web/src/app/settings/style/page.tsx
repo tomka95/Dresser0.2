@@ -1,27 +1,74 @@
 'use client';
 
 /**
- * /settings/style — style preferences (chips + colors). LOCAL-ONLY (persisted to
- * localStorage; no preferences backend yet).
+ * /settings/style — "My style profile": style archetype chips + colors you wear.
+ *
+ * DEVICE-ONLY (labeled): persisted to localStorage (tailor.pref.style). This is
+ * NOT wired to the recommendation ranker yet, so the copy is honest — it does
+ * not claim to tune suggestions. When a preferences backend + ranker hook exist,
+ * this becomes the editable surface over what Tailor has learned.
  */
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import type React from 'react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
-import { DSBadge, DSButton, TopBar } from '@/components/ds';
+import { Btn, M, Spark, TopBar, useToastStore } from '@/components/ds';
 
-const PREFS = ['Minimal', 'Street', 'Classic', 'Smart casual', 'Athleisure', 'Tailored', 'Vintage', 'Bold', 'Monochrome', 'Earthy'];
+const PREFS = [
+  'Minimal',
+  'Street',
+  'Classic',
+  'Smart casual',
+  'Athleisure',
+  'Tailored',
+  'Vintage',
+  'Bold',
+  'Monochrome',
+  'Earthy',
+];
 const COLORS = ['#1a1a1a', '#f5f5f0', '#7d6b56', '#3a4a5a', '#8a3a3a'];
 
 const STORAGE_KEY = 'tailor.pref.style';
 
-export default function StylePreferencesPage() {
+function Chip({ on, children, onClick }: { on: boolean; children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className="inline-flex items-center rounded-full text-[13.5px] font-medium transition-colors"
+      style={{
+        height: 37,
+        padding: '0 16px',
+        letterSpacing: '0.1px',
+        ...(on
+          ? {
+              background: 'linear-gradient(165deg, #10635c, #0a3633)',
+              color: '#fff',
+              border: '1px solid rgba(255,255,255,0.2)',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.14)',
+            }
+          : {
+              background: 'rgba(255,255,255,0.07)',
+              color: M.soft,
+              border: '1px solid rgba(255,255,255,0.12)',
+            }),
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+export default function StyleProfilePage() {
   const router = useRouter();
   const { session, loading } = useRequireAuth();
+  const toast = useToastStore((s) => s.toast);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [colors, setColors] = useState<Record<string, boolean>>({});
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     try {
@@ -39,47 +86,63 @@ export default function StylePreferencesPage() {
   if (loading || !session) return null;
 
   const handleSave = () => {
+    setSaving(true);
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ styles: selected, colors }));
     } catch {
       /* in-memory only */
     }
-    setSaved(true);
-    setTimeout(() => router.back(), 600);
+    toast({ tone: 'success', title: 'Style profile saved' });
+    setTimeout(() => {
+      setSaving(false);
+      router.back();
+    }, 500);
   };
+
+  const chosen = PREFS.filter((p) => selected[p]);
 
   return (
     <AppShell>
-      <div className="flex min-h-full flex-col" style={{ padding: '48px 24px 40px' }}>
-        <TopBar title="Style preferences" />
+      <div style={{ padding: '62px 20px 40px' }}>
+        <TopBar title="My style profile" sub="Yours to set — see and edit it" />
         <div className="h-[18px]" />
-        <p className="m-0 mb-[18px] text-[14.5px] leading-relaxed text-white/70">
-          Tap the styles you gravitate to. Suggestions and outfits tune to match.
-        </p>
+
+        {/* AI-styled summary line. */}
+        <div style={{ ...M.ai(24), padding: 17 }}>
+          <div className="flex items-center gap-1.5">
+            <Spark size={12} />
+            <span
+              className="text-[10px] font-semibold uppercase"
+              style={{ letterSpacing: '0.13em', color: 'var(--mint)' }}
+            >
+              In one line
+            </span>
+          </div>
+          <div
+            className="mt-2 text-white"
+            style={{ fontSize: 16.5, fontWeight: 600, lineHeight: 1.45, letterSpacing: '-0.2px' }}
+          >
+            {chosen.length ? chosen.join(', ') : 'Tap the styles you gravitate to below.'}
+          </div>
+        </div>
+
+        <div
+          className="mx-0.5 mb-3 mt-6 text-[11px] font-semibold uppercase"
+          style={{ letterSpacing: '0.13em', color: 'rgba(255,255,255,0.36)' }}
+        >
+          Styles you like
+        </div>
         <div className="flex flex-wrap gap-2.5">
           {PREFS.map((p) => (
-            <DSBadge
-              key={p}
-              dark
-              interactive
-              selected={!!selected[p]}
-              className="text-[14px]"
-              style={{ padding: '10px 16px' }}
-              role="button"
-              tabIndex={0}
-              onClick={() => setSelected((s) => ({ ...s, [p]: !s[p] }))}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') setSelected((s) => ({ ...s, [p]: !s[p] }));
-              }}
-            >
+            <Chip key={p} on={!!selected[p]} onClick={() => setSelected((s) => ({ ...s, [p]: !s[p] }))}>
               {p}
-            </DSBadge>
+            </Chip>
           ))}
         </div>
 
         <div
-          className="mx-0.5 mb-3 mt-[26px] text-[12px] font-semibold uppercase tracking-[0.5px]"
-          style={{ color: 'rgba(255,255,255,0.5)' }}
+          className="mx-0.5 mb-3 mt-[26px] text-[11px] font-semibold uppercase"
+          style={{ letterSpacing: '0.13em', color: 'rgba(255,255,255,0.36)' }}
         >
           Colors you wear
         </div>
@@ -106,10 +169,13 @@ export default function StylePreferencesPage() {
           })}
         </div>
 
-        <div className="flex-1" />
-        <DSButton variant="light" fullWidth pill className="mt-6" onClick={handleSave}>
-          {saved ? 'Saved ✓' : 'Save preferences'}
-        </DSButton>
+        <div className="mt-[22px] text-[11.5px] leading-relaxed text-white/[0.36]">
+          Saved on this device — not yet feeding recommendations.
+        </div>
+
+        <Btn variant="primary" fullWidth size="lg" className="mt-6" pending={saving} onClick={handleSave}>
+          Save style profile
+        </Btn>
       </div>
     </AppShell>
   );

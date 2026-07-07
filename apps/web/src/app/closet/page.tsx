@@ -1,10 +1,12 @@
 'use client';
 
-// Closet — real /closet items with search, category chips, item grid, FAB + drawer.
+// Closet grid (§3 · C1) — real /closet items: search + category chips + 2-col
+// tile grid with favourite hearts + FAB (opens AddItemDrawer). States: populated,
+// empty, loading (skeleton — no blank gate), error (retry), filtered-no-match.
 
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { logEvent, startSession } from '@/lib/api/events';
@@ -12,11 +14,17 @@ import { AppShell } from '@/components/layout/AppShell';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
 import {
+  Btn,
   CategoryChips,
-  DSButton,
-  DSSearchBar,
-  HangerImg,
+  ErrorState,
+  Field,
+  Icon,
   ItemTile,
+  NAV_CLEAR,
+  Spark,
+  StateBlock,
+  SkGrid,
+  M,
   type CategoryChipItem,
 } from '@/components/ds';
 
@@ -98,63 +106,122 @@ export default function ClosetPage() {
   }
 
   const closetIsEmpty = hasFetchedItems && !isLoading && !error && items.length === 0;
+  // First load with nothing yet: show the grid skeleton (no blank gate).
+  const showLoadingSkeleton = !hasFetchedItems && isLoading;
+  const totalCount = items.length;
 
   return (
     <AppShell>
-      <div style={{ padding: '52px 24px 120px' }}>
-        <h1 className="m-0 mb-[18px] text-[34px] font-bold tracking-[-0.5px] text-white">My Closet</h1>
-        <div className="mb-[18px]">
-          <DSSearchBar dark placeholder="Search your closet" value={searchQuery} onChange={setSearchQuery} />
-        </div>
-        <div className="mb-5">
-          <CategoryChips dark items={CATEGORIES} value={selectedCategory} onChange={setSelectedCategory} />
+      <div style={{ padding: `52px 20px ${NAV_CLEAR}px` }}>
+        {/* Header — title + piece count. */}
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
+          <div>
+            <h1 className="m-0 text-[30px] font-bold text-white" style={{ letterSpacing: '-0.8px' }}>
+              My Closet
+            </h1>
+            {totalCount > 0 && (
+              <div style={{ color: M.faint, fontSize: 13.5, marginTop: 3 }}>
+                {totalCount} {totalCount === 1 ? 'piece' : 'pieces'}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* First load: spinner instead of flashing the empty state. On error, retry. */}
-        {!hasFetchedItems && isLoading ? (
-          <div className="flex justify-center py-16">
-            <div
-              className="h-8 w-8 rounded-full"
-              style={{
-                border: '3px solid var(--tr-20)',
-                borderTopColor: 'var(--mint)',
-                animation: 'tailor-spin 0.8s linear infinite',
-              }}
-            />
+        {/* Search */}
+        <div style={{ marginTop: 16 }}>
+          <Field
+            icon={<Icon name="InterfaceSearchMagnifyingGlass" size={17} />}
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search your closet"
+            right={
+              searchQuery ? (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => setSearchQuery('')}
+                  className="flex items-center text-white/50 active:scale-90"
+                >
+                  <X size={16} />
+                </button>
+              ) : undefined
+            }
+          />
+        </div>
+
+        {/* Category chips */}
+        <div style={{ marginTop: 14, marginBottom: 4 }}>
+          <CategoryChips items={CATEGORIES} value={selectedCategory} onChange={setSelectedCategory} />
+        </div>
+
+        {/* Content — loading skeleton first (no blank gate), then error / empty /
+            no-match / populated. */}
+        {showLoadingSkeleton ? (
+          <div style={{ marginTop: 10 }}>
+            <SkGrid rows={3} />
           </div>
         ) : error ? (
-          <div className="py-12 text-center">
-            <p className="text-sm text-white/60">Couldn&rsquo;t load your closet.</p>
-            <button type="button" onClick={() => fetchItems()} className="mt-2 text-sm text-white/80 underline">
-              Retry
-            </button>
+          <div style={{ marginTop: 6 }}>
+            <ErrorState
+              title="Your closet didn't load"
+              sub="The rack got stuck. Pull to refresh, or try again."
+              onRetry={() => fetchItems()}
+            />
           </div>
         ) : closetIsEmpty ? (
-          // Empty closet — hanger mark + CTA (keeps the header and nav around it).
-          <div className="flex flex-col items-center px-4 pb-6 pt-14 text-center">
-            <HangerImg w={190} className="mb-4 opacity-90" />
-            <h2 className="m-0 mb-2.5 text-[22px] font-bold tracking-[-0.3px] text-white">
-              Your closet is empty
-            </h2>
-            <p className="mx-auto mb-6 max-w-[280px] text-[14.5px] leading-relaxed text-white/[0.65]">
-              Add your first piece and Tailor starts building looks for you.
-            </p>
-            <DSButton
-              variant="light"
-              pill
-              leftIcon={<Plus size={18} strokeWidth={2.6} />}
-              style={{ height: 48, padding: '0 26px' }}
-              onClick={() => setDrawerOpen(true)}
-            >
-              Add an item
-            </DSButton>
+          // Empty closet — hanger medallion + primary CTA (header + nav stay around it).
+          <div style={{ marginTop: 18 }}>
+            <StateBlock
+              icon={
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src="/9.png"
+                  alt=""
+                  style={{ width: 34, opacity: 0.9, filter: 'brightness(3) grayscale(1)' }}
+                  aria-hidden
+                />
+              }
+              title="Your closet is empty"
+              sub="Add your first pieces and Tailor starts styling with what you actually own."
+              cta={
+                <Btn variant="primary" size="md" icon={<Plus size={16} strokeWidth={2.4} />} onClick={() => setDrawerOpen(true)}>
+                  Add your first item
+                </Btn>
+              }
+              foot="Takes about a minute"
+            />
           </div>
         ) : filteredItems.length === 0 ? (
-          <div className="py-12 text-center">
-            <p className="text-sm text-white/60">No matches in your closet.</p>
+          // Filtered dead end — turn the miss into a shopping lead / clear action.
+          <div style={{ marginTop: 12 }}>
+            <StateBlock
+              compact
+              icon={<Icon name="InterfaceSearchMagnifyingGlass" size={26} />}
+              title={searchQuery.trim() ? `Nothing matches "${searchQuery.trim()}"` : 'Nothing in this category yet'}
+              sub="Not in your closet yet — want Tailor to find one that fits your style?"
+              cta={
+                <Btn variant="glass" size="md" icon={<Spark size={13} />} onClick={() => router.push('/search')}>
+                  Shop this instead
+                </Btn>
+              }
+              cta2={
+                (searchQuery || selectedCategory !== 'all') && (
+                  <Btn
+                    variant="ghost"
+                    size="md"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setSelectedCategory('all');
+                    }}
+                  >
+                    Clear search
+                  </Btn>
+                )
+              }
+            />
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3.5">
+          <div className="grid grid-cols-2" style={{ gap: 12, marginTop: 10 }}>
             {filteredItems.map((it) => {
               const faved = favOverride[it.id] ?? !!it.isFavorite;
               return (

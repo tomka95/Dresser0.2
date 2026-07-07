@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * AddItemDrawer — light bottom sheet (30px top radius, drag handle) with the three
- * ingestion options from the design: Take photo / Upload photo / Import from Gmail.
+ * AddItemDrawer — unified deep-glass bottom sheet (§0 Sheet) hosting the three
+ * ingestion options from the redesign: Take photo / Upload / Import from Gmail.
  *
  * Photo options no longer auto-stage anything: picked Files are stashed in
  * usePhotoPickStore (Files can't cross a navigation via URL) and we route to
@@ -11,10 +11,10 @@
  * scan CTA lives).
  */
 
-import { Camera, ChevronRight, Image as ImageIcon } from 'lucide-react';
+import { Camera, ChevronRight, FileX, Image as ImageIcon } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Sheet, GmailGlyph } from '@/components/ds';
+import { Sheet, GmailGlyph, M } from '@/components/ds';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
 import { looksLikeHeic } from '@/lib/image/heic';
 
@@ -36,35 +36,46 @@ interface OptRowProps {
   icon: React.ReactNode;
   title: string;
   sub: string;
-  accent?: string;
   disabled?: boolean;
   onClick: () => void;
 }
 
-function OptRow({ icon, title, sub, accent = 'var(--brand-teal)', disabled, onClick }: OptRowProps) {
+/** Deep-sheet option row — teal icon medallion, title + sub, chevron affordance. */
+function OptRow({ icon, title, sub, disabled, onClick }: OptRowProps) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex w-full cursor-pointer items-center gap-3.5 rounded-[14px] border-none px-[18px] py-4 text-left transition-transform active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
-      style={{ background: 'var(--surface-sunken)' }}
+      className="flex w-full cursor-pointer items-center gap-3.5 border text-left transition-transform active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50"
+      style={{
+        padding: '14px 16px',
+        borderRadius: 20,
+        background: 'rgba(255,255,255,0.07)',
+        borderColor: 'rgba(255,255,255,0.11)',
+      }}
     >
       <span
         className="flex shrink-0 items-center justify-center text-white"
-        style={{ width: 46, height: 46, borderRadius: 12, background: accent }}
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 15,
+          background: 'linear-gradient(165deg, #10635c, #0a3633)',
+          border: '1px solid rgba(255,255,255,0.16)',
+        }}
       >
         {icon}
       </span>
       <span className="flex-1">
-        <span className="block text-[15.5px] font-semibold" style={{ color: 'var(--text-strong)' }}>
+        <span className="block" style={{ color: '#fff', fontSize: 15, fontWeight: 600 }}>
           {title}
         </span>
-        <span className="block text-[13px]" style={{ color: 'var(--text-muted)' }}>
+        <span className="block" style={{ color: M.faint, fontSize: 12.5, marginTop: 1 }}>
           {sub}
         </span>
       </span>
-      <ChevronRight size={18} style={{ color: 'var(--text-muted)' }} />
+      <ChevronRight size={18} style={{ color: M.ghost }} />
     </button>
   );
 }
@@ -104,14 +115,13 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
   };
 
   return (
-    <Sheet open={open} onClose={() => onOpenChange(false)} tone="light">
-      <h3 className="m-0 mb-1 text-[21px] font-bold" style={{ color: 'var(--text-strong)' }}>
-        Add to closet
-      </h3>
-      <p className="m-0 mb-[18px] text-sm" style={{ color: 'var(--text-muted)' }}>
-        Tailor reads your clothes automatically.
-      </p>
-
+    <Sheet
+      open={open}
+      onClose={() => onOpenChange(false)}
+      tone="dark"
+      title="Add to your closet"
+      sub="Tailor reads your clothes automatically."
+    >
       {/* Hidden inputs: camera capture (single) + gallery picker (multiple). */}
       <input
         ref={cameraRef}
@@ -130,39 +140,51 @@ export function AddItemDrawer({ open, onOpenChange, onGmailClick }: AddItemDrawe
         className="hidden"
       />
 
+      {/* Inline, non-blocking validation error (unsupported / too-large / too-many). */}
       {error && (
         <div
-          className="mb-3 rounded-[10px] px-3 py-2.5 text-center text-[13.5px]"
-          style={{ background: 'rgba(251,44,54,0.08)', border: '1px solid rgba(251,44,54,0.35)', color: 'var(--danger)' }}
+          className="mb-2.5 flex items-center gap-2.5"
+          style={{
+            padding: '11px 14px',
+            borderRadius: 15,
+            background: 'rgba(251,44,54,0.13)',
+            border: '1px solid rgba(251,44,54,0.32)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+          }}
+          role="alert"
         >
-          {error}
+          <FileX size={15} style={{ color: '#ff9096', flexShrink: 0 }} />
+          <span style={{ flex: 1, color: '#fff', fontSize: 12.8, lineHeight: 1.45 }}>{error}</span>
         </div>
       )}
 
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col" style={{ gap: 10 }}>
         <OptRow
-          icon={<Camera size={22} />}
-          title="Take photo"
-          sub="Snap an item or your outfit"
+          icon={<Camera size={20} />}
+          title="Snap a photo"
+          sub="An item, or your whole outfit"
           onClick={() => cameraRef.current?.click()}
         />
         <OptRow
-          icon={<ImageIcon size={22} />}
-          title="Upload photo"
+          icon={<ImageIcon size={20} />}
+          title="Upload from photos"
           sub="Choose from your library"
-          accent="var(--teal-600)"
           onClick={() => galleryRef.current?.click()}
         />
         <OptRow
-          icon={<GmailGlyph size={22} />}
+          icon={<GmailGlyph size={20} />}
           title="Import from Gmail"
-          sub="Pull items from email receipts"
-          accent="var(--teal-500)"
+          sub="Order receipts, read-only"
           onClick={() => {
             onOpenChange(false);
             onGmailClick();
           }}
         />
+      </div>
+
+      <div style={{ color: M.ghost, fontSize: 11.5, textAlign: 'center', marginTop: 12 }}>
+        JPG, PNG, HEIC · up to {MAX_FILE_SIZE / 1024 / 1024} MB each · {MAX_FILES} per batch
       </div>
     </Sheet>
   );

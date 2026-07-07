@@ -19,19 +19,19 @@ import {
 import { useOnboardingStore } from '@/stores/useOnboardingStore';
 import { seedOnboarding } from '@/lib/api/onboarding';
 import { startGmailConnect } from '@/lib/api/gmail';
-import { GmailGlyph } from '@/components/ds';
+import { GmailGlyph, M, Spark, Medallion } from '@/components/ds';
 import { OnboardingStep } from '../OnboardingStep';
 import { OptionCard, Chip, Segmented, FieldBlock } from './_controls';
 import { FitSlider } from './_FitSlider';
 import { TasteDeck } from './_TasteDeck';
 
 /**
- * Step registry for the onboarding flow — the six real screen bodies.
- *
- * Every screen is tap/slider/chip only (zero free text), one question per screen,
- * and writes staged answers to useOnboardingStore. Nothing hits the server until
- * the shell's single seedOnboarding() at Finish (screen 6 can commit early when
- * the user hands off to a closet-seed flow — see WeatherScreen).
+ * Step registry for the onboarding flow — the six real screen bodies, restyled to
+ * the redesign material system (§2). Every screen is tap/slider/chip only (zero
+ * free text), one question per screen, and writes staged answers to
+ * useOnboardingStore. Nothing hits the server until the shell's single
+ * seedOnboarding() at Finish (screen 6 can commit early when the user hands off to
+ * a closet-seed flow — see WeatherScreen).
  *
  * `isComplete(state)` gates the Continue button; `skippable` lets a user advance
  * without answering. Only screens 1 (departments) and 2 (sizes) are required, so
@@ -59,10 +59,10 @@ const DepartmentsScreen: React.FC = () => {
   const setDepartment = useOnboardingStore((s) => s.setDepartment);
   return (
     <OnboardingStep
-      title="Who are we styling?"
-      subtitle="This shapes your departments, sizes, and the looks we show you."
+      title="What do you wear?"
+      subtitle="Sets which departments Tailor shops and styles from."
     >
-      <div role="radiogroup" aria-label="Department" className="flex flex-col gap-2.5">
+      <div role="radiogroup" aria-label="Department" className="flex flex-col gap-[11px]">
         {DEPARTMENTS.map((d) => (
           <OptionCard
             key={d}
@@ -112,8 +112,11 @@ const SizesScreen: React.FC = () => {
   };
 
   return (
-    <OnboardingStep title="Your sizes" subtitle="So everything fits — editable anytime.">
-      <div className="flex-1 min-h-0 space-y-6 overflow-y-auto pb-2">
+    <OnboardingStep
+      title="Your sizes"
+      subtitle="So everything we suggest actually fits. Change anytime in Settings."
+    >
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto pb-2">
         {/* Top */}
         <FieldBlock label="Top" required>
           <div className="flex flex-wrap gap-2">
@@ -161,19 +164,20 @@ const SizesScreen: React.FC = () => {
                   </Chip>
                 ))}
               </div>
-              <div className="mt-3 mb-2 text-[11.5px] font-medium text-white/40">
-                Inseam · optional
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {INSEAM_VALUES.map((n) => (
-                  <Chip
-                    key={n}
-                    active={bottom?.system === 'waist_inseam' && bottom.inseam === n}
-                    onClick={() => setBottomInseam(n)}
-                  >
-                    {n}
-                  </Chip>
-                ))}
+              <div className="mb-2 mt-3">
+                <FieldBlock label="Inseam">
+                  <div className="flex flex-wrap gap-2">
+                    {INSEAM_VALUES.map((n) => (
+                      <Chip
+                        key={n}
+                        active={bottom?.system === 'waist_inseam' && bottom.inseam === n}
+                        onClick={() => setBottomInseam(n)}
+                      >
+                        {n}
+                      </Chip>
+                    ))}
+                  </div>
+                </FieldBlock>
               </div>
             </>
           )}
@@ -225,10 +229,10 @@ const FitScreen: React.FC = () => {
   const setFit = useOnboardingStore((s) => s.setFit);
   return (
     <OnboardingStep
-      title="How do you like it to fit?"
-      subtitle="Drag each to your lean. Nudge either way anytime later."
+      title="How do you like the fit?"
+      subtitle="Untouched sliders stay neutral — Tailor won't assume."
     >
-      <div className="mt-2 flex flex-col gap-9">
+      <div className="flex flex-col gap-[13px]">
         {FIT_SLIDERS.map((sl) => (
           <FitSlider
             key={sl.key}
@@ -239,6 +243,12 @@ const FitScreen: React.FC = () => {
             onChange={(n) => setFit(sl.key, n)}
           />
         ))}
+        <div className="mt-1 flex items-center gap-2">
+          <Spark size={12} />
+          <span className="text-[12px] leading-relaxed" style={{ color: M.ghost }}>
+            Fit learns from swaps and feedback later — this is just a starting point.
+          </span>
+        </div>
       </div>
     </OnboardingStep>
   );
@@ -251,7 +261,7 @@ const TasteScreen: React.FC = () => {
   const swipedCount = useOnboardingStore((s) => s.tasteSwipes.length);
   return (
     <OnboardingStep
-      title="Swipe your taste"
+      title="This you?"
       subtitle="Like what you'd wear, pass on what you wouldn't — the same swipe you'll use on real items."
     >
       <TasteDeck department={department} onSwipe={addSwipe} swipedCount={swipedCount} />
@@ -273,18 +283,33 @@ const OccasionsScreen: React.FC = () => {
   const occasions = useOnboardingStore((s) => s.occasions);
   const toggleOccasion = useOnboardingStore((s) => s.toggleOccasion);
   return (
-    <OnboardingStep title="What do you dress for?" subtitle="Pick all that fit your week.">
+    <OnboardingStep
+      title="Where does your week take you?"
+      subtitle="Pick all that apply — outfits follow your calendar, not a catalog."
+    >
       <div className="flex flex-wrap gap-2.5">
-        {OCCASIONS.map((o) => (
-          <Chip
-            key={o.key}
-            active={occasions.includes(o.key)}
-            onClick={() => toggleOccasion(o.key)}
-          >
-            {o.label}
-          </Chip>
-        ))}
+        {OCCASIONS.map((o) => {
+          const active = occasions.includes(o.key);
+          return (
+            <Chip
+              key={o.key}
+              active={active}
+              onClick={() => toggleOccasion(o.key)}
+              icon={active ? <Check size={13} strokeWidth={3} /> : null}
+            >
+              {o.label}
+            </Chip>
+          );
+        })}
       </div>
+      {occasions.length > 0 ? (
+        <div className="mt-[22px] flex items-center gap-2">
+          <Spark size={12} />
+          <span className="text-[12px]" style={{ color: M.ghost }}>
+            {occasions.length} picked — that&rsquo;s plenty to start.
+          </span>
+        </div>
+      ) : null}
     </OnboardingStep>
   );
 };
@@ -350,68 +375,79 @@ const WeatherScreen: React.FC = () => {
   };
 
   return (
-    <OnboardingStep title="Two quick add-ons" subtitle="Both optional — Tailor works either way.">
-      <div className="flex-1 min-h-0 space-y-6 overflow-y-auto pb-2">
+    <OnboardingStep
+      title="Dress for the sky"
+      subtitle="One rough location check a day powers weather-aware outfits."
+    >
+      <div className="min-h-0 flex-1 space-y-[18px] overflow-y-auto pb-2">
         {/* Weather permission */}
-        <section>
-          <div className="mb-2 text-[12px] font-semibold uppercase tracking-[0.5px] text-white/55">
-            Dress for your weather
-          </div>
+        {geo === 'granted' ? (
           <div
-            className="rounded-2xl p-4"
-            style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
+            className="flex items-center justify-center gap-2 rounded-full text-[14px] font-semibold"
+            style={{ height: 52, background: 'var(--mint)', color: 'var(--brand-teal)' }}
           >
-            <div className="flex items-start gap-3">
-              <span
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
-                style={{ background: 'var(--grad-ai)' }}
-                aria-hidden
-              >
-                <MapPin size={17} color="var(--mint)" />
-              </span>
-              <p className="m-0 text-[13.5px] leading-snug text-white/75">
-                Share your location and Tailor tunes each day&rsquo;s picks to the local forecast.
-                Coordinates only — no address, no tracking.
-              </p>
-            </div>
-
-            <div className="mt-3">
-              {geo === 'granted' ? (
-                <div
-                  className="flex items-center justify-center gap-2 rounded-full py-3 text-[14px] font-semibold"
-                  style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
-                >
-                  <Check size={17} strokeWidth={3} /> Location added
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={requestLocation}
-                  disabled={geo === 'requesting'}
-                  className="w-full rounded-full py-3 text-[14px] font-semibold transition-colors disabled:opacity-60"
-                  style={{ background: 'var(--tr-20)', color: '#fff' }}
-                >
-                  {geo === 'requesting' ? 'Waiting for permission…' : 'Use my location'}
-                </button>
-              )}
-              {geo === 'denied' ? (
-                <p className="mt-2 text-center text-[12.5px] text-white/50">
-                  No problem — you can enable this later in settings.
-                </p>
-              ) : null}
-              {geo === 'unsupported' ? (
-                <p className="mt-2 text-center text-[12.5px] text-white/50">
-                  Location isn&rsquo;t available on this device.
-                </p>
-              ) : null}
-            </div>
+            <Check size={17} strokeWidth={3} /> Location added
           </div>
-        </section>
+        ) : geo === 'denied' || geo === 'unsupported' ? (
+          // Permission declined / unavailable — calm fallback (PermissionState copy),
+          // no dead-end: the user continues without weather and enables it later.
+          <div style={{ ...M.glass(24), padding: 20, textAlign: 'center' }}>
+            <div className="flex justify-center">
+              <Medallion tone="amber" size={64} icon={<MapPin size={24} />} />
+            </div>
+            <div className="mt-4 text-[15px] font-semibold text-white">
+              {geo === 'denied' ? 'Location is off' : "Location isn't available"}
+            </div>
+            <p
+              className="mx-auto mt-1.5 max-w-[248px] text-[12.5px] leading-relaxed"
+              style={{ color: M.faint }}
+            >
+              {geo === 'denied'
+                ? 'No problem — weather-aware picks stay optional. You can enable this later in Settings.'
+                : "This device can't share a location. You can enable weather later in Settings."}
+            </p>
+          </div>
+        ) : (
+          <div style={{ ...M.glass(24), padding: 22, textAlign: 'center' }}>
+            <div className="flex justify-center">
+              <Medallion tone="mint" pulse size={72} icon={<MapPin size={26} />} />
+            </div>
+            <div className="mt-4 text-[15.5px] font-semibold text-white">Approximate only</div>
+            <p
+              className="mx-auto mt-1.5 max-w-[240px] text-[12.5px] leading-relaxed"
+              style={{ color: M.faint }}
+            >
+              City-level, never stored as a trail. Coordinates only — no address, no tracking.
+            </p>
+            <button
+              type="button"
+              onClick={requestLocation}
+              disabled={geo === 'requesting'}
+              className="mt-4 text-[13px] font-semibold disabled:opacity-60"
+              style={{ color: 'var(--mint)' }}
+            >
+              {geo === 'requesting' ? 'Waiting for permission…' : 'Use my location'}
+            </button>
+          </div>
+        )}
 
         {/* Closet seed */}
         <section>
-          <div className="mb-2 text-[12px] font-semibold uppercase tracking-[0.5px] text-white/55">
-            Add your closet
+          <div
+            className="mb-2 flex items-center gap-2 rounded-[20px]"
+            style={{
+              padding: '15px 17px',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.09)',
+            }}
+          >
+            <Spark size={15} />
+            <div className="flex-1">
+              <div className="text-[13.5px] font-semibold text-white">Next: seed your closet</div>
+              <div className="mt-0.5 text-[12px]" style={{ color: M.faint }}>
+                Gmail receipts or a few photos — Tailor does the rest.
+              </div>
+            </div>
           </div>
           <div className="flex flex-col gap-2.5">
             <ClosetCta
@@ -436,7 +472,7 @@ const WeatherScreen: React.FC = () => {
               {error}
             </p>
           ) : null}
-          <p className="mt-3 text-[12.5px] text-white/45">
+          <p className="mt-3 text-[12.5px]" style={{ color: M.ghost }}>
             Or skip — you can build your closet anytime from the app.
           </p>
         </section>
@@ -465,15 +501,25 @@ function ClosetCta({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex w-full items-center gap-3 rounded-2xl px-4 py-3.5 text-left transition-colors disabled:opacity-60"
-      style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
+      className="flex w-full items-center gap-3 text-left transition-colors disabled:opacity-60"
+      style={{
+        padding: '14px 16px',
+        borderRadius: 20,
+        background: 'rgba(255,255,255,0.06)',
+        border: '1px solid rgba(255,255,255,0.11)',
+      }}
     >
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: 'var(--tr-10)' }}>
+      <span
+        className="flex shrink-0 items-center justify-center rounded-xl"
+        style={{ width: 40, height: 40, background: 'rgba(255,255,255,0.07)' }}
+      >
         {icon}
       </span>
       <span className="flex-1">
         <span className="block text-[15px] font-semibold text-white">{title}</span>
-        <span className="block text-[12.5px] text-white/55">{hint}</span>
+        <span className="block text-[12.5px]" style={{ color: M.faint }}>
+          {hint}
+        </span>
       </span>
       {busy ? (
         <span
@@ -482,7 +528,7 @@ function ClosetCta({
           aria-hidden
         />
       ) : (
-        <ChevronRight size={18} className="text-white/50" />
+        <ChevronRight size={18} style={{ color: M.faint }} />
       )}
     </button>
   );

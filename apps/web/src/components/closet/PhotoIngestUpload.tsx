@@ -31,6 +31,7 @@ import { useClosetStore } from '@/stores/useClosetStore';
 import { usePhotoPickStore } from '@/stores/usePhotoPickStore';
 import { useGenerationStore } from '@/stores/useGenerationStore';
 import { HeicTranscodeError, looksLikeHeic, transcodeHeicToJpeg } from '@/lib/image/heic';
+import { Btn, M, PermissionState, ThinkingScreen, Thinking } from '@/components/ds';
 import { RegionSelector } from './RegionSelector';
 import { GenerationProgressPill } from './GenerationProgressPill';
 
@@ -60,12 +61,35 @@ function clearProvisionalPending() {
   if (p && p.syncId == null) useGenerationStore.getState().clear();
 }
 
+/** Amber-tinted inline banner (offline/notice tone) used for the transcode + notice rows. */
+function InfoRow({ children, role }: { children: React.ReactNode; role?: string }) {
+  return (
+    <div
+      className="flex items-center gap-2.5"
+      style={{
+        padding: '11px 14px',
+        borderRadius: 15,
+        background: 'rgba(255,255,255,0.08)',
+        border: '1px solid rgba(255,255,255,0.14)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
+      }}
+      role={role}
+    >
+      <span style={{ flex: 1, color: '#fff', fontSize: 12.8, lineHeight: 1.45 }}>{children}</span>
+    </div>
+  );
+}
+
 export function PhotoIngestUpload() {
   const router = useRouter();
   const [picked, setPicked] = useState<Picked[]>([]);
   const [step, setStep] = useState<Step>('pick');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Camera/photo access refused — surfaces the §0 PermissionState template. Cleared when
+  // the user retries. Never blocks the file inputs beyond the tap that hit the denial.
+  const [permissionDenied, setPermissionDenied] = useState<'camera' | 'photos' | null>(null);
   // After a successful commit, the run whose product cards are generating — drives the
   // non-blocking "Preparing N → Review" pill (step 'preparing').
   const [genRun, setGenRun] = useState<{ syncId: string; staged: number } | null>(null);
@@ -164,6 +188,29 @@ export function PhotoIngestUpload() {
     },
     [updatePicked],
   );
+
+  // Open a source picker, first checking a queryable camera permission so a hard denial
+  // surfaces the PermissionState template instead of silently opening a picker that can't
+  // capture. `photos` has no standard permission API, so its picker always opens; if the
+  // OS sheet is dismissed with no file the flow simply stays on 'pick'.
+  const openSource = useCallback(async (source: 'camera' | 'photos') => {
+    setPermissionDenied(null);
+    if (source === 'camera' && typeof navigator !== 'undefined' && navigator.permissions?.query) {
+      try {
+        // 'camera' isn't in every lib's PermissionName union — cast narrowly.
+        const st = await navigator.permissions.query({
+          name: 'camera' as PermissionName,
+        });
+        if (st.state === 'denied') {
+          setPermissionDenied('camera');
+          return;
+        }
+      } catch {
+        /* Permissions API unavailable/unsupported for 'camera' — fall through and open. */
+      }
+    }
+    (source === 'camera' ? cameraRef : galleryRef).current?.click();
+  }, []);
 
   /** Run detection on `list`. Doesn't clear `notice` — callers set/keep it (the
    *  410 auto-rescan shows its notice THROUGH the detecting spinner). */
@@ -318,51 +365,64 @@ export function PhotoIngestUpload() {
 
   const busy = step === 'detecting' || step === 'committing' || preparing;
 
+  // ── Permission denied — full-panel §0 template (camera or photos). ─────────
+  if (permissionDenied) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        <PermissionState
+          kind={permissionDenied}
+          onSecondary={() => setPermissionDenied(null)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       {error && (
-        <div className="rounded-lg border p-3 text-sm" style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}>
-          {error}
+        <div
+          className="flex items-center gap-2.5"
+          style={{
+            padding: '11px 14px',
+            borderRadius: 15,
+            background: 'rgba(251,44,54,0.13)',
+            border: '1px solid rgba(251,44,54,0.32)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+          }}
+          role="alert"
+        >
+          <span style={{ flex: 1, color: '#fff', fontSize: 12.8, lineHeight: 1.45 }}>{error}</span>
         </div>
       )}
-      {notice && (
-        <div className="rounded-lg px-3 py-2 text-[13px]" style={{ background: 'var(--tr-10)', color: 'rgba(255,255,255,0.75)' }}>
-          {notice}
-        </div>
-      )}
+      {notice && <InfoRow>{notice}</InfoRow>}
 
       {preparing && (
-        <div
-          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px]"
-          style={{ background: 'var(--tr-10)', color: 'rgba(255,255,255,0.75)' }}
-          role="status"
-        >
-          <span
-            className="h-4 w-4 shrink-0 rounded-full"
-            style={{
-              border: '2px solid var(--tr-20)',
-              borderTopColor: 'var(--mint)',
-              animation: 'tailor-spin 0.8s linear infinite',
-            }}
-          />
-          Preparing photo… converting HEIC for upload.
-        </div>
+        <InfoRow role="status">
+          <span className="inline-flex items-center gap-2.5">
+            <span
+              className="inline-block h-4 w-4 shrink-0 rounded-full align-middle"
+              style={{
+                border: '2px solid var(--tr-20)',
+                borderTopColor: 'var(--mint)',
+                animation: 'tailor-spin 0.8s linear infinite',
+              }}
+            />
+            Preparing photo… converting HEIC for upload.
+          </span>
+        </InfoRow>
       )}
 
       {step === 'detecting' && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 py-16">
-          <div
-            className="h-9 w-9 rounded-full"
-            style={{
-              border: '3px solid var(--tr-20)',
-              borderTopColor: 'var(--mint)',
-              animation: 'tailor-spin 0.8s linear infinite',
-            }}
-          />
-          <div className="text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 py-16 text-center">
+          <Thinking size={72} />
+          <div>
             <p className="m-0 text-[16px] font-semibold text-white">Finding your clothes…</p>
-            <p className="mt-1 text-[13px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+            <p className="mt-1 text-[13px]" style={{ color: M.faint }}>
               We&rsquo;ll show what we spot — you choose what to add.
+            </p>
+            <p className="mt-1 text-[12.5px]" style={{ color: M.ghost }}>
+              Usually under 10 seconds · HEIC converts automatically
             </p>
           </div>
         </div>
@@ -378,15 +438,11 @@ export function PhotoIngestUpload() {
       )}
 
       {step === 'preparing' && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-6 py-12 text-center">
-          <div className="flex flex-col items-center gap-2">
-            <span style={{ fontSize: 34 }}>✨</span>
-            <p className="m-0 text-[16px] font-semibold text-white">Tailoring your items</p>
-            <p className="mt-1 max-w-[260px] text-[13px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
-              We&rsquo;re pressing clean product shots. Wait here and your review opens
-              the moment they&rsquo;re ready.
-            </p>
-          </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-6 py-6 text-center">
+          <ThinkingScreen
+            title="Tailoring your items"
+            sub="We&rsquo;re pressing clean product shots. Wait here and your review opens the moment they&rsquo;re ready."
+          />
           {genRun ? (
             // Commit returned → the real progress pill. Waiting here auto-advances to the
             // deck when the run finishes (no tap). Tapping early still works; onReview
@@ -418,7 +474,7 @@ export function PhotoIngestUpload() {
                 }}
                 aria-hidden
               />
-              <span className="text-[14px] font-semibold" style={{ color: 'rgba(255,255,255,0.85)' }}>
+              <span className="text-[14px] font-semibold" style={{ color: M.soft }}>
                 Preparing your items…
               </span>
             </div>
@@ -435,7 +491,7 @@ export function PhotoIngestUpload() {
               router.push('/home');
             }}
             className="text-[13px] underline"
-            style={{ color: 'rgba(255,255,255,0.5)' }}
+            style={{ color: M.faint }}
           >
             Tailor in the background
           </button>
@@ -476,42 +532,48 @@ export function PhotoIngestUpload() {
             }}
           />
 
-          {/* Intentional entry: two big, tappable source cards (icon + title + sub)
-              instead of flat buttons — the redesigned /add-photo landing. */}
+          {/* Intentional entry: two big, tappable source cards (icon medallion + title +
+              sub) — the redesigned /add-photo landing. */}
           <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
-              onClick={() => cameraRef.current?.click()}
+              onClick={() => void openSource('camera')}
               disabled={busy}
-              className="group flex flex-col items-center gap-2.5 rounded-2xl px-4 py-6 text-center transition-transform active:scale-[0.98] disabled:opacity-50"
-              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
+              className="flex flex-col items-center gap-2.5 px-4 py-6 text-center transition-transform active:scale-[0.98] disabled:opacity-50"
+              style={{ borderRadius: 20, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.11)' }}
             >
               <span
-                className="flex items-center justify-center rounded-full"
-                style={{ width: 52, height: 52, background: 'var(--mint)', color: 'var(--brand-teal)' }}
+                className="flex items-center justify-center text-white"
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: 17,
+                  background: 'linear-gradient(165deg, #10635c, #0a3633)',
+                  border: '1px solid rgba(255,255,255,0.16)',
+                }}
               >
                 <Camera size={24} />
               </span>
-              <span className="text-[15px] font-semibold text-white">Take photo</span>
-              <span className="text-[12.5px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              <span className="text-[15px] font-semibold text-white">Snap a photo</span>
+              <span className="text-[12.5px]" style={{ color: M.faint }}>
                 Use your camera
               </span>
             </button>
             <button
               type="button"
-              onClick={() => galleryRef.current?.click()}
+              onClick={() => void openSource('photos')}
               disabled={busy}
-              className="group flex flex-col items-center gap-2.5 rounded-2xl px-4 py-6 text-center transition-transform active:scale-[0.98] disabled:opacity-50"
-              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
+              className="flex flex-col items-center gap-2.5 px-4 py-6 text-center transition-transform active:scale-[0.98] disabled:opacity-50"
+              style={{ borderRadius: 20, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.11)' }}
             >
               <span
-                className="flex items-center justify-center rounded-full"
-                style={{ width: 52, height: 52, background: 'var(--tr-20)', color: 'white' }}
+                className="flex items-center justify-center text-white"
+                style={{ width: 52, height: 52, borderRadius: 17, background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.16)' }}
               >
                 <ImagePlus size={24} />
               </span>
               <span className="text-[15px] font-semibold text-white">Choose photos</span>
-              <span className="text-[12.5px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+              <span className="text-[12.5px]" style={{ color: M.faint }}>
                 From your library
               </span>
             </button>
@@ -519,7 +581,7 @@ export function PhotoIngestUpload() {
 
           {picked.length === 0 ? (
             // Nothing picked yet — a quiet guidance line (the source cards are the CTA).
-            <p className="mt-1 text-center text-[12.5px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+            <p className="mt-1 text-center text-[12.5px]" style={{ color: M.faint }}>
               Use a photo of just yourself — we&rsquo;ll spot each garment. JPEG, PNG, WebP,
               or HEIC, up to {MAX_FILE_SIZE / 1024 / 1024}MB each.
             </p>
@@ -527,31 +589,29 @@ export function PhotoIngestUpload() {
             <>
               <div className="grid grid-cols-3 gap-2">
                 {picked.map((p, i) => (
-                  <div key={p.id} className="relative aspect-square overflow-hidden rounded-lg" style={{ background: '#333' }}>
+                  <div
+                    key={p.id}
+                    className="relative aspect-square overflow-hidden"
+                    style={{ borderRadius: 16, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)' }}
+                  >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={p.previewUrl} alt={`Selected ${i + 1}`} className="h-full w-full object-cover" />
                     <button
                       type="button"
                       onClick={() => removeAt(i)}
                       aria-label="Remove"
-                      className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full"
-                      style={{ background: 'rgba(0,0,0,0.6)', color: 'white' }}
+                      className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full"
+                      style={{ background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.18)', color: 'white', backdropFilter: 'blur(8px)' }}
                     >
-                      <X size={14} />
+                      <X size={13} />
                     </button>
                   </div>
                 ))}
               </div>
 
-              <button
-                type="button"
-                onClick={handleSubmit}
-                disabled={busy}
-                className="rounded-xl py-3.5 text-[15px] font-semibold disabled:opacity-50"
-                style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
-              >
+              <Btn variant="mint" size="lg" fullWidth onClick={handleSubmit} disabled={busy}>
                 {`Find clothes in ${picked.length} photo${picked.length > 1 ? 's' : ''}`}
-              </button>
+              </Btn>
             </>
           )}
         </>

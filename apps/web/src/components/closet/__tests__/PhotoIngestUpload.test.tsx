@@ -260,7 +260,8 @@ describe('PhotoIngestUpload', () => {
 
     expect(await screen.findByText(/already added/i)).toBeInTheDocument();
     // Back at pick with the queue cleared — no select step, no commit.
-    expect(screen.getByText('Take photo')).toBeInTheDocument();
+    // 'Snap a photo' is the pick-step camera source-card title (redesigned entry).
+    expect(screen.getByText('Snap a photo')).toBeInTheDocument();
     expect(commitPhotoIngest).not.toHaveBeenCalled();
   });
 
@@ -295,7 +296,8 @@ describe('PhotoIngestUpload', () => {
 
     expect(await screen.findByText(/held for review/i)).toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
-    expect(screen.getByText('Take photo')).toBeInTheDocument();
+    // Reset to pick — the redesigned source cards are back on screen.
+    expect(screen.getByText('Snap a photo')).toBeInTheDocument();
   });
 
   it('detect failure surfaces the error and stays recoverable at pick', async () => {
@@ -352,8 +354,8 @@ describe('PhotoIngestUpload', () => {
     pickFiles([new File(['x'], 'broken.heic', { type: 'image/heic' })]);
 
     expect(await screen.findByText(/couldn't read that heic/i)).toBeInTheDocument();
-    // Nothing picked, no detect — recoverable.
-    expect(screen.getByText('Take photo')).toBeInTheDocument();
+    // Nothing picked, no detect — recoverable (still on the pick-step source cards).
+    expect(screen.getByText('Snap a photo')).toBeInTheDocument();
     expect(detectPhotoIngest).not.toHaveBeenCalled();
   });
 });

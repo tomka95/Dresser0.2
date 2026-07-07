@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { M } from "@/components/ds";
 
 interface AuthFooterProps {
   text: string;
@@ -6,11 +7,15 @@ interface AuthFooterProps {
   href: string;
 }
 
+/** Centered "New here? Create an account" line beneath the auth card. */
 export function AuthFooter({ text, linkText, href }: AuthFooterProps) {
   return (
-    <div className="mt-6 text-center text-sm text-white/70">
+    <div
+      className="mt-[18px] text-center"
+      style={{ color: M.faint, fontSize: 13.5 }}
+    >
       {text}{" "}
-      <Link href={href} className="text-white font-medium hover:underline">
+      <Link href={href} className="font-semibold text-white hover:underline">
         {linkText}
       </Link>
     </div>

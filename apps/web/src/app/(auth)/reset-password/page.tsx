@@ -1,21 +1,27 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Lock } from "lucide-react";
+import { CircleAlert, Link2, Lock } from "lucide-react";
 import { AuthGlassCard } from "@/components/auth/AuthGlassCard";
+import { AuthHeader } from "@/components/auth/AuthHeader";
 import { AuthField } from "@/components/auth/AuthField";
-import { DSButton } from "@/components/ds";
-import { updatePassword } from "@/lib/auth";
+import { Btn, StateBlock } from "@/components/ds";
+import { getSession, onAuthStateChange, updatePassword } from "@/lib/auth";
+import { getSupabaseClient } from "@/lib/supabase/client";
 
-/** Coarse 0–3 strength: length, mixed case, digit/symbol. Drives the 3-segment meter. */
-function passwordStrength(pw: string): number {
-  let score = 0;
+/** Coarse 0–4 strength → segment count + label, driving the 4-segment meter. */
+function passwordStrength(pw: string): { score: number; label: string } {
+  if (!pw) return { score: 0, label: "" };
+  let score = 1;
   if (pw.length >= 8) score++;
   if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++;
   if (/[\d\W]/.test(pw)) score++;
-  return pw.length === 0 ? 0 : Math.max(1, score);
+  const label = score <= 1 ? "Weak" : score === 2 ? "Fair" : score === 3 ? "Good" : "Strong";
+  return { score, label };
 }
+
+type LinkStatus = "checking" | "valid" | "invalid";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -23,8 +29,63 @@ export default function ResetPasswordPage() {
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Proactively gate the form on a real recovery session, instead of only failing
+  // on submit: an expired/absent link should land on a clear "request a new one" state.
+  const [linkStatus, setLinkStatus] = useState<LinkStatus>("checking");
 
   const strength = useMemo(() => passwordStrength(password), [password]);
+
+  // ── Recovery-session detection ──
+  // A reset link opens /reset-password with the recovery grant in the URL. supabase-js
+  // (detectSessionInUrl) processes the hash and fires PASSWORD_RECOVERY, establishing a
+  // recovery session. PKCE-style links arrive as ?code= and need an explicit exchange.
+  // We: (1) subscribe to PASSWORD_RECOVERY, (2) exchange a ?code= if present, (3) poll
+  // getSession() briefly. If a session appears → valid; if the grace window elapses with
+  // none → invalid (expired/tampered/opened directly).
+  const settledRef = useRef(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const settle = (status: LinkStatus) => {
+      if (settledRef.current) return;
+      settledRef.current = true;
+      setLinkStatus(status);
+    };
+
+    const sub = onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY" || (event === "SIGNED_IN" && session)) {
+        settle("valid");
+      }
+    });
+
+    (async () => {
+      // Already have a session (hash processed before this effect ran)?
+      if (await getSession()) {
+        settle("valid");
+        return;
+      }
+      // PKCE recovery link (?code=…) — exchange it for a session.
+      const code = new URLSearchParams(window.location.search).get("code");
+      if (code) {
+        try {
+          const { error: exchErr } = await getSupabaseClient().auth.exchangeCodeForSession(code);
+          if (!exchErr && (await getSession())) {
+            settle("valid");
+            return;
+          }
+        } catch {
+          /* fall through to the grace window / invalid */
+        }
+      }
+      // Give detectSessionInUrl / PASSWORD_RECOVERY a brief window to land, then give up.
+      timer = setTimeout(() => settle("invalid"), 1500);
+    })();
+
+    return () => {
+      sub.unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,70 +105,125 @@ export default function ResetPasswordPage() {
       router.push("/home");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Couldn't update the password.";
-      setError(
-        /session/i.test(message)
-          ? "This reset link has expired — request a new one from “Forgot password”."
-          : message
-      );
+      if (/session/i.test(message)) {
+        // The session lapsed mid-flow — fall back to the expired-link state.
+        setLinkStatus("invalid");
+      } else {
+        setError(message);
+      }
       setLoading(false);
     }
   };
 
+  // ── Invalid / expired link landing (proactive) ──
+  if (linkStatus === "invalid") {
+    return (
+      <AuthGlassCard>
+        <StateBlock
+          compact
+          tone="danger"
+          icon={<Link2 size={26} />}
+          title="This link has expired"
+          sub="Reset links work once and last 30 minutes. Request a fresh one — it only takes a second."
+          cta={
+            <Btn variant="primary" size="md" onClick={() => router.push("/forgot-password")}>
+              Request a new link
+            </Btn>
+          }
+          cta2={
+            <Btn variant="ghost" size="md" onClick={() => router.push("/sign-in")}>
+              Back to sign in
+            </Btn>
+          }
+        />
+      </AuthGlassCard>
+    );
+  }
+
+  const checking = linkStatus === "checking";
+
   return (
     <AuthGlassCard>
-      <h2 className="m-0 mb-2 text-[23px] font-bold text-white">Set new password</h2>
-      <p className="m-0 mb-5 text-sm leading-relaxed text-white/[0.65]">
-        Choose a strong password you&rsquo;ll remember.
-      </p>
+      <AuthHeader title="Choose a new password" subtitle="Set a strong password you'll remember." />
 
       <form onSubmit={handleSubmit}>
-        <div className="space-y-3">
+        <div className="flex flex-col gap-3">
+          <div>
+            <AuthField
+              placeholder="New password"
+              isPassword
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              disabled={checking}
+              startIcon={<Lock size={17} />}
+            />
+            {/* Strength meter — 4 segments fill as the password strengthens. */}
+            {password && (
+              <div className="mt-[9px] flex items-center gap-[5px]" aria-hidden>
+                {[1, 2, 3, 4].map((seg) => (
+                  <span
+                    key={seg}
+                    className="flex-1 rounded-sm transition-colors"
+                    style={{
+                      height: 3.5,
+                      background:
+                        strength.score >= seg
+                          ? strength.score >= 3
+                            ? "linear-gradient(90deg,#147f74,var(--mint))"
+                            : "linear-gradient(90deg,#f0a23b,#f0b566)"
+                          : "rgba(255,255,255,0.12)",
+                    }}
+                  />
+                ))}
+                <span
+                  className="ml-1.5 font-semibold"
+                  style={{ color: strength.score >= 3 ? "var(--mint)" : "#f0b566", fontSize: 11.5 }}
+                >
+                  {strength.label}
+                </span>
+              </div>
+            )}
+          </div>
           <AuthField
-            placeholder="New password"
+            placeholder="Repeat it"
             isPassword
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            startIcon={<Lock className="text-white/50" size={18} />}
-          />
-          <AuthField
-            placeholder="Confirm password"
-            isPassword
+            autoComplete="new-password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             required
-            startIcon={<Lock className="text-white/50" size={18} />}
+            disabled={checking}
+            startIcon={<Lock size={17} />}
           />
         </div>
 
-        {/* Strength meter — 3 segments fill mint as the password strengthens. */}
-        <div className="mx-0.5 mt-3.5 flex gap-2" aria-hidden>
-          {[1, 2, 3].map((seg) => (
-            <div
-              key={seg}
-              className="h-1 flex-1 rounded-sm transition-colors"
-              style={{ background: strength >= seg ? "var(--mint)" : "var(--tr-20)" }}
-            />
-          ))}
-        </div>
-
         {error && (
-          <div className="mt-3 rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-center text-sm text-red-400">
-            {error}
+          <div
+            className="mt-3.5 flex items-center gap-2 rounded-[15px] px-3.5 py-3"
+            style={{
+              background: "rgba(251,44,54,0.13)",
+              border: "1px solid rgba(251,44,54,0.32)",
+              color: "#ff9096",
+            }}
+            role="alert"
+          >
+            <CircleAlert size={16} className="shrink-0" />
+            <span className="text-[12.8px] leading-snug text-white">{error}</span>
           </div>
         )}
 
         <div className="mt-[18px]">
-          <DSButton
+          <Btn
             type="submit"
-            variant="light"
+            variant="primary"
+            size="lg"
             fullWidth
-            pill
-            loading={loading}
-            disabled={loading || !password || !confirm}
+            pending={loading}
+            disabled={loading || checking || !password || !confirm}
           >
-            {loading ? "Updating…" : "Update password"}
-          </DSButton>
+            Update password
+          </Btn>
         </div>
       </form>
     </AuthGlassCard>

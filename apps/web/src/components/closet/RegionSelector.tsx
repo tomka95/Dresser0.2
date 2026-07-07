@@ -28,7 +28,7 @@ import { AlertTriangle, Check, ChevronLeft, ChevronRight, Move, Plus, X } from '
 
 import type { PhotoCommitSelection, PhotoDetectSession } from '@/lib/api/gmail';
 import { logEvent } from '@/lib/api/events';
-import { DSButton } from '@/components/ds';
+import { Btn, RoundBtn, M } from '@/components/ds';
 
 export interface RegionPhoto {
   /** Local object URL of the picked File (never a network fetch). */
@@ -110,13 +110,18 @@ function occlusionWarning(box: Box, others: Box[]): string | null {
 }
 
 /** Small glass label chip shown at a box's top-left corner. */
-function BoxLabel({ name }: { name: string }) {
+function BoxLabel({ name, on }: { name: string; on?: boolean }) {
   return (
     <span
-      className="absolute left-1 top-1 max-w-[92%] truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white"
+      className="absolute left-2 max-w-[92%] truncate font-bold text-white"
       style={{
-        background: 'rgba(0,0,0,0.55)',
-        border: '1px solid var(--tr-20)',
+        top: -11,
+        padding: '2px 8px',
+        borderRadius: 999,
+        fontSize: 10,
+        whiteSpace: 'nowrap',
+        background: on ? 'var(--mint)' : 'rgba(0,0,0,0.6)',
+        color: on ? '#06302d' : '#fff',
         backdropFilter: 'blur(6px)',
         WebkitBackdropFilter: 'blur(6px)',
       }}
@@ -131,10 +136,13 @@ function WarnBadge({ text }: { text: string }) {
   return (
     <span
       title={text}
-      className="absolute bottom-1 left-1 z-[3] inline-flex max-w-[92%] items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[9.5px] font-semibold"
+      className="absolute bottom-1 left-1 z-[3] inline-flex max-w-[92%] items-center gap-1 truncate font-bold"
       style={{
-        background: 'rgba(245,158,11,0.92)',
-        color: '#3a2400',
+        padding: '2px 8px',
+        borderRadius: 999,
+        fontSize: 10,
+        background: '#f0a23b',
+        color: '#06302d',
       }}
     >
       <AlertTriangle size={10} strokeWidth={2.6} className="shrink-0" />
@@ -487,42 +495,39 @@ export function RegionSelector({
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* Stepper */}
       <div className="flex items-center justify-between">
-        <button
-          type="button"
+        <RoundBtn
+          size={38}
           onClick={() => goTo(index - 1)}
           disabled={index === 0}
           aria-label="Previous photo"
-          className="flex h-9 w-9 items-center justify-center rounded-full disabled:opacity-30"
-          style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)', color: 'white' }}
-        >
-          <ChevronLeft size={18} />
-        </button>
+          className="disabled:opacity-30"
+          icon={<ChevronLeft size={18} />}
+        />
         <span
           className="font-accent text-[12px] font-semibold uppercase"
-          style={{ color: 'rgba(255,255,255,0.6)', letterSpacing: '1px' }}
+          style={{ color: M.faint, letterSpacing: '1px', fontVariantNumeric: 'tabular-nums' }}
         >
           Photo {index + 1} of {photos.length}
         </span>
-        <button
-          type="button"
+        <RoundBtn
+          size={38}
           onClick={() => goTo(index + 1)}
           disabled={index === photos.length - 1}
           aria-label="Next photo"
-          className="flex h-9 w-9 items-center justify-center rounded-full disabled:opacity-30"
-          style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)', color: 'white' }}
-        >
-          <ChevronRight size={18} />
-        </button>
+          className="disabled:opacity-30"
+          icon={<ChevronRight size={18} />}
+        />
       </div>
 
       {/* Photo card */}
       <div
         ref={frameRef}
-        className="relative min-h-0 w-full flex-1 overflow-hidden rounded-3xl"
+        className="relative min-h-0 w-full flex-1 overflow-hidden"
         style={{
-          background: '#222',
-          border: '1px solid var(--tr-20)',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
+          borderRadius: 28,
+          background: 'linear-gradient(180deg, rgba(16,32,31,0.82), rgba(9,20,20,0.88))',
+          border: '1px solid rgba(255,255,255,0.14)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 60px -12px rgba(0,0,0,0.65)',
           minHeight: 280,
         }}
       >
@@ -546,12 +551,14 @@ export function RegionSelector({
             // Skipped tile — nothing to select here.
             <div className="absolute inset-0 z-20 flex items-center justify-center">
               <span
-                className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[12.5px] font-semibold text-white"
+                className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-white"
                 style={{
-                  background: 'rgba(0,0,0,0.6)',
-                  border: '1px solid var(--tr-20)',
-                  backdropFilter: 'blur(6px)',
-                  WebkitBackdropFilter: 'blur(6px)',
+                  padding: '9px 16px',
+                  borderRadius: 999,
+                  background: 'rgba(0,0,0,0.5)',
+                  border: '1px solid rgba(75,226,214,0.4)',
+                  backdropFilter: 'blur(10px)',
+                  WebkitBackdropFilter: 'blur(10px)',
                 }}
               >
                 <Check size={14} style={{ color: 'var(--mint)' }} /> Already added
@@ -594,15 +601,16 @@ export function RegionSelector({
                       aria-label={`${r.name} region`}
                       className="absolute inset-0 p-0 text-left transition-opacity duration-150"
                       style={{
-                        border: isSel ? '2px solid var(--mint)' : '1.5px dashed rgba(255,255,255,0.35)',
+                        border: isSel ? '2px solid var(--mint)' : '1.5px dashed rgba(255,255,255,0.55)',
                         background: isSel ? 'rgba(75,226,214,0.10)' : 'transparent',
-                        borderRadius: 10,
-                        opacity: isSel ? 1 : 0.6,
+                        boxShadow: isSel ? '0 0 0 3px rgba(75,226,214,0.2)' : 'none',
+                        borderRadius: 12,
+                        opacity: isSel ? 1 : 0.75,
                         cursor: 'pointer',
                         touchAction: 'manipulation',
                       }}
                     >
-                      <BoxLabel name={r.name} />
+                      <BoxLabel name={r.name} on={isSel} />
                       {isSel && occWarnings.det[r.region_id] && (
                         <WarnBadge text={occWarnings.det[r.region_id]} />
                       )}
@@ -659,7 +667,8 @@ export function RegionSelector({
                       zIndex: 60,
                       border: '2px solid var(--mint)',
                       background: 'rgba(75,226,214,0.10)',
-                      borderRadius: 10,
+                      boxShadow: '0 0 0 3px rgba(75,226,214,0.2)',
+                      borderRadius: 12,
                       touchAction: 'none',
                       cursor: committing ? 'default' : 'move',
                     }}
@@ -759,7 +768,7 @@ export function RegionSelector({
       <div className="flex items-center justify-between gap-3">
         <p
           className="m-0 flex-1 text-[12.5px]"
-          style={{ color: occHint ? 'var(--amber, #f59e0b)' : 'rgba(255,255,255,0.6)' }}
+          style={{ color: occHint ? '#f0b566' : M.faint }}
         >
           {hint}
         </p>
@@ -767,11 +776,24 @@ export function RegionSelector({
           type="button"
           onClick={() => setDrawMode((d) => !d)}
           disabled={isDup || atManualCap || committing}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-[13px] font-semibold transition-transform active:scale-95 disabled:opacity-40"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full text-[13px] font-semibold transition-transform active:scale-95 disabled:opacity-40"
           style={
             drawMode
-              ? { background: 'var(--mint)', color: 'var(--brand-teal)', border: '1px solid transparent' }
-              : { background: 'var(--tr-10)', border: '1px solid var(--tr-20)', color: 'white' }
+              ? {
+                  padding: '9px 15px',
+                  background: 'linear-gradient(165deg, #52e8dc, #2cc9bc)',
+                  color: '#06302d',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.45)',
+                }
+              : {
+                  padding: '9px 15px',
+                  background: 'rgba(255,255,255,0.09)',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  color: 'white',
+                  backdropFilter: 'blur(10px)',
+                  WebkitBackdropFilter: 'blur(10px)',
+                }
           }
         >
           <Plus size={15} /> Add item
@@ -785,24 +807,19 @@ export function RegionSelector({
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.18, ease: 'easeOut' }}
       >
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={committing}
-          className="h-[50px] shrink-0 rounded-[10px] px-5 text-[15px] font-medium text-white disabled:opacity-50"
-          style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
-        >
+        <Btn variant="glass" size="lg" onClick={onCancel} disabled={committing}>
           Cancel
-        </button>
-        <DSButton
+        </Btn>
+        <Btn
+          variant="mint"
+          size="lg"
           className="flex-1"
-          loading={committing}
+          pending={committing}
           disabled={totalSelected === 0 || committing}
           onClick={() => onCommit(buildSelections())}
-          style={{ background: 'var(--mint)', color: 'var(--brand-teal)' }}
         >
           Add {totalSelected} item{totalSelected === 1 ? '' : 's'}
-        </DSButton>
+        </Btn>
       </motion.div>
     </div>
   );

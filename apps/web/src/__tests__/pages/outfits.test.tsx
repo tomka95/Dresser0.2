@@ -22,6 +22,19 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/outfits',
 }));
 
+// The redesign added a required useRequireAuth() guard to the /outfits list
+// (parity with /outfits/[id]). The component destructures { session, loading }
+// and gates on `loading || !session`, so the mock must resolve to an
+// authenticated, non-loading session (mirrors review.test.tsx). Without this the
+// real hook mounts Supabase auth and every test throws "Supabase is not configured".
+vi.mock('@/lib/auth/useRequireAuth', () => ({
+  useRequireAuth: () => ({
+    session: { user: { id: 'u1' } },
+    status: 'authenticated',
+    loading: false,
+  }),
+}));
+
 // Mock the stores
 vi.mock('@/stores/useOutfitsStore', () => ({
   useOutfitsStore: vi.fn(),
@@ -64,7 +77,8 @@ describe('OutfitsPage', () => {
     render(<OutfitsPage />);
 
     expect(screen.getByText('No outfits yet')).toBeInTheDocument();
-    expect(screen.getByText('Generate outfits')).toBeInTheDocument();
+    // Redesigned empty-state CTA copy ("Generate outfits" → "Style me for today").
+    expect(screen.getByText('Style me for today')).toBeInTheDocument();
   });
 
   it('should render loading state', () => {
@@ -82,9 +96,15 @@ describe('OutfitsPage', () => {
 
     render(<OutfitsPage />);
 
-    expect(
-      screen.getByText('Generating personalized looks…')
-    ).toBeInTheDocument();
+    // The redesign replaced the loading COPY with a skeleton list (aria-hidden,
+    // no queryable text). The remaining visible loading signal is the header
+    // "New look" action entering its pending state — the label is swapped for
+    // brand dots (so its accessible name goes empty) and the button is disabled.
+    // In the loading branch this is the only button on the page. Assert that real
+    // behavior rather than a piece of gone copy.
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toBeDisabled();
   });
 
   it('should render error state', () => {
@@ -225,7 +245,9 @@ describe('OutfitsPage', () => {
 
     render(<OutfitsPage />);
 
-    const regenerateButton = screen.getByRole('button', { name: /Regenerate/ });
+    // Redesigned regenerate action is labelled "New look" (was "Regenerate").
+    // The BEHAVIOR is unchanged: it must still call fetchOutfits({ limit: 3 }).
+    const regenerateButton = screen.getByRole('button', { name: /New look/ });
     await user.click(regenerateButton);
 
     expect(mockFetchOutfits).toHaveBeenCalledWith({ limit: 3 });
