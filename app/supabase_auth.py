@@ -124,23 +124,6 @@ def _signing_key_for(token: str) -> Dict[str, Any]:
     return key
 
 
-def looks_like_supabase_token(token: str) -> bool:
-    """Cheap, unverified check of whether a token claims our Supabase issuer.
-
-    Used only to ROUTE a bearer token to the right verifier in the dual-accept
-    transition. It never grants access on its own — the chosen verifier still
-    fully validates signature + claims. Legacy custom JWTs carry no `iss`, so they
-    fall through to the legacy path.
-    """
-    if not settings.supabase_auth_enabled:
-        return False
-    try:
-        claims = jwt.get_unverified_claims(token)
-    except JWTError:
-        return False
-    return claims.get("iss") == settings.supabase_jwt_issuer
-
-
 def verify_supabase_token(token: str) -> Dict[str, Any]:
     """Verify a Supabase access token and return its validated claims.
 

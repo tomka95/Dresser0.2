@@ -1,19 +1,16 @@
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
-from .core.config import settings
 from .models import User
 from .supabase_auth import (
     SupabaseAuthError,
-    looks_like_supabase_token,
     verify_supabase_token,
 )
 
@@ -34,19 +31,19 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
 ) -> User:
-    """Resolve the authenticated user from a bearer token.
+    """Resolve the authenticated user from a Supabase Auth access token.
 
-    DUAL-ACCEPT (Supabase Auth transition): a request may carry EITHER
+    Supabase Auth is the ONLY identity path. Access tokens are asymmetric JWTs
+    (ES256/RS256/EdDSA) verified against the project's public JWKS; the signature
+    plus the `iss`, `aud`, and `exp` claims are all checked (see
+    app.supabase_auth.verify_supabase_token). The user is resolved by Supabase
+    user id (`sub`); if no public.users profile row exists yet, one is
+    auto-provisioned.
 
-      1. a Supabase Auth access token (verified against the project's public JWKS
-         asymmetric keys), or
-      2. a legacy custom JWT (signed with settings.JWT_SECRET_KEY).
-
-    Tokens are routed by their unverified `iss` claim: Supabase tokens carry the
-    project issuer, legacy tokens carry none. Routing never grants access — the
-    selected verifier still fully validates the token. For a valid Supabase token
-    the user is resolved by Supabase user id (`sub`); if no public.users profile
-    row exists yet, one is auto-provisioned.
+    The legacy custom HS256-JWT dual-accept path was RETIRED (auth-hardening
+    S1): symmetric/custom tokens are rejected, there is no shared secret to
+    forge, and if Supabase Auth is not configured the request fails CLOSED
+    (401) rather than falling back to any forgeable key.
 
     Raises HTTPException(401) on any failure.
     """
@@ -56,38 +53,15 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    token = credentials.credentials
-
-    # --- Supabase Auth path -------------------------------------------------
-    if looks_like_supabase_token(token):
-        try:
-            claims = verify_supabase_token(token)
-        except SupabaseAuthError as exc:
-            logger.info("Supabase token rejected: %s", exc)
-            raise credentials_exception
-        return _resolve_supabase_user(db, claims, credentials_exception)
-
-    # --- Legacy custom-JWT path ---------------------------------------------
     try:
-        payload = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
-        )
-        user_id: Optional[str] = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
+        claims = verify_supabase_token(credentials.credentials)
+    except SupabaseAuthError as exc:
+        # Covers unconfigured Supabase, bad signature, wrong iss/aud, expiry,
+        # unknown kid, and any non-asymmetric (HS256/custom) or malformed token.
+        logger.info("Auth rejected: %s", exc)
         raise credentials_exception
 
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise credentials_exception
-
-    user = db.query(User).filter(User.id == user_uuid).first()
-    if user is None:
-        raise credentials_exception
-
-    return user
+    return _resolve_supabase_user(db, claims, credentials_exception)
 
 
 def _resolve_supabase_user(

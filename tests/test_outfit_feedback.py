@@ -27,7 +27,7 @@ from app.models import (
     StylePreference,
     User,
 )
-from app.security import create_access_token
+from tests._authutil import mint_supabase_token
 from app.services.stylist import outfit_feedback as credit
 from app.services.stylist.distill import recompute_preferences
 from main import app
@@ -65,12 +65,12 @@ def user2(db: Session):
 
 @pytest.fixture
 def tok1(user1):
-    return create_access_token(data={"sub": str(user1.id)})
+    return mint_supabase_token(sub=str(user1.id))
 
 
 @pytest.fixture
 def tok2(user2):
-    return create_access_token(data={"sub": str(user2.id)})
+    return mint_supabase_token(sub=str(user2.id))
 
 
 def _auth(t):
