@@ -357,7 +357,7 @@ def enrich_item(item: ClothingItem, db, *, provider=None, embed: bool = True) ->
         return outcome
 
     if provider is None:
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         provider = get_ai_provider()
 
@@ -444,7 +444,7 @@ def run_enrichment_backfill(
             return stats
 
         provider = None
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         provider = get_ai_provider()
 
@@ -509,7 +509,7 @@ def enrich_items_background(user_id_str: str, item_id_strs: List[str]) -> None:
             .all()
         )
         provider = None
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         provider = get_ai_provider()
         enriched = embedded = 0

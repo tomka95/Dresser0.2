@@ -33,7 +33,7 @@ from typing import Optional
 from google.genai import errors as genai_errors
 
 from app.core.config import settings
-from app.services.ai_provider import get_ai_provider
+from app.platform.ai_provider import get_ai_provider
 
 from .extraction_schema import ExtractedReceipt
 
@@ -59,10 +59,10 @@ _TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 
 # ---------------------------------------------------------------------------
 # Pricing. The per-unit rates now live in config (GEMINI_*_USD_PER_1M) so they are
-# editable when pricing changes; the math is centralized in app.gmail_closet.usage.
+# editable when pricing changes; the math is centralized in app.platform.usage.
 # Flash-Lite is the headline rate; the escalation model (Flash) bills separately.
 # ---------------------------------------------------------------------------
-from app.gmail_closet.usage import gemini_cost as _model_cost, gemini_flash_lite_cost as flash_lite_cost  # noqa: E402
+from app.platform.usage import gemini_cost as _model_cost, gemini_flash_lite_cost as flash_lite_cost  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -163,7 +163,7 @@ def detect_garments_with_regions(
     caller stages nothing rather than 500ing.
     """
     if provider is None:
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         provider = get_ai_provider()
 
@@ -252,7 +252,7 @@ def describe_garment_crop(
     the caller stages a low-confidence placeholder instead of 500ing.
     """
     if provider is None:
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         provider = get_ai_provider()
 

@@ -1,6 +1,6 @@
 """Unit tests for JSON extraction helper used with Gemini responses."""
 
-from app.services.ai_provider import extract_json_metadata
+from app.platform.ai_provider import extract_json_metadata
 
 
 def test_extract_json_metadata_raw_json():

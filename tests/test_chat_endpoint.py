@@ -333,8 +333,8 @@ class _FakeStreamModels:
 
 
 def test_full_turn_persists_transcript_and_cost(db, user1, monkeypatch):
-    from app.services.ai_provider import AIProvider
-    import app.services.ai_provider as provider_module
+    from app.platform.ai_provider import AIProvider
+    import app.platform.ai_provider as provider_module
     from app.services.stylist.agent import TurnRequest, run_stylist_turn
 
     db.add(ClothingItem(user_id=user1.id, name="White Tee", category="top"))
@@ -375,8 +375,8 @@ def test_full_turn_persists_transcript_and_cost(db, user1, monkeypatch):
 
 
 def test_full_turn_second_message_reuses_conversation(db, user1, monkeypatch):
-    from app.services.ai_provider import AIProvider
-    import app.services.ai_provider as provider_module
+    from app.platform.ai_provider import AIProvider
+    import app.platform.ai_provider as provider_module
     from app.services.stylist.agent import TurnRequest, run_stylist_turn
 
     fake = AIProvider.__new__(AIProvider)
@@ -400,8 +400,8 @@ def test_full_turn_second_message_reuses_conversation(db, user1, monkeypatch):
 def test_incognito_turn_writes_no_conversation_or_messages(db, user1, monkeypatch):
     """Incognito guarantee: the turn runs to completion but persists NOTHING —
     zero conversation rows, zero message rows. Nothing left for distillation."""
-    from app.services.ai_provider import AIProvider
-    import app.services.ai_provider as provider_module
+    from app.platform.ai_provider import AIProvider
+    import app.platform.ai_provider as provider_module
     from app.services.stylist.agent import TurnRequest, run_stylist_turn
 
     db.add(ClothingItem(user_id=user1.id, name="White Tee", category="top"))

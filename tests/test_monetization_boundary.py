@@ -29,7 +29,9 @@ def _run_lint():
 def test_import_linter_contracts_pass():
     r = _run_lint()
     assert r.returncode == 0, f"import-linter failed unexpectedly:\n{r.stdout}\n{r.stderr}"
-    assert "2 kept, 0 broken" in r.stdout
+    # 4 contracts as of P3.3: the F1c ranking<->monetization wall (2) plus the
+    # platform-depends-on-nothing-upward / core-is-a-leaf layering contracts (2).
+    assert "4 kept, 0 broken" in r.stdout
 
 
 @pytest.mark.skipif(not os.path.exists(LINT), reason="import-linter not installed")

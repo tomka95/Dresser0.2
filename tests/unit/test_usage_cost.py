@@ -5,7 +5,7 @@ reference-vs-candidate PAIR pass runs the pricier GENERATION_VERIFY_MODEL (Flash
 add_verify must price each call at its own model so a mix is not under-reported.
 """
 from app.core.config import settings
-from app.gmail_closet.usage import UsageAccumulator, gemini_cost
+from app.platform.usage import UsageAccumulator, gemini_cost
 
 
 def test_single_image_verify_prices_at_flash_lite_unchanged():

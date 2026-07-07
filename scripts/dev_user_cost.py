@@ -6,7 +6,7 @@ Usage (from project root):
     python -m scripts.dev_user_cost <email> --json    # machine-readable
 
 Reads the per-sync cost columns recorded on ingest_runs (Feature B) and rolls them up
-per user via app.gmail_closet.usage.get_user_cost_summary. Counts + dollars only — no
+per user via app.platform.usage.get_user_cost_summary. Counts + dollars only — no
 email content is ever stored or shown.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ import sys
 from typing import List, Tuple
 
 from app.db import SessionLocal
-from app.gmail_closet.usage import get_user_cost_summary
+from app.platform.usage import get_user_cost_summary
 from app.models import IngestRun, User
 
 

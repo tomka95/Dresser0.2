@@ -18,7 +18,7 @@ from app.models import (
     StyleEvent,
     User,
 )
-from app.services.ai_provider import AIProvider
+from app.platform.ai_provider import AIProvider
 from app.services.stylist.agent import frame_untrusted, preparse_intent, route_model
 from app.services.stylist.costs import TurnUsage, chat_gemini_cost
 from app.services.stylist.profile import ProfileBlock

@@ -35,7 +35,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.models import Conversation
-from app.gmail_closet.usage import UsageAccumulator, serper_cost
+from app.platform.usage import UsageAccumulator, serper_cost
 from app.services.stylist.costs import TurnUsage
 from app.services.stylist.persistence import (
     append_message,
@@ -275,7 +275,7 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
     the thread-safe SSE bridge (event name + JSON-able payload)."""
     from google.genai import types as genai_types
 
-    from app.services.ai_provider import get_ai_provider
+    from app.platform.ai_provider import get_ai_provider
 
     provider = get_ai_provider()
     turn_usage = TurnUsage()

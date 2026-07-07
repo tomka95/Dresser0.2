@@ -47,7 +47,7 @@ from app.gmail_closet.fetch_service import (
 )
 from app.gmail_closet.gmail_oauth_service import ensure_fresh_token
 from app.gmail_closet.retailers import match_retailer
-from app.gmail_closet.usage import record_extraction_usage
+from app.platform.usage import record_extraction_usage
 from app.models import GoogleAccount, IngestCandidate, IngestRun, ProcessedMessage
 
 logger = logging.getLogger(__name__)

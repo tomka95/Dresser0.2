@@ -26,7 +26,7 @@ from bs4 import BeautifulSoup
 from google.genai import errors as genai_errors
 
 from app.core.config import settings
-from app.services.ai_provider import get_ai_provider
+from app.platform.ai_provider import get_ai_provider
 
 from .product_extraction_schema import ProductExtraction
 
@@ -38,7 +38,7 @@ _LLM_BACKOFF_BASE = 1.0
 _LLM_BACKOFF_CAP = 8.0
 _TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 
-from app.gmail_closet.usage import gemini_cost as _model_cost, gemini_flash_lite_cost as flash_lite_cost  # noqa: E402
+from app.platform.usage import gemini_cost as _model_cost, gemini_flash_lite_cost as flash_lite_cost  # noqa: E402
 
 
 _SYSTEM_INSTRUCTION = """You are a precise data-extraction function for online clothing product pages.

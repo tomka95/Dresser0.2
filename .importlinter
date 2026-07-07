@@ -31,3 +31,42 @@ forbidden_modules =
     app.ranking
     app.services.stylist.composer
     app.services.stylist.compat
+
+# --- Layering locked by P3.3 (ARCHITECTURE_AUDIT R3) --------------------------
+#
+# app.platform (ai_provider, usage) is the neutral cross-cutting layer that broke
+# the services <-> gmail_closet <-> photo_closet cycle: it must be PHYSICALLY
+# UNABLE to import back from any business/feature layer, or the cycle just moves
+# one level down instead of actually breaking. app.core must stay the one true
+# leaf every layer can depend on -- these contracts lock both invariants so a
+# future PR can't reintroduce either cycle.
+
+[importlinter:contract:platform-depends-on-nothing-upward]
+name = Platform must not import any business/feature layer
+type = forbidden
+source_modules =
+    app.platform
+forbidden_modules =
+    app.api
+    app.services
+    app.gmail_closet
+    app.photo_closet
+    app.ranking
+    app.monetization
+
+[importlinter:contract:core-is-a-leaf]
+name = Core must not import any other app layer
+type = forbidden
+source_modules =
+    app.core
+forbidden_modules =
+    app.api
+    app.services
+    app.gmail_closet
+    app.photo_closet
+    app.ranking
+    app.monetization
+    app.platform
+    app.models
+    app.utils
+    app.db

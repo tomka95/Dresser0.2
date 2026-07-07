@@ -106,7 +106,7 @@ def _structured_query(
 def _embed_query(query_text: str) -> Optional[List[float]]:
     """Embed the search text (RETRIEVAL_QUERY). None on any failure."""
     try:
-        from app.services.ai_provider import get_ai_provider
+        from app.platform.ai_provider import get_ai_provider
 
         vectors = get_ai_provider().embed_texts(
             [query_text[:512]],
