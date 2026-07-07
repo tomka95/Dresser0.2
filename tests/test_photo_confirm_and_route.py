@@ -25,7 +25,7 @@ from app.gmail_closet.review_service import (
 from app.models import ClothingItem, IngestCandidate, PhotoDetectSession, User
 from app.photo_closet import ingest_service
 from app.photo_closet.detection import DetectionResult, GarmentRegion
-from app.security import create_access_token
+from tests._authutil import mint_supabase_token
 from app.utils.image_validation import validate_and_sanitize
 from main import app
 
@@ -70,7 +70,7 @@ def _jpeg(color=(120, 30, 30), size=(96, 96)):
 
 def _auth(db, email):
     user = _user(db, email)
-    token = create_access_token(data={"sub": str(user.id)})
+    token = mint_supabase_token(sub=str(user.id))
     return user, {"Authorization": f"Bearer {token}"}
 
 

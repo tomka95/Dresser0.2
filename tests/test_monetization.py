@@ -9,7 +9,7 @@ from app.db import SessionLocal, Base, engine
 from app.models import Product, ProductClick, StyleEvent, User
 from app.monetization import config as mon_config
 from app.monetization.wrap import wrap_url
-from app.security import create_access_token
+from tests._authutil import mint_supabase_token
 from main import app
 
 
@@ -51,7 +51,7 @@ def _auth(t):
 
 
 def _tok(user):
-    return create_access_token(data={"sub": str(user.id)})
+    return mint_supabase_token(sub=str(user.id))
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, Base, engine
 from app.models import PreferenceSignal, StylePreference, StyleProfile, User
-from app.security import create_access_token
+from tests._authutil import mint_supabase_token
 from main import app
 
 
@@ -42,7 +42,7 @@ def user2(db: Session):
 
 @pytest.fixture
 def tok1(user1):
-    return create_access_token(data={"sub": str(user1.id)})
+    return mint_supabase_token(sub=str(user1.id))
 
 
 def _auth(t):

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import Base, engine, SessionLocal
 from app.models import ChatMessage, ChatUsage, ClothingItem, Conversation, User
-from app.security import create_access_token
+from tests._authutil import mint_supabase_token
 from app.services.stylist import limits
 from app.services.stylist.limits import (
     QuotaExceeded,
@@ -60,7 +60,7 @@ def user2(db: Session):
 
 @pytest.fixture
 def tok1(user1):
-    return create_access_token(data={"sub": str(user1.id)})
+    return mint_supabase_token(sub=str(user1.id))
 
 
 def _auth(t):

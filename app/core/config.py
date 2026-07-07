@@ -414,6 +414,13 @@ class Settings(BaseSettings):
     # unscoped. Only disable for local Postgres without Supabase roles.
     CHAT_RLS_ENFORCED: bool = True
 
+    # --- CORS ---------------------------------------------------------------
+    # Comma-separated list of allowed browser origins, parsed by `cors_origins`.
+    # The localhost defaults are DEV-ONLY; every shipped environment overrides
+    # CORS_ALLOWED_ORIGINS with the real web origin(s). Origins are matched
+    # exactly (no wildcard is used together with allow_credentials).
+    CORS_ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     # Database configuration.
     # No localhost/postgres defaults on purpose: a missing value must surface as a
     # clear configuration error rather than silently pointing the app at a local DB.
@@ -460,12 +467,11 @@ class Settings(BaseSettings):
     # happens exclusively inside the token-refresh service.
     GMAIL_TOKEN_ENC_KEY: Optional[str] = None
 
-    # JWT configuration (legacy custom-JWT path, signed with JWT_SECRET_KEY).
-    # Kept live during the Supabase Auth transition (dual-accept). Rotate before
-    # production.
-    JWT_SECRET_KEY: str = "change-this-secret-key-in-production"
-    JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # NOTE: the legacy custom-JWT settings (JWT_SECRET_KEY / JWT_ALGORITHM /
+    # JWT_ACCESS_TOKEN_EXPIRE_MINUTES) were REMOVED in the auth-hardening pass.
+    # There is no shared HS256 secret anymore: the backend accepts ONLY asymmetric
+    # Supabase access tokens (see app/supabase_auth.py, app/dependencies.py), so
+    # there is no forgeable default key to leave lying around.
 
     # --- Supabase Auth (identity) ------------------------------------------
     # Supabase Auth (auth.users) is being introduced as the identity source.
@@ -482,6 +488,11 @@ class Settings(BaseSettings):
     SUPABASE_JWT_ISSUER: Optional[str] = None      # explicit override; else derived
     SUPABASE_JWT_AUDIENCE: str = "authenticated"   # Supabase access-token aud claim
     SUPABASE_JWKS_CACHE_TTL_SECONDS: int = 3600
+
+    @property
+    def cors_origins(self) -> list:
+        """Allowed CORS origins as a list (parsed from CORS_ALLOWED_ORIGINS)."""
+        return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
 
     @property
     def supabase_base_url(self) -> Optional[str]:

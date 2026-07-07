@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, Base, engine
 from app.models import User, ClothingItem, ItemImage
-from app.security import create_access_token
+from tests._authutil import mint_supabase_token
 from main import app
 
 
@@ -82,7 +82,7 @@ def test_get_closet_performance_with_many_items(
     test_user_with_items: User,
 ):
     """Benchmark GET /closet with 20 items (some with ItemImage lookups)."""
-    token = create_access_token(data={"sub": str(test_user_with_items.id)})
+    token = mint_supabase_token(sub=str(test_user_with_items.id))
     
     # Measure request time
     start = time.time()
@@ -139,7 +139,7 @@ def test_get_closet_query_count(
         items.append(item)
     db.commit()
     
-    token = create_access_token(data={"sub": str(test_user.id)})
+    token = mint_supabase_token(sub=str(test_user.id))
     
     # Make request
     response = client.get(

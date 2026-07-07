@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, Base, engine
 from app.models import User, ClothingItem
-from app.security import create_access_token
+from tests._authutil import mint_supabase_token
 from main import app
 
 
@@ -59,13 +59,13 @@ def test_user2(db: Session):
 @pytest.fixture
 def user1_token(test_user1: User):
     """Create a JWT token for test_user1."""
-    return create_access_token(data={"sub": str(test_user1.id)})
+    return mint_supabase_token(sub=str(test_user1.id))
 
 
 @pytest.fixture
 def user2_token(test_user2: User):
     """Create a JWT token for test_user2."""
-    return create_access_token(data={"sub": str(test_user2.id)})
+    return mint_supabase_token(sub=str(test_user2.id))
 
 
 def test_get_closet_requires_auth(client: TestClient):

@@ -8,23 +8,21 @@ logging.basicConfig(
 )
 
 from contextlib import asynccontextmanager
-from typing import Optional
-from uuid import UUID
 
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db import check_database_connection
-from app.security import hash_password, verify_password, create_access_token
 from app.api.routes import auth_google, chat, closet, gmail_oauth, gmail_ingest, photo_ingest, events, onboarding, outfit_feedback, shop
 from app.monetization import routes as monetization_routes
 
 import os
 import tempfile
 
-from app.models import User, ClothingItem
+from app.models import User
 from app.dependencies import get_db, get_current_user
 from app.services.outfit_db_service import save_outfit_results_to_db
 from app.utils.supabase_storage import SupabaseStorageClient
@@ -51,13 +49,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS to allow frontend requests
+# CORS origins are env-driven (settings.cors_origins, from CORS_ALLOWED_ORIGINS).
+# The localhost entries are a DEV-ONLY default; every shipped environment sets
+# CORS_ALLOWED_ORIGINS to the real web origin(s). Origins are matched exactly —
+# no wildcard is used alongside allow_credentials.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js dev server
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,96 +99,17 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/users")
-def create_user(
-    email: str,
-    display_name: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
-
-    user = User(email=email, display_name=display_name)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return {"id": str(user.id), "email": user.email}
-
-
-@app.post("/users/{user_id}/clothing")
-def create_clothing_item(
-    user_id: UUID,
-    name: str,
-    category: Optional[str] = None,
-    sub_category: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    item = ClothingItem(
-        user_id=user_id,
-        name=name,
-        category=category,
-        sub_category=sub_category,
-    )
-
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return {"id": str(item.id), "name": item.name}
-
-
-@app.post("/signup")
-def signup(email: str = Form(...), password: str = Form(...), full_name: Optional[str] = Form(None), db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
-
-    user = User(
-        email=email,
-        hashed_password=hash_password(password),
-        display_name=full_name if full_name else None,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    # Create JWT token for the new user
-    jwt_token = create_access_token(data={"sub": str(user.id)})
-    
-    return {
-        "access_token": jwt_token,
-        "token_type": "bearer",
-        "user": {
-            "id": str(user.id),
-            "email": user.email,
-        },
-    }
-
-
-@app.post("/login")
-def login(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    if not verify_password(password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    # Create JWT token for the user
-    jwt_token = create_access_token(data={"sub": str(user.id)})
-    
-    return {
-        "access_token": jwt_token,
-        "token_type": "bearer",
-        "user": {
-            "id": str(user.id),
-            "email": user.email,
-        },
-    }
+# NOTE: Legacy self-identifying / custom-auth endpoints were REMOVED in the
+# auth-hardening pass (fix/auth-hardening, closes ARCHITECTURE_AUDIT S1/S2):
+#   * POST /users and POST /users/{user_id}/clothing — unauthenticated writes that
+#     trusted a client-supplied user_id (IDOR; ran on the RLS-bypassing owner
+#     connection). No callers.
+#   * POST /signup and POST /login — legacy custom HS256-JWT email/password auth.
+#     Superseded entirely by Supabase Auth; no callers (the web client's legacy
+#     auth clients were already removed).
+# Identity is Supabase Auth ONLY: the authenticated user always comes from the
+# verified access token (app/dependencies.get_current_user), never the path/body.
+# The authenticated clothing-create path is the POST /closet router.
 
 
 @app.post("/outfit-image")
@@ -200,11 +119,9 @@ async def upload_outfit_image_authenticated(
     db: Session = Depends(get_db),
 ):
     """Upload an outfit image and process it through the clothing pipeline.
-    
+
     This is a thin wrapper around the existing pipeline that uses the authenticated
-    user from JWT token instead of requiring user_id in the path.
-    
-    Returns the same response structure as POST /users/{user_id}/outfit-image.
+    user from the verified access token instead of requiring user_id in the path.
     """
     # 1) Read + fully validate/sanitize the upload. The declared Content-Type is NOT
     #    trusted: validate_and_sanitize sniffs magic bytes, caps size, guards against
@@ -249,18 +166,10 @@ async def upload_outfit_image_authenticated(
         storage_client=storage_client,
     )
 
-    # Return same structure as /users/{user_id}/outfit-image
     return {
         "user_id": str(current_user.id),
         "items_created": created_items,
     }
-
-
-# NOTE: The legacy POST /users/{user_id}/outfit-image endpoint was REMOVED. It was
-# unauthenticated (anyone could upload to any user_id in the path) and ran ZERO upload
-# validation. It had no callers — the web client uses the authenticated POST /outfit-image
-# (which pins the user to the JWT), and the pipeline is exercised in tests via
-# process_outfit_image() directly. Deleting it removes the attack surface outright.
 
 
 if __name__ == "__main__":
