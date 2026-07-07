@@ -23,7 +23,8 @@ export type IconName =
   | 'InterfaceBookOpen'
   | 'InterfaceBookmark'
   | 'InterfaceTrashFull'
-  | 'Hanger';
+  | 'Hanger'
+  | 'Wardrobe';
 
 export const ICONS: Record<IconName, { viewBox: string; body: string }> = {
   NavigationHouse02: {
@@ -97,5 +98,11 @@ export const ICONS: Record<IconName, { viewBox: string; body: string }> = {
   Hanger: {
     viewBox: '0 0 24 24',
     body: '<path d="M12 11 L3.6 17.4 a1.1 1.1 0 0 0 .67 1.98 H19.73 a1.1 1.1 0 0 0 .67-1.98 L12 11 Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 11 V8.6 a2.1 2.1 0 1 1 1.85 1.1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  // Two-door armoire with legs — the Closet tab glyph (the hanger became the
+  // shared AI/brand mark, so the closet tab needs its own distinct symbol).
+  Wardrobe: {
+    viewBox: '0 0 24 24',
+    body: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="17" rx="1.6"/><path d="M12 3.4 V19.6"/><path d="M9.6 9 v3"/><path d="M14.4 9 v3"/><path d="M7.5 20 v1.6"/><path d="M16.5 20 v1.6"/></g>',
   },
 };

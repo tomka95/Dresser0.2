@@ -1,26 +1,42 @@
 'use client';
 
 /**
- * /closet/[id] — full item detail (design: hero image, editable field rows with
- * per-field confidence cues, source line, save).
+ * /closet/[id] — item detail (§3 · C2). Hero image, editable field rows with
+ * per-field confidence dots, source line, favourite, ⋮ context menu, save.
  *
  * REAL: GET /closet/{id} + PATCH /closet/{id} (name/brand/category/color/size/
- * unitPrice). NOT yet backend-backed: per-field confidence (no field-level scores
- * on closet items — dots read "confirmed"), favorite heart (local), quantity &
- * order date (render read-only; PATCH doesn't accept them), delete / mark-returned
- * (no endpoints).
+ * unitPrice), favourite (persisted, optimistic). HONEST: per-field confidence is
+ * read from item.analysisRaw when present and otherwise defaults to CONFIRMED
+ * (mint) — never faked low, never hardcoded all-confirmed; quantity + order date
+ * are read-only (PATCH won't accept them); "Mark as returned" / "Delete item"
+ * have no backend, so they stay in the menu but surface an honest "not available
+ * yet" toast rather than pretending to succeed.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Heart, MoreVertical, Pencil, BookOpen } from 'lucide-react';
+import { Heart, MoreVertical, Pencil, Link2, ExternalLink, Undo2, Trash2, Mail } from 'lucide-react';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
+import { useToastStore } from '@/stores/useToastStore';
 import { AppShell } from '@/components/layout/AppShell';
 import { ItemImage } from '@/components/ui/ItemImage';
 import { ConfidenceDot } from '@/components/ui/ConfidenceDot';
-import { ContextMenu, DSButton, GlassCard, RadioRow, Sheet, TopBar } from '@/components/ds';
-import type { ClosetItemUpdate } from '@tailor/contracts';
+import {
+  Btn,
+  ContextMenu,
+  GlassCard,
+  Icon,
+  RadioRow,
+  RoundBtn,
+  Sheet,
+  SkDetail,
+  Spark,
+  TopBar,
+  M,
+  NAV_CLEAR,
+} from '@/components/ds';
+import type { ClosetItem, ClosetItemUpdate } from '@tailor/contracts';
 import { logEvent } from '@/lib/api/events';
 
 interface ItemDetailsPageProps {
@@ -45,17 +61,35 @@ const CATEGORY_LABELS: Record<Category, string> = {
 /** Editable text fields managed by the form (all PATCHable). */
 type EditableField = 'name' | 'brand' | 'color' | 'size' | 'unitPrice';
 
-const FIELD_LABELS: Record<EditableField, string> = {
-  name: 'Name',
-  brand: 'Brand',
-  color: 'Color',
-  size: 'Size',
-  unitPrice: 'Unit price',
-};
+/**
+ * Per-field confidence — the backend has no field-level scores on closet items
+ * yet, so this reads whatever real signal the item carries and otherwise returns
+ * CONFIRMED (1). If analysis_raw ever ships a `fieldConfidence`/`confidence` map
+ * (keyed by field), we honour it verbatim; a numeric 0..1 renders the amber
+ * low-confidence cue below 0.7. Nothing is hardcoded low, nothing is forced high.
+ */
+function readFieldConfidence(item: ClosetItem | null): Record<string, number> {
+  const raw = item?.analysisRaw;
+  if (raw && typeof raw === 'object') {
+    const map =
+      (raw as Record<string, unknown>).fieldConfidence ??
+      (raw as Record<string, unknown>).field_confidence ??
+      (raw as Record<string, unknown>).confidence;
+    if (map && typeof map === 'object') {
+      const out: Record<string, number> = {};
+      for (const [k, v] of Object.entries(map as Record<string, unknown>)) {
+        if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+      }
+      return out;
+    }
+  }
+  return {};
+}
 
 export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   const router = useRouter();
   const { id } = params;
+  const pushToast = useToastStore((s) => s.toast);
 
   // Stable `status` boolean for effect deps — a background token refresh must not
   // re-run the seed effect and clobber edits.
@@ -81,16 +115,19 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   const [quantity, setQuantity] = useState<number | undefined>(undefined);
   const [orderDate, setOrderDate] = useState<string | undefined>(undefined);
   const [currency, setCurrency] = useState<string | undefined>(undefined);
+  const [fieldConf, setFieldConf] = useState<Record<string, number>>({});
   const [loadedOnce, setLoadedOnce] = useState(false);
 
   const [editingField, setEditingField] = useState<EditableField | null>(null);
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuNote, setMenuNote] = useState<string | null>(null);
   const [faved, setFaved] = useState(false); // seeded from item.isFavorite; persisted on toggle
 
   const [isSaving, setIsSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Snapshot of the last-saved server values so Undo can PATCH them back verbatim.
+  // Seeded on load; refreshed after every successful save.
+  const savedRef = React.useRef<ClosetItemUpdate | null>(null);
 
   // Seed once authenticated.
   useEffect(() => {
@@ -111,6 +148,17 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
         setOrderDate(item.orderDate);
         setCurrency(item.currency);
         setFaved(!!item.isFavorite); // seed from the persisted flag
+        setFieldConf(readFieldConfidence(item)); // real per-field scores if any
+        // Baseline for Undo — the values as they stand on the server right now.
+        savedRef.current = {
+          name: item.name,
+          category: (item.category as Category) ?? 'other',
+          eventSource: 'closet_detail',
+          ...(item.brand ? { brand: item.brand } : {}),
+          ...(item.color ? { color: item.color } : {}),
+          ...(item.size ? { size: item.size } : {}),
+          ...(item.unitPrice != null ? { unitPrice: item.unitPrice } : {}),
+        };
         setLoadedOnce(true);
       })
       .catch(() => {
@@ -124,36 +172,71 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   }, [id, isAuthed]);
 
   const currencySymbol = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : '$';
+  const fromGmail = !!merchant; // receipts carry a merchant; Gmail is our receipt source
 
-  // Per-field confidence — no backend scores on closet items, so every field
-  // reads "confirmed" (mint). The low-confidence banner appears only if a field
-  // ever carries a low score.
-  const fieldConf: number = 1;
-  const lowFields: number = 0;
+  // Build the PATCH body from the current form. Shared by save + confirm so the
+  // "confirmed" value written back is exactly what the user sees.
+  const buildUpdates = (): ClosetItemUpdate => {
+    const updates: ClosetItemUpdate = {
+      name: form.name.trim(),
+      category,
+      eventSource: 'closet_detail',
+    };
+    if (form.brand.trim()) updates.brand = form.brand.trim();
+    if (form.color.trim()) updates.color = form.color.trim();
+    if (form.size.trim()) updates.size = form.size.trim();
+    const price = Number(form.unitPrice);
+    if (form.unitPrice.trim() && Number.isFinite(price)) updates.unitPrice = price;
+    return updates;
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
-    setSaveMessage(null);
+    // Capture the previous saved state BEFORE we overwrite it — this is what Undo
+    // restores.
+    const previous = savedRef.current;
     try {
-      const updates: ClosetItemUpdate = {
-        name: form.name.trim(),
-        category,
-        eventSource: 'closet_detail',
-      };
-      if (form.brand.trim()) updates.brand = form.brand.trim();
-      if (form.color.trim()) updates.color = form.color.trim();
-      if (form.size.trim()) updates.size = form.size.trim();
-      const price = Number(form.unitPrice);
-      if (form.unitPrice.trim() && Number.isFinite(price)) updates.unitPrice = price;
-
+      const updates = buildUpdates();
       await updateItem(id, updates);
+      savedRef.current = updates;
       setEditingField(null);
-      setSaveMessage({ type: 'success', text: 'Changes saved' });
-      setTimeout(() => setSaveMessage(null), 3000);
+      pushToast({
+        tone: 'success',
+        title: 'Saved',
+        // Real revert: PATCH the previous values back and re-seed the form from
+        // the restored item. No-op only if we never had a prior snapshot.
+        action: previous
+          ? {
+              label: 'Undo',
+              onClick: async () => {
+                try {
+                  const restored = await updateItem(id, { ...previous, eventSource: 'closet_detail' });
+                  setForm({
+                    name: restored.name,
+                    brand: restored.brand ?? '',
+                    color: restored.color ?? '',
+                    size: restored.size ?? '',
+                    unitPrice: restored.unitPrice != null ? String(restored.unitPrice) : '',
+                  });
+                  setCategory((restored.category as Category) ?? 'other');
+                  savedRef.current = previous;
+                  pushToast({ tone: 'success', title: 'Reverted' });
+                } catch (err) {
+                  pushToast({
+                    tone: 'error',
+                    title: 'Couldn’t undo',
+                    sub: err instanceof Error ? err.message : undefined,
+                  });
+                }
+              },
+            }
+          : undefined,
+      });
     } catch (err) {
-      setSaveMessage({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Failed to save changes',
+      pushToast({
+        tone: 'error',
+        title: 'Couldn’t save changes',
+        sub: err instanceof Error ? err.message : undefined,
       });
     } finally {
       setIsSaving(false);
@@ -162,7 +245,11 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
 
   const handleMenuSelect = async (action: string) => {
     setMenuOpen(false);
-    if (action === 'category') {
+    if (action === 'style') {
+      router.push('/chat');
+    } else if (action === 'edit') {
+      setEditingField('name');
+    } else if (action === 'category') {
       setCategoryPickerOpen(true);
     } else if (action === 'share') {
       const url = typeof window !== 'undefined' ? window.location.href : '';
@@ -171,33 +258,83 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
           await navigator.share({ title: form.name, url });
         } else {
           await navigator.clipboard.writeText(url);
-          setMenuNote('Link copied');
-          setTimeout(() => setMenuNote(null), 2500);
+          pushToast({ tone: 'success', title: 'Link copied' });
         }
       } catch {
         /* user dismissed the share sheet */
       }
     } else {
-      // 'return' / 'delete' — no backend endpoints yet.
-      setMenuNote('Coming soon — this action isn’t wired up yet.');
-      setTimeout(() => setMenuNote(null), 3000);
+      // 'return' / 'delete' — no backend endpoints yet. Stay honest: never fake a
+      // successful delete/return.
+      pushToast({ tone: 'info', title: 'Not available yet', sub: 'This action isn’t wired up yet.' });
+    }
+  };
+
+  // C5 · Confidence review — confirm a single low-confidence field. This is REAL:
+  // it PATCHes the current (confirmed) value for that field, then clears the local
+  // low-confidence flag so the amber cue retires (the value is now user-verified).
+  // Only fields that carry a genuine sub-0.7 backend score ever reach here.
+  const [confirmingField, setConfirmingField] = useState<string | null>(null);
+  const handleConfirmField = async (confKey: string, editable: EditableField | 'category') => {
+    setConfirmingField(confKey);
+    try {
+      const updates: ClosetItemUpdate = { name: form.name.trim(), category, eventSource: 'closet_detail' };
+      if (editable === 'brand' && form.brand.trim()) updates.brand = form.brand.trim();
+      if (editable === 'color' && form.color.trim()) updates.color = form.color.trim();
+      if (editable === 'size' && form.size.trim()) updates.size = form.size.trim();
+      if (editable === 'unitPrice') {
+        const price = Number(form.unitPrice);
+        if (form.unitPrice.trim() && Number.isFinite(price)) updates.unitPrice = price;
+      }
+      await updateItem(id, updates);
+      // Retire the amber flag for this field only — value is confirmed now.
+      setFieldConf((c) => ({ ...c, [confKey]: 1 }));
+      savedRef.current = buildUpdates();
+      pushToast({ tone: 'success', title: 'Confirmed' });
+    } catch (err) {
+      pushToast({
+        tone: 'error',
+        title: 'Couldn’t confirm',
+        sub: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setConfirmingField(null);
+    }
+  };
+
+  const toggleFavorite = async () => {
+    const next = !faved;
+    setFaved(next); // optimistic
+    try {
+      await updateItem(id, { isFavorite: next, eventSource: 'closet_detail' });
+    } catch {
+      setFaved(!next); // revert on failure
     }
   };
 
   const displayRows = useMemo(() => {
-    const rows: { key: string; label: string; value: string; editable: EditableField | 'category' | null }[] = [
-      { key: 'name', label: 'Name', value: form.name, editable: 'name' },
-      { key: 'brand', label: 'Brand', value: form.brand || '—', editable: 'brand' },
-      { key: 'category', label: 'Category', value: CATEGORY_LABELS[category], editable: 'category' },
-      { key: 'color', label: 'Color', value: form.color || '—', editable: 'color' },
-      { key: 'size', label: 'Size', value: form.size || '—', editable: 'size' },
+    const rows: {
+      key: string;
+      label: string;
+      value: string;
+      editable: EditableField | 'category' | null;
+      confKey: string;
+    }[] = [
+      { key: 'name', label: 'Name', value: form.name, editable: 'name', confKey: 'name' },
+      { key: 'brand', label: 'Brand', value: form.brand || '—', editable: 'brand', confKey: 'brand' },
+      { key: 'category', label: 'Category', value: CATEGORY_LABELS[category], editable: 'category', confKey: 'category' },
+      { key: 'color', label: 'Color', value: form.color || '—', editable: 'color', confKey: 'color' },
+      { key: 'size', label: 'Size', value: form.size || '—', editable: 'size', confKey: 'size' },
     ];
-    if (quantity != null) rows.push({ key: 'qty', label: 'Quantity', value: String(quantity), editable: null });
+    if (quantity != null) {
+      rows.push({ key: 'qty', label: 'Quantity', value: String(quantity), editable: null, confKey: 'quantity' });
+    }
     rows.push({
       key: 'unitPrice',
       label: 'Unit price',
       value: form.unitPrice ? `${currencySymbol}${Number(form.unitPrice).toFixed(2)}` : '—',
       editable: 'unitPrice',
+      confKey: 'unitPrice',
     });
     if (orderDate) {
       rows.push({
@@ -205,10 +342,14 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
         label: 'Order date',
         value: new Date(orderDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
         editable: null,
+        confKey: 'orderDate',
       });
     }
     return rows;
   }, [form, category, quantity, orderDate, currencySymbol]);
+
+  // How many fields carry a real low-confidence score (drives the review banner).
+  const lowFields = displayRows.filter((r) => (fieldConf[r.confKey] ?? 1) < 0.7).length;
 
   if (!isAuthed) {
     return null;
@@ -216,14 +357,12 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
 
   if (isItemLoading && !loadedOnce) {
     return (
-      <AppShell scroll={false}>
-        <div className="flex h-full items-center justify-center">
-          <div
-            role="status"
-            aria-label="Loading item"
-            className="h-8 w-8 rounded-full"
-            style={{ border: '3px solid var(--tr-20)', borderTopColor: 'var(--mint)', animation: 'tailor-spin 0.8s linear infinite' }}
-          />
+      <AppShell>
+        <div style={{ padding: '4px 20px' }}>
+          <TopBar title="Item details" onBack={() => router.push('/closet')} />
+          <div style={{ marginTop: 8 }} role="status" aria-label="Loading item">
+            <SkDetail />
+          </div>
         </div>
       </AppShell>
     );
@@ -235,9 +374,9 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
         <div className="flex h-full flex-col items-center justify-center px-8 text-center">
           <h1 className="m-0 text-[20px] font-bold text-white">Couldn&rsquo;t load this item</h1>
           <p className="mb-6 mt-2 text-sm text-white/60">{error}</p>
-          <DSButton variant="light" pill onClick={() => router.push('/closet')} style={{ height: 48, padding: '0 26px' }}>
+          <Btn variant="primary" size="md" onClick={() => router.push('/closet')}>
             Back to closet
-          </DSButton>
+          </Btn>
         </div>
       </AppShell>
     );
@@ -245,157 +384,236 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
 
   return (
     <AppShell>
-      {/* Hero image */}
-      <div className="relative" style={{ height: 360 }}>
-        <ItemImage src={imageUrl} alt={form.name} fit="cover" emptyLabel="No image available" />
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{ background: 'linear-gradient(180deg, rgba(0,0,0,0.5) 0%, transparent 30%, rgba(30,30,30,0.95) 100%)' }}
-          aria-hidden
-        />
-        <div className="absolute left-4 right-4" style={{ top: 48 }}>
-          <TopBar
-            onBack={() => router.push('/closet')}
-            right={
-              <button
-                type="button"
-                aria-label="More"
+      <div style={{ padding: `4px 20px ${NAV_CLEAR}px` }}>
+        <TopBar
+          title="Item details"
+          onBack={() => router.push('/closet')}
+          right={
+            <div className="relative">
+              <RoundBtn
+                size={40}
+                style={{ borderRadius: 14 }}
+                aria-label="More actions"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
                 onClick={() => setMenuOpen((o) => !o)}
-                className="flex h-10 w-10 items-center justify-center text-white"
-              >
-                <MoreVertical size={20} />
-              </button>
-            }
-          />
-        </div>
-
-        {/* ⋮ contextual menu */}
-        {menuOpen && (
-          <>
-            <button
-              type="button"
-              aria-label="Close menu"
-              className="fixed inset-0 z-40 cursor-default border-none bg-transparent"
-              onClick={() => setMenuOpen(false)}
-            />
-            <div className="absolute right-5 z-50" style={{ top: 96, width: 230 }}>
-              <ContextMenu
-                items={[
-                  { id: 'category', label: 'Change category', icon: <Pencil size={17} /> },
-                  { id: 'share', label: 'Share', icon: <BookOpen size={17} /> },
-                  { id: 'return', label: 'Mark as returned', icon: <MoreVertical size={17} /> },
-                  { divider: true },
-                  { id: 'delete', label: 'Delete item', tone: 'danger', icon: <MoreVertical size={17} /> },
-                ]}
-                onSelect={handleMenuSelect}
+                icon={<MoreVertical size={18} />}
               />
+              {menuOpen && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Close menu"
+                    className="fixed inset-0 z-40 cursor-default border-none bg-transparent"
+                    onClick={() => setMenuOpen(false)}
+                  />
+                  <div className="absolute right-0 z-50" style={{ top: 48 }}>
+                    <ContextMenu
+                      items={[
+                        { id: 'style', label: 'Style this piece', sub: 'Build outfits around it', icon: <Spark size={16} /> },
+                        { id: 'edit', label: 'Edit details', icon: <Pencil size={16} /> },
+                        { id: 'category', label: 'Change category', icon: <Icon name="InterfaceSlider03" size={16} /> },
+                        { id: 'share', label: 'Share', icon: <ExternalLink size={16} /> },
+                        {
+                          id: 'return',
+                          label: 'Mark as returned',
+                          sub: 'Coming soon',
+                          icon: <Undo2 size={16} />,
+                          disabled: true,
+                          title: 'Coming soon',
+                        },
+                        { divider: true },
+                        {
+                          id: 'delete',
+                          label: 'Delete from closet',
+                          sub: 'Coming soon',
+                          tone: 'danger',
+                          icon: <Trash2 size={16} />,
+                          disabled: true,
+                          title: 'Coming soon',
+                        },
+                      ]}
+                      onSelect={handleMenuSelect}
+                    />
+                  </div>
+                </>
+              )}
             </div>
-          </>
-        )}
-      </div>
+          }
+        />
 
-      <div className="relative" style={{ padding: '0 24px 120px', marginTop: -40 }}>
-        {/* Title row */}
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="m-0 text-[27px] font-bold tracking-[-0.4px] text-white">{form.name}</h1>
-              <button
-                type="button"
-                aria-label="Rename item"
-                onClick={() => setEditingField('name')}
-                className="text-white/70 hover:text-white"
-              >
-                <Pencil size={17} />
-              </button>
-            </div>
+        {/* Hero image — name + UPPERCASE brand overlaid, favourite disc, source chip. */}
+        <div
+          className="relative overflow-hidden"
+          style={{
+            borderRadius: 26,
+            height: 300,
+            marginTop: 4,
+            border: '1px solid rgba(255,255,255,0.12)',
+            boxShadow: '0 20px 44px -14px rgba(0,0,0,0.6)',
+          }}
+        >
+          <ItemImage src={imageUrl} alt={form.name} fit="cover" emptyLabel="No image available" />
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.72), transparent 55%)' }}
+            aria-hidden
+          />
+          <div className="absolute" style={{ left: 18, bottom: 15, right: 60 }}>
+            <h1 className="m-0 truncate text-white" style={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.4px' }}>
+              {form.name}
+            </h1>
             {form.brand && (
               <div
-                className="mt-1 font-accent uppercase"
-                style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, letterSpacing: '0.5px' }}
+                className="mt-1 truncate font-accent uppercase"
+                style={{ color: M.soft, fontSize: 12, letterSpacing: '0.7px' }}
               >
                 {form.brand}
               </div>
             )}
           </div>
-          <button
-            type="button"
-            aria-label={faved ? 'Unfavorite' : 'Favorite'}
-            onClick={async () => {
-              const next = !faved;
-              setFaved(next); // optimistic
-              try {
-                await updateItem(id, { isFavorite: next, eventSource: 'closet_detail' });
-              } catch {
-                setFaved(!next); // revert on failure
-              }
-            }}
-            className="flex shrink-0 items-center justify-center rounded-full transition-transform active:scale-90"
-            style={{
-              width: 44,
-              height: 44,
-              border: '1px solid var(--tr-20)',
-              background: 'rgba(0,0,0,0.3)',
-              color: faved ? 'var(--mint)' : 'rgba(255,255,255,0.85)',
-            }}
-          >
-            <Heart size={20} fill={faved ? 'currentColor' : 'none'} />
-          </button>
+          <div className="absolute" style={{ top: 13, right: 13 }}>
+            <RoundBtn
+              size={34}
+              on={faved}
+              aria-label={faved ? 'Remove from favorites' : 'Add to favorites'}
+              onClick={toggleFavorite}
+              icon={<Heart size={16} fill={faved ? 'currentColor' : 'none'} />}
+            />
+          </div>
+          {fromGmail && (
+            <span
+              className="absolute inline-flex items-center"
+              style={{
+                left: 18,
+                top: 14,
+                gap: 6,
+                padding: '5px 11px',
+                borderRadius: 999,
+                background: 'rgba(0,0,0,0.4)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                border: '1px solid rgba(255,255,255,0.16)',
+                color: M.soft,
+                fontSize: 11,
+              }}
+            >
+              <Mail size={12} /> {merchant}
+            </span>
+          )}
         </div>
 
-        {menuNote && (
-          <p className="mt-3 rounded-xl px-3 py-2 text-center text-[12.5px]" style={{ background: 'var(--tr-10)', color: 'rgba(255,255,255,0.75)' }}>
-            {menuNote}
-          </p>
-        )}
-
-        {/* Low-confidence banner — only when field-level scores flag something. */}
+        {/* Low-confidence review banner — only when real field scores flag something. */}
         {lowFields > 0 && (
-          <GlassCard tint="scrim" padding={14} className="my-[18px] flex items-center gap-3">
+          <div
+            className="flex items-center"
+            style={{
+              marginTop: 14,
+              gap: 10,
+              padding: '11px 14px',
+              borderRadius: 15,
+              background: 'rgba(240,162,59,0.12)',
+              border: '1px solid rgba(240,162,59,0.32)',
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
+            }}
+          >
             <span
-              className="flex shrink-0 items-center justify-center rounded-full text-[17px] font-extrabold"
-              style={{ width: 32, height: 32, background: 'rgba(240,162,59,0.18)', color: 'var(--amber)' }}
+              className="flex shrink-0 items-center justify-center font-bold"
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                background: 'rgba(240,162,59,0.18)',
+                color: '#f0b566',
+                fontSize: 14,
+              }}
+              aria-hidden
             >
               !
             </span>
-            <div className="flex-1 text-[13.5px] leading-snug text-white/85">
-              {lowFields} field{lowFields === 1 ? '' : 's'} need a quick check — we weren&rsquo;t fully sure.
-            </div>
-          </GlassCard>
+            <span className="flex-1 text-white" style={{ fontSize: 12.8, lineHeight: 1.45 }}>
+              {lowFields} field{lowFields === 1 ? ' was' : 's were'} read with low confidence — a 10-second check keeps
+              outfits accurate.
+            </span>
+          </div>
         )}
 
-        {/* Editable fields */}
-        <GlassCard tint="frost" padding={4} className={lowFields > 0 ? '' : 'mt-[18px]'}>
-          <div style={{ padding: '4px 16px' }}>
+        {/* Editable field rows — confidence dot · label · value/inline-edit · edit. */}
+        <GlassCard tint="frost" padding={0} radius={24} style={{ marginTop: 14 }}>
+          <div style={{ padding: '8px 18px' }}>
             {displayRows.map((row, i) => {
-              const isEditingThis = row.editable !== null && row.editable !== 'category' && editingField === row.editable;
+              const isEditingThis =
+                row.editable !== null && row.editable !== 'category' && editingField === row.editable;
+              const conf = fieldConf[row.confKey] ?? 1;
+              const low = conf < 0.7;
               return (
                 <div
                   key={row.key}
-                  className="flex items-center gap-3"
-                  style={{ padding: '13px 0', borderTop: i === 0 ? 'none' : '1px solid var(--tr-10)' }}
+                  className="flex items-center"
+                  style={{
+                    gap: 11,
+                    padding: '12.5px 2px',
+                    borderBottom: i === displayRows.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.07)',
+                  }}
                 >
-                  <div className="w-[92px] shrink-0 text-[13px] text-white/60">{row.label}</div>
-                  <div className="flex min-w-0 flex-1 items-center gap-2">
-                    <ConfidenceDot conf={fieldConf} />
-                    {isEditingThis ? (
+                  <ConfidenceDot conf={conf} />
+                  <span className="shrink-0" style={{ width: 86, color: M.faint, fontSize: 13 }}>
+                    {row.label}
+                  </span>
+                  {isEditingThis ? (
+                    <span
+                      className="flex flex-1 items-center"
+                      style={{
+                        gap: 8,
+                        padding: '7px 12px',
+                        borderRadius: 11,
+                        background: 'rgba(255,255,255,0.08)',
+                        border: '1px solid rgba(75,226,214,0.5)',
+                        boxShadow: '0 0 0 3px rgba(75,226,214,0.12)',
+                      }}
+                    >
                       <input
                         autoFocus
                         type={row.editable === 'unitPrice' ? 'number' : 'text'}
                         value={form[row.editable as EditableField]}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, [row.editable as EditableField]: e.target.value }))
-                        }
+                        onChange={(e) => setForm((f) => ({ ...f, [row.editable as EditableField]: e.target.value }))}
                         onBlur={() => setEditingField(null)}
                         onKeyDown={(e) => e.key === 'Enter' && setEditingField(null)}
-                        className="min-w-0 flex-1 rounded-lg px-2 py-1 text-[15px] text-white outline-none"
-                        style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid var(--tr-20)' }}
+                        className="min-w-0 flex-1 border-none bg-transparent text-white outline-none"
+                        style={{ fontSize: 14 }}
                         aria-label={row.label}
                       />
-                    ) : (
-                      <span className="truncate text-[15px] font-medium text-white">{row.value}</span>
-                    )}
-                  </div>
+                    </span>
+                  ) : (
+                    <span className="flex-1 truncate text-white" style={{ fontSize: 14.5, fontWeight: 550 }}>
+                      {row.value}
+                    </span>
+                  )}
+                  {low && !isEditingThis && row.editable !== null && row.editable !== 'category' && (
+                    <button
+                      type="button"
+                      disabled={confirmingField === row.confKey}
+                      onClick={() =>
+                        handleConfirmField(row.confKey, row.editable as EditableField)
+                      }
+                      aria-label={`Confirm ${row.label.toLowerCase()}`}
+                      className="inline-flex items-center transition-transform active:scale-95 disabled:opacity-50"
+                      style={{
+                        height: 25,
+                        padding: '0 10px',
+                        borderRadius: 999,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        background: 'rgba(240,162,59,0.14)',
+                        color: '#f0b566',
+                        border: '1px solid rgba(240,162,59,0.4)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {confirmingField === row.confKey ? 'Saving…' : 'Confirm'}
+                    </button>
+                  )}
                   {row.editable !== null && !isEditingThis && (
                     <button
                       type="button"
@@ -405,9 +623,10 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
                           ? setCategoryPickerOpen(true)
                           : setEditingField(row.editable as EditableField)
                       }
-                      className="shrink-0 text-white/60 hover:text-white"
+                      className="flex shrink-0 items-center"
+                      style={{ color: M.ghost }}
                     >
-                      <Pencil size={15} />
+                      <Pencil size={14} />
                     </button>
                   )}
                 </div>
@@ -416,31 +635,30 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
           </div>
         </GlassCard>
 
-        {/* Source line */}
-        <div className="mx-0.5 my-4 flex items-center gap-2 text-[13px] text-white/60">
-          <BookOpen size={15} />
-          <span>{merchant ? `From ${merchant}` : 'Added to your closet'}</span>
+        {/* Source line. */}
+        <div
+          className="flex items-center"
+          style={{ ...M.glass(20), padding: '13px 16px', marginTop: 12, gap: 11 }}
+        >
+          <Link2 size={16} style={{ color: M.faint }} />
+          <span className="flex-1" style={{ color: M.faint, fontSize: 12.5 }}>
+            {merchant ? `From ${merchant}` : 'Added to your closet'}
+          </span>
         </div>
 
-        {saveMessage && (
-          <p
-            className="mb-3 text-center text-[13px] font-medium"
-            style={{ color: saveMessage.type === 'success' ? 'var(--success)' : 'var(--danger)' }}
+        {/* Save. */}
+        <div style={{ marginTop: 18 }}>
+          <Btn
+            variant="primary"
+            size="md"
+            fullWidth
+            pending={isSaving}
+            disabled={isSaving || !form.name.trim()}
+            onClick={handleSave}
           >
-            {saveMessage.text}
-          </p>
-        )}
-
-        <DSButton
-          variant="light"
-          fullWidth
-          pill
-          loading={isSaving}
-          disabled={isSaving || !form.name.trim()}
-          onClick={handleSave}
-        >
-          {isSaving ? 'Saving…' : 'Save changes'}
-        </DSButton>
+            Save changes
+          </Btn>
+        </div>
       </div>
 
       {/* Category picker sheet (Change category — PATCHable, so fully real). */}

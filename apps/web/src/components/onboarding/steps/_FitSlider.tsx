@@ -2,13 +2,17 @@
 
 import React, { useRef, useState } from 'react';
 
+import { M } from '@/components/ds';
+
 /**
- * FitSlider — the integer 1..5 silhouette slider (screen 3).
+ * FitSlider — the integer 1..5 fit slider (screen 3), restyled to the redesign
+ * (§2 · O3). Each slider is its own glass card; an untouched slider stays visually
+ * NEUTRAL (muted rail, dashed ghost thumb, "Slide to set") and writes nothing to
+ * the store. Once touched it fills with a teal→mint gradient and a glowing mint
+ * thumb.
  *
- * A tap-only / drag / keyboard slider (no typing). Unset stays visually neutral
- * (thumb at 3, muted) until the user commits, so an untouched slider writes
- * nothing to the store. Fully accessible: role="slider" + arrow/Home/End keys,
- * and the whole track is a ≥44px pointer target.
+ * A tap-only / drag / keyboard slider (no typing). Fully accessible: role="slider"
+ * + arrow/Home/End keys, and the whole track is a ≥44px pointer target.
  */
 export function FitSlider({
   label,
@@ -49,12 +53,41 @@ export function FitSlider({
     onChange(next);
   };
 
+  // Value read-out toward the leaning pole (e.g. "Fitted +2" / "Oversized +1"),
+  // neutral at 3.
+  const readout = () => {
+    if (!touched) return 'Slide to set';
+    if (shown === 3) return 'Balanced';
+    const toward = shown < 3 ? minLabel : maxLabel;
+    const steps = Math.abs(shown - 3);
+    return `${toward} +${steps}`;
+  };
+
   return (
-    <div className="select-none">
-      <div className="mb-3 text-[15px] font-semibold text-white">{label}</div>
+    <div
+      className="select-none"
+      style={{
+        padding: '18px 18px 20px',
+        borderRadius: 22,
+        background: 'rgba(255,255,255,0.06)',
+        border: '1px solid rgba(255,255,255,0.11)',
+      }}
+    >
+      {/* Header — label + value read-out */}
+      <div className="mb-4 flex items-baseline justify-between">
+        <span className="text-[15px] font-semibold" style={{ color: '#fff' }}>
+          {label}
+        </span>
+        <span
+          className="text-[12.5px] font-semibold"
+          style={{ color: touched ? 'var(--mint)' : M.ghost }}
+        >
+          {readout()}
+        </span>
+      </div>
 
       {/* Track — the whole strip is the pointer target (touchAction:none so a drag
-          never scrolls the page). Padding gives a ≥44px vertical hit area. */}
+          never scrolls the page). Height gives a ≥44px vertical hit area. */}
       <div
         ref={trackRef}
         role="slider"
@@ -79,13 +112,18 @@ export function FitSlider({
         style={{ height: 44, touchAction: 'none' }}
       >
         {/* Rail */}
-        <div className="relative h-1.5 w-full rounded-full" style={{ background: 'var(--tr-20)' }}>
-          {/* Filled portion */}
+        <div
+          className="relative h-[5px] w-full rounded-full"
+          style={{ background: 'rgba(255,255,255,0.12)' }}
+        >
+          {/* Filled portion — teal→mint gradient once touched, muted before */}
           <div
             className="absolute inset-y-0 left-0 rounded-full"
             style={{
               width: `${pct}%`,
-              background: touched ? 'var(--mint)' : 'rgba(255,255,255,0.28)',
+              background: touched
+                ? 'linear-gradient(90deg, #147f74, var(--mint))'
+                : 'rgba(255,255,255,0.28)',
               transition: dragging ? 'none' : 'width 140ms var(--ease-out)',
             }}
           />
@@ -93,16 +131,19 @@ export function FitSlider({
           {[0, 1, 2, 3, 4].map((i) => (
             <span
               key={i}
-              className="absolute top-1/2 h-1 w-1 -translate-y-1/2 rounded-full"
+              className="absolute top-1/2 rounded-full"
               style={{
                 left: `${(i / 4) * 100}%`,
-                marginLeft: i === 0 ? 0 : i === 4 ? -4 : -2,
-                background: 'rgba(255,255,255,0.35)',
+                width: 2.5,
+                height: 2.5,
+                marginLeft: i === 0 ? 0 : i === 4 ? -2.5 : -1.25,
+                transform: 'translateY(-50%)',
+                background: 'rgba(255,255,255,0.3)',
               }}
               aria-hidden
             />
           ))}
-          {/* Thumb */}
+          {/* Thumb — glowing mint when touched, dashed ghost when neutral */}
           <div
             className="absolute top-1/2 rounded-full"
             style={{
@@ -110,11 +151,14 @@ export function FitSlider({
               width: 26,
               height: 26,
               transform: 'translate(-50%, -50%)',
-              background: touched ? 'var(--mint)' : '#fff',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
-              border: touched ? '2px solid var(--brand-teal)' : '2px solid rgba(0,0,0,0.08)',
-              opacity: touched ? 1 : 0.85,
-              transition: dragging ? 'none' : 'left 140ms var(--ease-out)',
+              background: touched ? 'var(--mint)' : 'rgba(255,255,255,0.14)',
+              border: touched
+                ? '2px solid rgba(255,255,255,0.9)'
+                : '1.5px dashed rgba(255,255,255,0.4)',
+              boxShadow: touched ? '0 4px 14px rgba(75,226,214,0.45)' : 'none',
+              backdropFilter: 'blur(6px)',
+              WebkitBackdropFilter: 'blur(6px)',
+              transition: dragging ? 'none' : 'all 200ms var(--ease-out)',
             }}
             aria-hidden
           />
@@ -122,13 +166,9 @@ export function FitSlider({
       </div>
 
       {/* Pole labels */}
-      <div className="mt-2 flex justify-between text-[12.5px]">
-        <span style={{ color: touched && shown <= 2 ? 'var(--mint)' : 'rgba(255,255,255,0.55)' }}>
-          {minLabel}
-        </span>
-        <span style={{ color: touched && shown >= 4 ? 'var(--mint)' : 'rgba(255,255,255,0.55)' }}>
-          {maxLabel}
-        </span>
+      <div className="mt-2.5 flex justify-between text-[11.5px]">
+        <span style={{ color: touched && shown <= 2 ? 'var(--mint)' : M.faint }}>{minLabel}</span>
+        <span style={{ color: touched && shown >= 4 ? 'var(--mint)' : M.faint }}>{maxLabel}</span>
       </div>
     </div>
   );

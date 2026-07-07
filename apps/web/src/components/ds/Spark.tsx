@@ -1,20 +1,20 @@
 import React from 'react';
 
-/** AI spark glyph chip — the single mint ✦ accent allowed by the design language. */
-export function Spark({ size = 40 }: { size?: number }) {
+import { StylistMark } from './StylistMark';
+
+/**
+ * Spark = the Tailor AI mark (the hanger glyph), mint by default. Every AI
+ * accent uses it, so the whole app shares one symbol — this replaces both the
+ * old generic sparkle chip and the interim threaded-needle mark.
+ */
+export function Spark({ size = 15, style }: { size?: number; style?: React.CSSProperties }) {
   return (
     <span
-      className="inline-flex shrink-0 items-center justify-center rounded-full"
-      style={{
-        width: size,
-        height: size,
-        background: 'rgba(255,255,255,0.12)',
-        color: 'var(--mint)',
-        fontSize: size * 0.45,
-      }}
+      className="inline-flex shrink-0"
+      style={{ color: 'var(--mint)', lineHeight: 0, ...style }}
       aria-hidden
     >
-      ✦
+      <StylistMark size={size} />
     </span>
   );
 }

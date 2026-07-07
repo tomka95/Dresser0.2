@@ -1,20 +1,22 @@
 import { cn } from "@/lib/utils";
+import { M } from "@/components/ds";
 
 interface AuthGlassCardProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode;
 }
 
-/** Dark glass auth card — 22px radius, rgba(0,0,0,0.30) fill, 8px blur, hairline border. */
+/**
+ * Auth glass card — the single card surface every auth screen sits on. Uses the
+ * §0 frost material (M.glass) at a 30px radius, per the §1 redesign (design
+ * ACard). All auth states — form, "check your email", "link sent" — compose it.
+ */
 export function AuthGlassCard({ children, className, style, ...props }: AuthGlassCardProps) {
   return (
     <div
-      className={cn("w-full rounded-[22px] p-6", className)}
+      className={cn("mx-auto w-full max-w-[400px]", className)}
       style={{
-        background: "rgba(0,0,0,0.30)",
-        backdropFilter: "blur(8px)",
-        WebkitBackdropFilter: "blur(8px)",
-        border: "1px solid var(--tr-10)",
-        boxShadow: "var(--shadow-lg)",
+        ...M.glass(30),
+        padding: "28px 24px 26px",
         ...style,
       }}
       {...props}

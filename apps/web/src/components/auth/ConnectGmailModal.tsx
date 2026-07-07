@@ -1,19 +1,26 @@
 "use client";
 
 /**
- * ConnectGmailModal — centered white dialog, four designed states:
- *   disconnected (CTA) · connecting (spinner) · connected (success → review) · error (retry).
+ * ConnectGmailModal — the Gmail-connect consent dialog, on the unified §0
+ * DialogFrame surface (deep-glass, centered medallion → title → copy → action
+ * stack). Four designed states, unchanged in behaviour:
+ *   disconnected (CTA) · connecting (spinner) · connected (success → review) · error (retry)
+ *   · denied (permission declined — a calm, non-error off-ramp).
  * Connection state itself is REAL (driven by /gmail/oauth/status via the parent);
- * this component renders whichever state it's told.
+ * this component renders whichever state it's told. Props/callbacks are preserved.
+ *
+ * `denied` is deliberately distinct from `error`: `error` means the OAuth window
+ * closed/broke and retry is the answer; `denied` means the user consciously said
+ * no to inbox access — so it's amber (caution, not failure) and offers an
+ * add-by-photo off-ramp plus a way to revisit permissions, never a bare "Try again".
  */
 
 import React from "react";
-import { Check } from "lucide-react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { DSButton, GmailGlyph } from "@/components/ds";
-import { cn } from "@/lib/utils";
+import { CircleAlert, Shield } from "lucide-react";
+import { Btn, DialogFrame, GmailGlyph, Spark, Thinking, type DialogTone } from "@/components/ds";
+import { GoogleIcon } from "@/components/icons/GoogleIcon";
 
-export type GmailModalState = "disconnected" | "connecting" | "connected" | "error";
+export type GmailModalState = "disconnected" | "connecting" | "connected" | "error" | "denied";
 
 interface ConnectGmailModalProps {
   open: boolean;
@@ -23,6 +30,16 @@ interface ConnectGmailModalProps {
   onClose: () => void;
   onConnect: () => void;
   onReview: () => void;
+  /**
+   * Optional handler for the `denied` state's primary off-ramp ("Add by photo
+   * instead"). Falls back to onClose so existing consumers keep compiling.
+   */
+  onAddByPhoto?: () => void;
+  /**
+   * Optional handler for the `denied` state's "Review permissions" action.
+   * Falls back to onConnect (re-open the Google consent) if not provided.
+   */
+  onReviewPermissions?: () => void;
 }
 
 export function ConnectGmailModal({
@@ -32,134 +49,108 @@ export function ConnectGmailModal({
   onClose,
   onConnect,
   onReview,
+  onAddByPhoto,
+  onReviewPermissions,
 }: ConnectGmailModalProps) {
+  // The dialog can't be dismissed by outside-click / escape while connecting.
+  const onOpenChange = (isOpen: boolean) => {
+    if (!isOpen && state !== "connecting") onClose();
+  };
+
+  let icon: React.ReactNode;
+  let iconTone: DialogTone;
+  let title: string;
+  let sub: string;
+  let actions: React.ReactNode;
+
+  const hasCount = typeof reviewCount === "number" && reviewCount > 0;
+
+  switch (state) {
+    case "connecting":
+      icon = <Thinking size={30} />;
+      iconTone = "mint";
+      title = "Linking your inbox…";
+      sub = "Approve read-only access in the Google window. We never see your password.";
+      actions = (
+        <Btn variant="ghost" fullWidth size="md" onClick={onClose}>
+          Cancel
+        </Btn>
+      );
+      break;
+    case "connected":
+      icon = <Spark size={26} />;
+      iconTone = "mint";
+      title = "Gmail connected";
+      sub = hasCount
+        ? `We found ${reviewCount} clothing receipt${reviewCount === 1 ? "" : "s"} to review.`
+        : "Scan your inbox to find clothing purchases, then review what we detect.";
+      actions = (
+        <>
+          <Btn variant="mint" fullWidth size="md" onClick={onReview}>
+            {hasCount ? `Review ${reviewCount} item${reviewCount === 1 ? "" : "s"}` : "Review items"}
+          </Btn>
+          <Btn variant="ghost" fullWidth size="md" onClick={onClose}>
+            Later
+          </Btn>
+        </>
+      );
+      break;
+    case "error":
+      icon = <CircleAlert size={24} />;
+      iconTone = "danger";
+      title = "Connection didn't stick";
+      sub = "Google closed the window before finishing. Your inbox stays untouched.";
+      actions = (
+        <>
+          <Btn variant="primary" fullWidth size="md" onClick={onConnect}>
+            Try again
+          </Btn>
+          <Btn variant="ghost" fullWidth size="md" onClick={onClose}>
+            Not now
+          </Btn>
+        </>
+      );
+      break;
+    case "denied":
+      icon = <Shield size={24} />;
+      iconTone = "amber";
+      title = "Permission declined";
+      sub =
+        "You said no to inbox access — fair. You can still add clothes by photo, or grant read-only receipts later in Settings.";
+      actions = (
+        <>
+          <Btn variant="glass" fullWidth size="md" onClick={onAddByPhoto ?? onClose}>
+            Add by photo instead
+          </Btn>
+          <Btn variant="ghost" fullWidth size="md" onClick={onReviewPermissions ?? onConnect}>
+            Review permissions
+          </Btn>
+        </>
+      );
+      break;
+    case "disconnected":
+    default:
+      icon = <GmailGlyph size={24} />;
+      iconTone = "mint";
+      title = "Connect Gmail";
+      sub =
+        "Tailor reads order receipts — only receipts — and hangs what you bought in your closet. Read-only, revoke anytime.";
+      actions = (
+        <>
+          <Btn variant="primary" fullWidth size="md" icon={<GoogleIcon className="h-[17px] w-[17px]" />} onClick={onConnect}>
+            Continue with Google
+          </Btn>
+          <Btn variant="ghost" fullWidth size="md" onClick={onClose}>
+            Not now
+          </Btn>
+        </>
+      );
+      break;
+  }
+
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
-      <DialogContent
-        className={cn(
-          "w-[calc(100%-48px)] max-w-[382px] rounded-3xl border-0 bg-white p-[26px]",
-          "shadow-[0_30px_60px_rgba(0,0,0,0.4)]"
-        )}
-        onInteractOutside={(e) => state === "connecting" && e.preventDefault()}
-      >
-        {state === "disconnected" && (
-          <>
-            <div
-              className="mb-[18px] flex items-center justify-center rounded-2xl"
-              style={{ width: 58, height: 58, background: "var(--surface-sunken)" }}
-            >
-              <GmailGlyph size={30} />
-            </div>
-            <h3 className="m-0 mb-2 text-[21px] font-bold" style={{ color: "var(--text-strong)" }}>
-              Connect Gmail
-            </h3>
-            <p className="m-0 mb-[22px] text-[14.5px] leading-relaxed" style={{ color: "var(--text-body)" }}>
-              Tailor scans your inbox for clothing receipts and adds items automatically. We only
-              read order emails — never send.
-            </p>
-            <DSButton variant="primary" fullWidth pill leftIcon={<GmailGlyph size={18} />} onClick={onConnect}>
-              Connect Gmail
-            </DSButton>
-            <button
-              type="button"
-              onClick={onClose}
-              className="mt-3.5 w-full text-center text-sm font-medium hover:opacity-70"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Maybe later
-            </button>
-          </>
-        )}
-
-        {state === "connecting" && (
-          <>
-            <div
-              className="mb-5 mt-1.5 rounded-full"
-              style={{
-                width: 58,
-                height: 58,
-                border: "4px solid var(--surface-sunken)",
-                borderTopColor: "var(--brand-teal)",
-                animation: "tailor-spin 0.9s linear infinite",
-              }}
-              aria-label="Connecting"
-            />
-            <h3 className="m-0 mb-2 text-[21px] font-bold" style={{ color: "var(--text-strong)" }}>
-              Connecting…
-            </h3>
-            <p className="m-0 mb-[22px] text-[14.5px] leading-relaxed" style={{ color: "var(--text-body)" }}>
-              Finishing sign-in with Google. This only takes a moment.
-            </p>
-            <DSButton variant="outline" fullWidth pill onClick={onClose}>
-              Cancel
-            </DSButton>
-          </>
-        )}
-
-        {state === "connected" && (
-          <>
-            <div
-              className="mb-[18px] flex items-center justify-center rounded-full"
-              style={{ width: 58, height: 58, background: "rgba(10,207,131,0.15)", color: "var(--success)" }}
-            >
-              <Check size={30} strokeWidth={2.6} />
-            </div>
-            <h3 className="m-0 mb-2 text-[21px] font-bold" style={{ color: "var(--text-strong)" }}>
-              Gmail connected
-            </h3>
-            <p className="m-0 mb-[22px] text-[14.5px] leading-relaxed" style={{ color: "var(--text-body)" }}>
-              {reviewCount && reviewCount > 0 ? (
-                <>
-                  We found <strong style={{ color: "var(--text-strong)" }}>{reviewCount} item{reviewCount === 1 ? "" : "s"}</strong>.
-                  Review what we detected and add them to your closet.
-                </>
-              ) : (
-                <>Scan your inbox to find clothing purchases, then review what we detect.</>
-              )}
-            </p>
-            <DSButton variant="primary" fullWidth pill onClick={onReview}>
-              {reviewCount && reviewCount > 0 ? `Review ${reviewCount} item${reviewCount === 1 ? "" : "s"}` : "Review items"}
-            </DSButton>
-            <button
-              type="button"
-              onClick={onClose}
-              className="mt-3.5 w-full text-center text-sm font-medium hover:opacity-70"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Done
-            </button>
-          </>
-        )}
-
-        {state === "error" && (
-          <>
-            <div
-              className="mb-[18px] flex items-center justify-center rounded-full text-[30px] font-extrabold"
-              style={{ width: 58, height: 58, background: "rgba(251,44,54,0.12)", color: "var(--danger)" }}
-            >
-              !
-            </div>
-            <h3 className="m-0 mb-2 text-[21px] font-bold" style={{ color: "var(--text-strong)" }}>
-              Couldn&rsquo;t connect
-            </h3>
-            <p className="m-0 mb-[22px] text-[14.5px] leading-relaxed" style={{ color: "var(--text-body)" }}>
-              Google sign-in was cancelled or timed out. Your inbox wasn&rsquo;t accessed. Want to
-              try again?
-            </p>
-            <DSButton variant="primary" fullWidth pill onClick={onConnect}>
-              Try again
-            </DSButton>
-            <button
-              type="button"
-              onClick={onClose}
-              className="mt-3.5 w-full text-center text-sm font-medium hover:opacity-70"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Maybe later
-            </button>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
+    <DialogFrame open={open} onOpenChange={onOpenChange} icon={icon} iconTone={iconTone} title={title} sub={sub}>
+      <div className="mt-[18px] flex flex-col gap-2">{actions}</div>
+    </DialogFrame>
   );
 }

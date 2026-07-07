@@ -1,21 +1,55 @@
 'use client';
 
 /**
- * /settings — grouped settings (design: Account / Connected accounts / Preferences
- * / Log out). REAL: identity row, Gmail connection status, log out. LOCAL-ONLY
- * (persisted to localStorage, no backend endpoints yet): sync frequency,
- * notifications, units.
+ * /settings — grouped settings (Account / Connected accounts / Preferences /
+ * Log out), restyled to the redesign surface system.
+ *
+ * WIRED (real):
+ *   - identity row (GET /auth/me, Supabase session fallback)
+ *   - Gmail connection status + connect (startGmailConnect full-page OAuth)
+ *   - Log out (signOut → /sign-in), confirmed via a DialogFrame
+ *
+ * HONEST-DISABLED:
+ *   - Gmail switch can only turn ON. Disconnect has no backend endpoint, so
+ *     toggling OFF shows a "coming soon" hint instead of faking a disconnect.
+ *
+ * DEVICE-ONLY (labeled, persisted to localStorage — no preferences backend):
+ *   - Sync frequency, Units, Notifications toggle.
  */
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bell, BookOpen, ChevronRight, Lock, Ruler, RotateCw, SlidersHorizontal } from 'lucide-react';
+import {
+  Bell,
+  BookOpen,
+  ChevronRight,
+  Link2,
+  Lock,
+  LogOut,
+  Palette,
+  PersonStanding,
+  Ruler,
+  RotateCw,
+  SlidersHorizontal,
+  Trash2,
+  Wallet,
+} from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { signOut } from '@/lib/auth';
 import { getCurrentUser } from '@/lib/api/auth';
 import { fetchGmailConnectionStatus, startGmailConnect } from '@/lib/api/gmail';
 import { AppShell } from '@/components/layout/AppShell';
-import { DSAvatar, DSSwitch, GlassCard, GmailGlyph, RadioRow, Sheet, TopBar } from '@/components/ds';
+import {
+  Btn,
+  DialogFrame,
+  DSAvatar,
+  DSSwitch,
+  GmailGlyph,
+  M,
+  RadioRow,
+  Sheet,
+  TopBar,
+} from '@/components/ds';
 
 const SYNC_OPTIONS = [
   { id: 'realtime', label: 'Real-time', sub: 'As receipts arrive' },
@@ -53,30 +87,64 @@ function writePref<T>(key: string, value: T) {
 interface RowProps {
   icon: React.ReactNode;
   label: string;
+  sub?: string;
   value?: string;
   control?: React.ReactNode;
   first?: boolean;
+  danger?: boolean;
+  /** Small pill after the label (e.g. "Preview" for roadmap screens). */
+  badge?: string;
   onClick?: () => void;
 }
 
-function Row({ icon, label, value, control, first, onClick }: RowProps) {
+function Row({ icon, label, sub, value, control, first, danger, badge, onClick }: RowProps) {
   const inner = (
     <>
       <span
-        className="flex shrink-0 items-center justify-center rounded-[9px] text-white"
-        style={{ width: 36, height: 36, background: 'var(--tr-10)' }}
+        className="flex shrink-0 items-center justify-center rounded-xl"
+        style={{
+          width: 36,
+          height: 36,
+          background: danger ? 'rgba(251,44,54,0.11)' : 'rgba(255,255,255,0.08)',
+          border: '1px solid rgba(255,255,255,0.09)',
+          color: danger ? '#ff8087' : M.soft,
+        }}
       >
         {icon}
       </span>
-      <span className="flex-1 text-left text-[15px] text-white">{label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          <span
+            className="block text-[14.5px] font-medium"
+            style={{ color: danger ? '#ff8087' : '#fff', letterSpacing: '-0.1px' }}
+          >
+            {label}
+          </span>
+          {badge && (
+            <span
+              className="rounded-full text-[10px] font-semibold uppercase"
+              style={{
+                padding: '2px 7px',
+                letterSpacing: '0.06em',
+                color: 'rgba(255,255,255,0.55)',
+                background: 'rgba(255,255,255,0.08)',
+                border: '1px solid rgba(255,255,255,0.12)',
+              }}
+            >
+              {badge}
+            </span>
+          )}
+        </span>
+        {sub && <span className="mt-0.5 block text-[12px] leading-snug text-white/[0.55]">{sub}</span>}
+      </span>
       {value && <span className="text-[13px] text-white/50">{value}</span>}
-      {control ?? <ChevronRight size={18} className="text-white/60" />}
+      {control ?? (onClick && <ChevronRight size={18} className="text-white/[0.36]" />)}
     </>
   );
-  const style = { borderTop: first ? 'none' : '1px solid var(--tr-10)' };
+  const style = { borderTop: first ? 'none' : '1px solid var(--tr-10)' } as React.CSSProperties;
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} className="flex w-full items-center gap-3.5 py-3.5" style={style}>
+      <button type="button" onClick={onClick} className="flex w-full items-center gap-3.5 py-3.5 text-left" style={style}>
         {inner}
       </button>
     );
@@ -88,18 +156,18 @@ function Row({ icon, label, value, control, first, onClick }: RowProps) {
   );
 }
 
-function Group({ title, children }: { title: string; children: React.ReactNode }) {
+function Group({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
-    <div className="mb-[22px]">
-      <div
-        className="mx-1 mb-2.5 text-[12px] font-semibold uppercase tracking-[0.5px]"
-        style={{ color: 'rgba(255,255,255,0.5)' }}
-      >
-        {title}
-      </div>
-      <GlassCard tint="scrim" padding={6}>
-        <div className="px-3">{children}</div>
-      </GlassCard>
+    <div style={{ ...M.glass(24), padding: '4px 16px' }}>
+      {title && (
+        <div
+          className="text-[11px] font-semibold uppercase"
+          style={{ padding: '13px 2px 2px', letterSpacing: '0.13em', color: 'rgba(255,255,255,0.36)' }}
+        >
+          {title}
+        </div>
+      )}
+      {children}
     </div>
   );
 }
@@ -112,19 +180,20 @@ export default function SettingsPage() {
   const [name, setName] = useState<string>('');
   const [email, setEmail] = useState<string>('');
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
+  const [gmailHint, setGmailHint] = useState<string | null>(null);
 
   const [syncFreq, setSyncFreq] = useState<string>('daily');
-  const [notifications, setNotifications] = useState(false);
   const [measurement, setMeasurement] = useState<string>('metric');
   const [sizeSystem, setSizeSystem] = useState<string>('EU');
 
   const [syncPickerOpen, setSyncPickerOpen] = useState(false);
   const [unitsPickerOpen, setUnitsPickerOpen] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   // Hydrate local prefs after mount (SSR-safe).
   useEffect(() => {
     setSyncFreq(readPref('syncFreq', 'daily'));
-    setNotifications(readPref('notifications', false));
     setMeasurement(readPref('measurement', 'metric'));
     setSizeSystem(readPref('sizeSystem', 'EU'));
   }, []);
@@ -157,6 +226,7 @@ export default function SettingsPage() {
   if (loading || !isAuth) return null;
 
   const handleLogout = async () => {
+    setLoggingOut(true);
     await signOut();
     router.push('/sign-in');
   };
@@ -166,98 +236,157 @@ export default function SettingsPage() {
 
   return (
     <AppShell>
-      <div style={{ padding: '48px 24px 60px' }}>
-        <div className="mb-2">
-          <TopBar title="Settings" onBack={() => router.push('/profile')} />
+      <div style={{ padding: '62px 20px 60px' }}>
+        <TopBar title="Settings" onBack={() => router.push('/profile')} />
+        <div className="h-4" />
+
+        <div className="flex flex-col" style={{ gap: 12 }}>
+          <Group title="Account">
+            <Row
+              first
+              icon={<DSAvatar name={name || email} size={22} />}
+              label={name || 'Your account'}
+              sub={email}
+              onClick={() => router.push('/profile/edit')}
+            />
+            <Row icon={<Lock size={16} />} label="Change password" onClick={() => router.push('/settings/password')} />
+            <Row
+              icon={<Bell size={16} />}
+              label="Notifications"
+              sub="Daily look, finds, price drops"
+              onClick={() => router.push('/settings/notifications')}
+            />
+            <Row
+              icon={<Trash2 size={16} />}
+              label="Delete account"
+              danger
+              onClick={() => router.push('/settings/account')}
+            />
+          </Group>
+
+          <Group title="Connected accounts">
+            <Row
+              first
+              icon={<GmailGlyph size={16} />}
+              label="Gmail"
+              sub={gmailConnected == null ? undefined : gmailConnected ? 'Connected · receipts only' : 'Not connected'}
+              control={
+                <DSSwitch
+                  checked={!!gmailConnected}
+                  aria-label="Gmail connection"
+                  onChange={(next) => {
+                    // Real connect: full-page OAuth redirect. Disconnect has no
+                    // endpoint yet, so turning OFF only surfaces an honest hint.
+                    if (next && !gmailConnected) {
+                      setGmailHint(null);
+                      startGmailConnect().catch(() => undefined);
+                    } else if (!next && gmailConnected) {
+                      setGmailHint(
+                        'Disconnect is coming soon — for now, remove Tailor from your Google account permissions.',
+                      );
+                    }
+                  }}
+                />
+              }
+            />
+            {gmailHint && (
+              <div className="pb-3 text-[12px] leading-snug text-white/[0.55]">{gmailHint}</div>
+            )}
+            <Row
+              icon={<RotateCw size={16} />}
+              label="Sync frequency"
+              value={syncLabel}
+              onClick={() => setSyncPickerOpen(true)}
+            />
+            <Row
+              icon={<Link2 size={16} />}
+              label="More connectors"
+              sub="Outlook, Amazon, Photos — coming"
+              onClick={() => router.push('/settings/connectors')}
+            />
+          </Group>
+
+          <Group title="Styling">
+            <Row
+              first
+              icon={<SlidersHorizontal size={16} />}
+              label="My style profile"
+              onClick={() => router.push('/settings/style')}
+            />
+            <Row icon={<Ruler size={16} />} label="Sizes & fit" onClick={() => router.push('/settings/sizes')} />
+            <Row
+              icon={<Wallet size={16} />}
+              label="Budget bands"
+              sub="Set what's comfortable"
+              onClick={() => router.push('/settings/budget')}
+            />
+            <Row
+              icon={<PersonStanding size={16} />}
+              label="Body shape"
+              sub="Optional — for fit advice"
+              badge="Preview"
+              onClick={() => router.push('/settings/body')}
+            />
+            <Row
+              icon={<Palette size={16} />}
+              label="Color analysis"
+              sub="Find your season"
+              badge="Preview"
+              onClick={() => router.push('/settings/color')}
+            />
+          </Group>
+
+          <Group title="App">
+            <Row
+              first
+              icon={<BookOpen size={16} />}
+              label="Units"
+              value={unitsLabel}
+              onClick={() => setUnitsPickerOpen(true)}
+            />
+          </Group>
+
+          <Group>
+            <Row
+              first
+              icon={<LogOut size={16} />}
+              label="Log out"
+              onClick={() => setLogoutOpen(true)}
+            />
+          </Group>
         </div>
-        <div className="h-3" />
 
-        <Group title="Account">
-          <Row
-            first
-            icon={<DSAvatar name={name || email} size={28} />}
-            label={name || 'Your account'}
-            value={email}
-            onClick={() => router.push('/profile/edit')}
-          />
-          <Row icon={<Lock size={17} />} label="Password" onClick={() => router.push('/settings/password')} />
-          <Row icon={<Ruler size={17} />} label="Sizes & fit" onClick={() => router.push('/settings/sizes')} />
-        </Group>
-
-        <Group title="Connected accounts">
-          <Row
-            first
-            icon={<GmailGlyph size={17} />}
-            label="Gmail"
-            value={gmailConnected == null ? undefined : gmailConnected ? 'Connected' : 'Not connected'}
-            control={
-              <DSSwitch
-                checked={!!gmailConnected}
-                aria-label="Gmail connection"
-                onChange={(next) => {
-                  // Real connect: full-page OAuth redirect. Disconnect has no
-                  // endpoint yet, so the switch can only turn ON.
-                  if (next && !gmailConnected) startGmailConnect().catch(() => undefined);
-                }}
-              />
-            }
-          />
-          <Row
-            icon={<RotateCw size={17} />}
-            label="Sync frequency"
-            value={syncLabel}
-            onClick={() => setSyncPickerOpen(true)}
-          />
-        </Group>
-
-        <Group title="Preferences">
-          <Row
-            first
-            icon={<SlidersHorizontal size={17} />}
-            label="Style preferences"
-            onClick={() => router.push('/settings/style')}
-          />
-          <Row
-            icon={<Bell size={17} />}
-            label="Notifications"
-            control={
-              <DSSwitch
-                checked={notifications}
-                aria-label="Notifications"
-                onChange={(v) => {
-                  setNotifications(v);
-                  writePref('notifications', v);
-                }}
-              />
-            }
-          />
-          <Row icon={<BookOpen size={17} />} label="Units" value={unitsLabel} onClick={() => setUnitsPickerOpen(true)} />
-        </Group>
-
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="h-[50px] w-full cursor-pointer rounded-full text-[15px] font-semibold"
-          style={{
-            border: '1px solid rgba(251,44,54,0.4)',
-            background: 'rgba(251,44,54,0.12)',
-            color: '#ff6b6b',
-            fontFamily: 'var(--font-sans)',
-          }}
-        >
-          Log out
-        </button>
-        <div className="mt-[18px] text-center text-[12px]" style={{ color: 'rgba(255,255,255,0.35)' }}>
-          Tailor v2.0.0
+        <div className="mt-4 text-center text-[11.5px] text-white/[0.36]">
+          Sync frequency, notifications and units are saved on this device only.
         </div>
+        <div className="mt-2 text-center text-[12px] text-white/[0.36]">Tailor v2.0.0</div>
       </div>
 
-      {/* Sync frequency picker (LOCAL preference — backend scheduling not built). */}
+      {/* Log out confirm (REAL signOut). */}
+      <DialogFrame
+        open={logoutOpen}
+        onOpenChange={setLogoutOpen}
+        iconTone="plain"
+        icon={<LogOut size={23} />}
+        title="Log out?"
+        sub="Your closet stays synced to your account — nothing is deleted."
+      >
+        <div className="mt-5 flex flex-col" style={{ gap: 9 }}>
+          <Btn fullWidth size="md" pending={loggingOut} onClick={handleLogout}>
+            Log out
+          </Btn>
+          <Btn variant="ghost" fullWidth size="md" onClick={() => setLogoutOpen(false)}>
+            Stay signed in
+          </Btn>
+        </div>
+      </DialogFrame>
+
+      {/* Sync frequency picker (DEVICE-ONLY — backend scheduling not built). */}
       <Sheet
         open={syncPickerOpen}
         onClose={() => setSyncPickerOpen(false)}
         title="Sync frequency"
-        sub="How often Tailor scans Gmail for new receipts"
+        sub="Saved on this device — how often Tailor would scan Gmail"
       >
         {SYNC_OPTIONS.map((o, i) => (
           <RadioRow
@@ -275,7 +404,7 @@ export default function SettingsPage() {
         ))}
       </Sheet>
 
-      {/* Units picker (LOCAL preference). */}
+      {/* Units picker (DEVICE-ONLY). */}
       <Sheet open={unitsPickerOpen} onClose={() => setUnitsPickerOpen(false)} title="Units" sub="Measurements and sizing system">
         <div
           className="mx-0.5 mb-0.5 mt-1 text-[11.5px] font-semibold uppercase tracking-[0.5px]"

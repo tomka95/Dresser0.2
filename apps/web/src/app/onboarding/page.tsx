@@ -10,9 +10,14 @@
  */
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow';
+import { OnboardingSkeleton } from '@/components/onboarding/OnboardingSkeleton';
 
 export default function OnboardingPage() {
   const { session, loading } = useRequireAuth();
-  if (loading || !session) return null;
+  // O10 — while the auth gate resolves, show the onboarding skeleton instead of a
+  // blank page. Fail-closed is preserved: once resolved to no session the hook has
+  // already fired a redirect to /sign-in, and we render nothing in that beat.
+  if (loading) return <OnboardingSkeleton />;
+  if (!session) return null;
   return <OnboardingFlow />;
 }

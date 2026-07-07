@@ -3,20 +3,22 @@
 import React, { useEffect } from 'react';
 import { cn } from '@/lib/utils';
 
+import { M } from './materials';
+
 interface SheetProps {
   open: boolean;
   onClose: () => void;
   title?: string;
   sub?: string;
   children: React.ReactNode;
-  /** 'dark' — glass settings/picker sheet. 'light' — white ingest drawer. */
+  /** 'dark' — unified deep-glass sheet (§0 surface). 'light' — white ingest drawer. */
   tone?: 'dark' | 'light';
 }
 
 /**
- * Bottom sheet with dim overlay. Dark glass variant for pickers/menus
- * (settings, Gmail manage) and light variant for the AddItemDrawer.
- * 28–30px top radius, drag handle, slide-up entrance.
+ * §0 · G8 — Unified bottom sheet. The dark tone is the redesign surface: a
+ * deep-glass panel floating 8px off the edges, grab handle, 20px title,
+ * t2-rise entrance. The light tone keeps the white AddItemDrawer styling.
  */
 export function Sheet({ open, onClose, title, sub, children, tone = 'dark' }: SheetProps) {
   // Close on Escape.
@@ -40,63 +42,71 @@ export function Sheet({ open, onClose, title, sub, children, tone = 'dark' }: Sh
         aria-label="Close"
         onClick={onClose}
         className="absolute inset-0 cursor-default border-none"
-        style={{ background: 'rgba(0,0,0,0.55)', animation: 'tailor-fade-in 200ms var(--ease-out)' }}
+        style={{ background: 'rgba(0,0,0,0.55)', animation: 't2-fade 200ms var(--ease-out)' }}
       />
-      {/* Sheet */}
+      {/* Sheet panel */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="absolute inset-x-0 bottom-0"
-        style={{
-          animation: 'tailor-slide-up 300ms var(--ease-out)',
-          ...(dark
+        data-t2-anim
+        className={cn('absolute', dark ? 'bottom-2 left-2 right-2' : 'inset-x-0 bottom-0')}
+        style={
+          dark
             ? {
-                background: 'rgba(24,26,27,0.96)',
-                backdropFilter: 'blur(20px)',
-                WebkitBackdropFilter: 'blur(20px)',
-                borderTop: '1px solid var(--tr-20)',
-                borderTopLeftRadius: 28,
-                borderTopRightRadius: 28,
-                padding: '14px 20px 30px',
-                boxShadow: '0 -20px 50px rgba(0,0,0,0.5)',
+                ...M.deep(34),
+                padding: '10px 22px 26px',
+                animation: 't2-rise 420ms var(--ease-out) both',
               }
             : {
                 background: '#fff',
                 borderTopLeftRadius: 30,
                 borderTopRightRadius: 30,
                 padding: '20px 24px 34px',
-              }),
-        }}
+                animation: 't2-rise 420ms var(--ease-out) both',
+              }
+        }
       >
-        {/* Drag handle */}
+        {/* Grab handle */}
         <div
-          className="mx-auto rounded-sm"
+          className="mx-auto rounded-full"
           style={{
             width: 40,
-            height: 4,
-            background: dark ? 'var(--tr-20)' : 'var(--grey)',
-            marginBottom: dark ? 16 : 18,
+            height: 4.5,
+            background: dark ? 'rgba(255,255,255,0.22)' : 'var(--grey)',
+            margin: dark ? '4px auto 14px' : '0 auto 18px',
           }}
           aria-hidden
         />
-        {title && (
-          <div
-            className={cn('px-0.5 font-bold', dark ? 'text-white text-[18px]' : 'text-[21px]')}
-            style={dark ? undefined : { color: 'var(--text-strong)' }}
-          >
-            {title}
+        {(title || sub) && (
+          <div style={{ marginBottom: 16, marginTop: 2 }}>
+            {title && (
+              <div
+                style={{
+                  color: dark ? '#fff' : 'var(--text-strong)',
+                  fontSize: 20,
+                  fontWeight: 650,
+                  letterSpacing: '-0.4px',
+                }}
+              >
+                {title}
+              </div>
+            )}
+            {sub && (
+              <div
+                style={{
+                  color: dark ? M.faint : 'var(--text-muted)',
+                  fontSize: 13.5,
+                  lineHeight: 1.5,
+                  marginTop: 4,
+                }}
+              >
+                {sub}
+              </div>
+            )}
           </div>
         )}
-        {sub && (
-          <div
-            className="px-0.5 pt-0.5"
-            style={{ fontSize: dark ? 13 : 14, color: dark ? 'rgba(255,255,255,0.55)' : 'var(--text-muted)' }}
-          >
-            {sub}
-          </div>
-        )}
-        <div className={cn(title || sub ? 'mt-4' : undefined)}>{children}</div>
+        {children}
       </div>
     </div>
   );

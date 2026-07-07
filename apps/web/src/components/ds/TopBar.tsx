@@ -2,32 +2,57 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
+
 import { Icon } from './Icon';
+import { M } from './materials';
 
 interface TopBarProps {
   title?: string;
+  /** Optional context line under the title (12.5px, faint). */
+  sub?: string;
   /** Custom back handler; defaults to router.back(). */
   onBack?: () => void;
   /** Right-side slot (e.g. an icon button or a "Save" action). */
   right?: React.ReactNode;
 }
 
-/** Small back/header row for secondary screens: glass back circle · title · right slot. */
-export function TopBar({ title, onBack, right }: TopBarProps) {
+/**
+ * §0 · G3 — TopBar for secondary screens: glass back chip · title (+ context
+ * sub) · right action slot. The title ellipsizes instead of wrapping.
+ */
+export function TopBar({ title, sub, onBack, right }: TopBarProps) {
   const router = useRouter();
   return (
-    <div className="relative flex min-h-[40px] items-center justify-between px-1.5">
+    <div className="flex items-center gap-3">
       <button
         type="button"
         aria-label="Back"
         onClick={onBack ?? (() => router.back())}
-        className="flex items-center justify-center rounded-full text-white transition-transform active:scale-90"
-        style={{ width: 40, height: 40, border: '1px solid var(--tr-20)', background: 'rgba(0,0,0,0.28)' }}
+        className="flex shrink-0 items-center justify-center text-white active:scale-90"
+        style={{
+          width: 40,
+          height: 40,
+          ...M.glass(14),
+          boxShadow: 'none',
+          transition: 'transform 240ms var(--spring)',
+        }}
       >
         <Icon name="ArrowChevronLeftMD" size={20} />
       </button>
-      {title && <div className="text-[17px] font-semibold text-white">{title}</div>}
-      <div className="flex h-10 w-10 items-center justify-center text-white">{right}</div>
+      <div className="min-w-0 flex-1">
+        {title && (
+          <div
+            className="overflow-hidden text-ellipsis whitespace-nowrap text-white"
+            style={{ fontSize: 18, fontWeight: 650, letterSpacing: '-0.3px' }}
+          >
+            {title}
+          </div>
+        )}
+        {sub && (
+          <div style={{ color: M.faint, fontSize: 12.5, marginTop: 1 }}>{sub}</div>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">{right}</div>
     </div>
   );
 }

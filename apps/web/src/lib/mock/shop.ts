@@ -62,3 +62,56 @@ export const SHOP_PRODUCTS: ShopProduct[] = [
 export function getShopProduct(id: string): ShopProduct | undefined {
   return SHOP_PRODUCTS.find((p) => p.id === id);
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   ROADMAP (P2) mock shapes — these back the preview-only screens (F6 rate-a-look,
+   F7 saved, F8 packing, F9 creator closet). There is NO backend for any of them;
+   the screens render from these and label themselves as previews / device-only.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** F8 · Packing — a trip and the (mock) count of looks it generates. */
+export interface PackingMock {
+  trip: string;
+  temp: string;
+  /** How many looks the (roadmap) generator would build. */
+  looks: number;
+}
+
+export const PACKING_MOCK: PackingMock = {
+  trip: 'Lisbon · 4 days',
+  temp: '19–24°',
+  looks: 5,
+};
+
+/** F9 · Creator closet — a public, shoppable closet (fully mock preview). */
+export interface CreatorMock {
+  name: string;
+  handle: string;
+  followers: string;
+  pieces: number;
+  shoppable: number;
+  /** Initials for the avatar disc. */
+  initials: string;
+}
+
+export const CREATOR_MOCK: CreatorMock = {
+  name: 'Lena Moreau',
+  handle: '@lenamoreau',
+  followers: '212k',
+  pieces: 148,
+  shoppable: 37,
+  initials: 'LM',
+};
+
+/** A saved/wishlist entry (F7) — a mock product plus an optional price-drop. */
+export interface SavedMock extends ShopProduct {
+  /** Present when the (roadmap) watcher spotted a drop. Device-only, not live. */
+  priceDrop?: { pct: number; was: number };
+}
+
+export const SAVED_MOCK: SavedMock[] = [
+  { ...SHOP_PRODUCTS[0] },
+  { ...SHOP_PRODUCTS[1], priceDrop: { pct: 20, was: 161 } },
+  { ...SHOP_PRODUCTS[2] },
+  { ...SHOP_PRODUCTS[3] },
+];

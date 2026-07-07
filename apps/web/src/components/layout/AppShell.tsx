@@ -1,6 +1,8 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { BackgroundTailorNotice } from '@/components/closet/BackgroundTailorNotice';
+import { ToastHost } from '@/components/ds/Toast';
+import { OfflineIndicator } from '@/components/layout/OfflineIndicator';
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -64,6 +66,9 @@ export function AppShell({ children, contentClassName, scroll = true, dim = fals
       {/* Global, non-blocking "review ready" surface for background-tailored runs. Self-
           hides when there's no pending run and on the screens that own the flow. */}
       <BackgroundTailorNotice />
+      {/* §0 chrome: toast host (docked above the floating nav) + offline pill. */}
+      <ToastHost />
+      <OfflineIndicator />
     </div>
   );
 }

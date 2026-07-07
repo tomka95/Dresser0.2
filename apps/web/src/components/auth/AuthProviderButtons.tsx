@@ -29,7 +29,7 @@ export function AuthProviderButtons({
   if (providers.length === 0) return null;
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col" style={{ gap: 9 }}>
       {providers.map((provider) => (
         <AuthProviderButton
           key={provider.id}

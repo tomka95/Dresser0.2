@@ -1,15 +1,18 @@
 'use client';
 
 /**
- * /settings/sizes — sizes & preferred fit. LOCAL-ONLY preferences (persisted to
- * localStorage; no user-preferences backend yet).
+ * /settings/sizes — sizes & preferred fit.
+ *
+ * DEVICE-ONLY (labeled): persisted to localStorage (tailor.pref.sizes). There is
+ * no user-preferences backend yet, so these values live on this device and do
+ * not yet feed sizing on suggestions.
  */
 
 import { useEffect, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
-import { RadioRow, Sheet, TopBar } from '@/components/ds';
+import { M, RadioRow, Sheet, TopBar } from '@/components/ds';
 
 type SizeKey = 'tops' | 'bottoms' | 'shoes' | 'outerwear';
 
@@ -64,35 +67,35 @@ export default function SizesFitPage() {
 
   return (
     <AppShell>
-      <div style={{ padding: '48px 24px 40px' }}>
+      <div style={{ padding: '62px 20px 40px' }}>
         <TopBar title="Sizes & fit" />
         <div className="h-[18px]" />
 
         <div
-          className="mx-0.5 mb-3 text-[12px] font-semibold uppercase tracking-[0.5px]"
-          style={{ color: 'rgba(255,255,255,0.5)' }}
+          className="mx-0.5 mb-3 text-[11px] font-semibold uppercase"
+          style={{ letterSpacing: '0.13em', color: 'rgba(255,255,255,0.36)' }}
         >
           Your sizes
         </div>
-        <div className="flex flex-col gap-2.5">
-          {SIZE_ROWS.map((row) => (
+        <div style={{ ...M.glass(24), padding: '4px 16px' }}>
+          {SIZE_ROWS.map((row, i) => (
             <button
               key={row.key}
               type="button"
               onClick={() => setEditing(row.key)}
-              className="flex w-full items-center gap-3 rounded-[14px] text-left"
-              style={{ padding: '15px 16px', background: 'var(--tr-10)', border: '1px solid var(--tr-20)' }}
+              className="flex w-full items-center gap-3 py-3.5 text-left"
+              style={{ borderTop: i === 0 ? 'none' : '1px solid var(--tr-10)' }}
             >
-              <span className="flex-1 text-[15px] text-white">{row.label}</span>
-              <span className="text-[15px] font-semibold text-white">{sizes[row.key]}</span>
-              <ChevronRight size={17} className="text-white/60" />
+              <span className="flex-1 text-[14.5px] text-white">{row.label}</span>
+              <span className="text-[14.5px] font-semibold text-white">{sizes[row.key]}</span>
+              <ChevronRight size={17} className="text-white/[0.36]" />
             </button>
           ))}
         </div>
 
         <div
-          className="mx-0.5 mb-3 mt-6 text-[12px] font-semibold uppercase tracking-[0.5px]"
-          style={{ color: 'rgba(255,255,255,0.5)' }}
+          className="mx-0.5 mb-3 mt-6 text-[11px] font-semibold uppercase"
+          style={{ letterSpacing: '0.13em', color: 'rgba(255,255,255,0.36)' }}
         >
           Preferred fit
         </div>
@@ -107,10 +110,10 @@ export default function SizesFitPage() {
                   setFit(f);
                   persist(sizes, f);
                 }}
-                className="flex-1 rounded-xl py-[13px] text-center text-[14px] font-semibold transition-colors"
+                className="flex-1 rounded-full py-[13px] text-center text-[14px] font-semibold transition-colors"
                 style={{
                   color: on ? 'var(--brand-teal)' : '#fff',
-                  background: on ? 'var(--mint)' : 'var(--tr-10)',
+                  background: on ? 'var(--mint)' : 'rgba(255,255,255,0.07)',
                   border: `1px solid ${on ? 'transparent' : 'var(--tr-20)'}`,
                 }}
               >
@@ -120,14 +123,9 @@ export default function SizesFitPage() {
           })}
         </div>
 
-        <div
-          className="mt-[22px] flex items-start gap-2.5 rounded-xl"
-          style={{ padding: '13px 14px', background: 'var(--grad-ai)', border: '1px solid var(--tr-20)' }}
-        >
-          <span style={{ color: 'var(--mint)' }}>✦</span>
-          <span className="text-[13px] leading-snug text-white/85">
-            Tailor uses these to flag items that won&rsquo;t fit and to size shopping suggestions.
-          </span>
+        <div className="mt-[22px] text-[11.5px] leading-relaxed text-white/[0.36]">
+          Saved on this device only — Tailor doesn&rsquo;t yet use these to size shopping
+          suggestions.
         </div>
       </div>
 

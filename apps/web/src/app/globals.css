@@ -208,3 +208,118 @@
     transform: translateX(100%);
   }
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Tailor redesign §0 — shared chrome motion tokens (t2-*).
+   One motion language: mint-on-teal, ~1.8–2.6s loops, spring for presses.
+   Everything animated carries [data-t2-anim] so reduced-motion can halt it.
+   ════════════════════════════════════════════════════════════════════════ */
+:root {
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes t2-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@keyframes t2-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes t2-typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+@keyframes t2-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.035); }
+}
+@keyframes t2-deck-a {
+  0%, 100% { transform: rotate(-5deg) translateY(0); }
+  50% { transform: rotate(-6.5deg) translateY(-5px); }
+}
+@keyframes t2-deck-b {
+  0%, 100% { transform: rotate(3.5deg); }
+  50% { transform: rotate(5deg) translateY(-8px); }
+}
+@keyframes t2-deck-c {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-11px); }
+}
+@keyframes t2-pop {
+  0% { transform: scale(0.6); opacity: 0; }
+  70% { transform: scale(1.06); opacity: 1; }
+  100% { transform: scale(1); }
+}
+@keyframes t2-rise {
+  0% { transform: translateY(14px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes t2-fade {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes t2-bar {
+  0% { transform: translateX(-60%); }
+  100% { transform: translateX(240%); }
+}
+@keyframes t2-glow {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@keyframes t2-ring {
+  0% { transform: scale(0.85); opacity: 0.7; }
+  100% { transform: scale(1.45); opacity: 0; }
+}
+@keyframes t2-scan {
+  0%, 100% { top: 14%; }
+  50% { top: 84%; }
+}
+@keyframes t2-dash {
+  to { stroke-dashoffset: -18; }
+}
+@keyframes t2-drift {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@keyframes t2-wave {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1); }
+}
+
+/* Skeleton shimmer — one light sweep on 5.5%-white blocks. Mint variant is
+   reserved for AI surfaces. */
+.t2-sk {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.055);
+}
+.t2-sk::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    100deg,
+    transparent 32%,
+    rgba(255, 255, 255, 0.075) 50%,
+    transparent 68%
+  );
+  animation: t2-shimmer 1.8s var(--ease-in-out) infinite;
+}
+.t2-sk-mint::after {
+  background: linear-gradient(
+    100deg,
+    transparent 32%,
+    rgba(75, 226, 214, 0.10) 50%,
+    transparent 68%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t2-sk::after {
+    animation: none;
+  }
+  [data-t2-anim] {
+    animation: none !important;
+  }
+}
