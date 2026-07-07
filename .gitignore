@@ -45,6 +45,7 @@ wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+bakeoff_out/
 
 # Generated files
 Responses/
