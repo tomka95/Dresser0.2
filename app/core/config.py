@@ -130,6 +130,17 @@ class Settings(BaseSettings):
     # cache-seed path as every other untrusted-web tier (verify is mandatory).
     GMAIL_FEED_ENABLED: bool = False
 
+    # --- Legacy outfit-photo pipeline (POST /outfit-image) ------------------
+    # Models for the legacy multi-item outfit-photo flow (app.services.
+    # clothing_pipeline -> app.platform.ai_provider's
+    # _LegacyOutfitGenerationMixin). Superseded in the current web client by
+    # the photo-ingest detect/commit flow + the Wave 2 image_generation
+    # provider seam; kept working, not removed. Previously hardcoded inline
+    # (ARCHITECTURE_AUDIT R8); centralized here so a model change needs no
+    # code edit, like every other *_MODEL setting.
+    LEGACY_OUTFIT_DETECT_MODEL: str = "gemini-2.5-flash-lite"
+    LEGACY_OUTFIT_IMAGE_MODEL: str = "gemini-2.5-flash-image"
+
     # --- Image generation (Wave 2) ------------------------------------------
     # The generation seam (app/services/image_generation) turns a user photo
     # cutout into a clean product-card CANDIDATE image via an image-editing
