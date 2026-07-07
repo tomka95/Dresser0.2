@@ -2,7 +2,7 @@
 
 import { AlertCircle } from 'lucide-react';
 
-import { TypingDots } from '@/components/ds';
+import { Spark, TypingDots } from '@/components/ds';
 
 import { OutfitActions } from './OutfitActions';
 import { OutfitCard } from './OutfitCard';
@@ -114,6 +114,7 @@ export function ChatMessage({
             color: '#06302d',
           }}
         >
+          <Spark size={14} style={{ color: '#06302d' }} />
           Review {m.ingest.itemCount} {m.ingest.itemCount === 1 ? 'item' : 'items'} →
         </a>
       )}

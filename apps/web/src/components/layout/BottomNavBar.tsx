@@ -18,15 +18,15 @@ interface BottomNavBarProps {
 const TABS: { href: string; icon: IconName; label: string }[] = [
   { href: '/home', icon: 'NavigationHouse02', label: 'Home' },
   { href: '/search', icon: 'InterfaceSearchMagnifyingGlass', label: 'Search' },
-  { href: '/closet', icon: 'Hanger', label: 'Closet' },
+  { href: '/closet', icon: 'Wardrobe', label: 'Closet' },
   { href: '/profile', icon: 'UserUser01', label: 'Profile' },
 ];
 
 /**
  * §0 · G1 — Floating glass nav. A deep-glass pill detached 18px off the bottom
- * edge with 16px side insets; four tabs (Home / Search · Closet / Profile) and
- * a center FAB that opens the AI Stylist chat. Content scrolls beneath — pad
- * scrolling pages with NAV_CLEAR.
+ * edge with 16px side insets; four tabs (Home / Search · Closet / Profile — the
+ * Closet tab uses the wardrobe glyph) and a center hanger FAB that opens the AI
+ * Stylist chat. Content scrolls beneath — pad scrolling pages with NAV_CLEAR.
  */
 export function BottomNavBar({ activeRoute }: BottomNavBarProps) {
   const pathname = usePathname();
@@ -82,7 +82,7 @@ export function BottomNavBar({ activeRoute }: BottomNavBarProps) {
   return (
     <div className="pointer-events-none fixed bottom-[18px] left-0 right-0 z-40 mx-auto w-full max-w-[430px] px-4">
       <div className="pointer-events-auto relative">
-        {/* Center FAB — AI Stylist entry, seated level with the tabs. */}
+        {/* Center FAB — AI Stylist (chat) entry, hanger mark, seated level with the tabs. */}
         <div
           className="absolute left-1/2 z-[2]"
           style={{
@@ -124,7 +124,7 @@ export function BottomNavBar({ activeRoute }: BottomNavBarProps) {
               transition: 'all 300ms var(--spring)',
             }}
           >
-            <StylistMark size={26} />
+            <StylistMark size={27} />
           </Link>
         </div>
 
