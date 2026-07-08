@@ -9,7 +9,7 @@ assemble_calendar → compose_outfit dress-context wiring.
 import base64
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +25,7 @@ from app.services.stylist.calendar import (
     CalendarBlock,
     assemble_calendar,
     derive_dress_context,
+    resolve_target_date,
 )
 import app.services.stylist.calendar as stylist_cal
 from app.calendar_context import CalendarEvent
@@ -62,6 +63,14 @@ def user2(db: Session):
     u = User(email="cal2@example.com", hashed_password="x")
     db.add(u); db.commit(); db.refresh(u)
     return u
+
+
+@pytest.fixture(autouse=True)
+def _clear_calendar_caches():
+    """Isolate the per-(user, window) live-fetch cache between tests."""
+    stylist_cal._events_cache.clear()
+    yield
+    stylist_cal._events_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -246,7 +255,7 @@ def test_calendar_today_not_connected_uncached(client, db, user1):
 # ---------------------------------------------------------------------------
 def test_assemble_calendar_scoped_per_user(db, user1, user2, monkeypatch):
     _seed_connected(db, user1)  # only user1 is connected
-    monkeypatch.setattr(stylist_cal, "fetch_today_events", lambda acct, s: [])
+    monkeypatch.setattr(stylist_cal, "fetch_events", lambda acct, s, **kw: [])
     assert assemble_calendar(db, user1.id).connected is True
     # user2 has no row → not connected (app-level filter; RLS backstops on PG).
     assert assemble_calendar(db, user2.id).connected is False
@@ -260,8 +269,8 @@ def test_assemble_calendar_under_rls_scoped_session(db, user1, monkeypatch):
     from app.services.stylist.rls import rls_scoped_session
     _seed_connected(db, user1)
     monkeypatch.setattr(
-        stylist_cal, "fetch_today_events",
-        lambda acct, s: [CalendarEvent("Client review", datetime.now(timezone.utc), None, "office", False)],
+        stylist_cal, "fetch_events",
+        lambda acct, s, **kw: [CalendarEvent("Client review", datetime.now(timezone.utc), None, "office", False)],
     )
     with rls_scoped_session(user1.id) as sdb:
         block = assemble_calendar(sdb, user1.id, no_persist=False)
@@ -272,8 +281,8 @@ def test_assemble_calendar_under_rls_scoped_session(db, user1, monkeypatch):
 def test_incognito_reads_no_calendar(db, user1, monkeypatch):
     _seed_connected(db, user1)
     called = {"n": 0}
-    monkeypatch.setattr(stylist_cal, "fetch_today_events",
-                        lambda acct, s: called.__setitem__("n", called["n"] + 1) or [])
+    monkeypatch.setattr(stylist_cal, "fetch_events",
+                        lambda acct, s, **kw: called.__setitem__("n", called["n"] + 1) or [])
     block = assemble_calendar(db, user1.id, no_persist=True)
     assert block.connected is False and called["n"] == 0  # zero trace
 
@@ -344,3 +353,78 @@ def test_compose_outfit_explicit_beats_calendar(db, user1, monkeypatch):
                            "compose_outfit", {"occasion": "gym", "formality": 1})
     assert captured["occasion"] == "gym" and captured["formality_target"] == 1
     assert "calendar" not in result  # nothing was derived
+
+
+# ---------------------------------------------------------------------------
+# Multi-day, date-labeled context: today's events must not be misattributed to
+# another day, and a request for a specific day derives from THAT day.
+# ---------------------------------------------------------------------------
+def _ev_on(day: date, summary, hour=10, location=None):
+    start = datetime(day.year, day.month, day.day, hour, tzinfo=timezone.utc)
+    return CalendarEvent(summary, start, None, location, False)
+
+
+def _today_tomorrow_block():
+    """today = casual gym (A), tomorrow = a wedding (B). occasion/formality are
+    TODAY's derived default, exactly as assemble_calendar builds it."""
+    today = datetime.now(timezone.utc).date()
+    tomorrow = today + timedelta(days=1)
+    events = [_ev_on(today, "Gym session"), _ev_on(tomorrow, "Cousin's wedding")]
+    today_ctx = derive_dress_context([events[0]])
+    return CalendarBlock(connected=True, events=events,
+                         occasion=today_ctx.occasion,
+                         formality_target=today_ctx.formality_target), today, tomorrow
+
+
+def test_prompt_text_labels_every_day():
+    block, today, tomorrow = _today_tomorrow_block()
+    text = block.to_prompt_text()
+    assert "(today)" in text and "(tomorrow)" in text
+    assert f"{today:%a %b} {today.day}" in text
+    assert f"{tomorrow:%a %b} {tomorrow.day}" in text
+    # both events carried, each under its own day
+    assert "Gym session" in text and "Cousin's wedding" in text
+    # today's derived line reflects today's (casual) event, not tomorrow's wedding
+    assert "5/5" not in text
+
+
+def test_dress_context_for_targets_named_day():
+    block, today, tomorrow = _today_tomorrow_block()
+    # tomorrow → the wedding (formality 5), NOT today's gym
+    tmr = block.dress_context_for("tomorrow")
+    assert tmr.formality_target == 5 and tmr.occasion == "a formal event"
+    # ambiguous → today's gym default
+    default = block.dress_context_for(None)
+    assert default.formality_target == 1
+
+
+def test_compose_outfit_tomorrow_uses_tomorrows_events(db, user1, monkeypatch):
+    import app.services.stylist.tools as tools_mod
+    captured = {}
+
+    def fake_compose(db_, uid, profile, **kw):
+        captured.update(kw)
+        from app.services.stylist.composer import ComposedOutfit
+        return ComposedOutfit()
+
+    monkeypatch.setattr(tools_mod, "compose_outfit", fake_compose)
+    monkeypatch.setattr(tools_mod, "forecast_for_facts", lambda facts: None)
+
+    block, _today, _tomorrow = _today_tomorrow_block()
+    result = dispatch_tool(_ctx(db, user1, calendar=block),
+                           "compose_outfit", {"target_day": "tomorrow"})
+    # occasion/formality come from TOMORROW's wedding (5), not today's gym (1)
+    assert captured["formality_target"] == 5
+    assert captured["occasion"] == "a formal event"
+    assert result["calendar"]["for_day"] == "tomorrow"
+
+
+def test_resolve_target_date():
+    today = date(2026, 7, 8)  # a Wednesday
+    assert resolve_target_date("today", today=today) == today
+    assert resolve_target_date("tomorrow", today=today) == date(2026, 7, 9)
+    assert resolve_target_date("2026-07-15", today=today) == date(2026, 7, 15)
+    assert resolve_target_date("friday", today=today) == date(2026, 7, 10)
+    assert resolve_target_date("wednesday", today=today) == today  # same-day weekday
+    assert resolve_target_date("someday", today=today) is None
+    assert resolve_target_date(None, today=today) is None
