@@ -129,6 +129,9 @@ class ComposeOutfitArgs(BaseModel):
     formality: Optional[int] = Field(None, ge=1, le=5)
     warmth: Optional[int] = Field(None, ge=1, le=3)
     season: Optional[str] = Field(None, max_length=20)
+    # Which day the outfit is for, so a calendar-derived occasion comes from THAT
+    # day's events (not today's). ISO date, 'today'/'tomorrow', or a weekday name.
+    target_day: Optional[str] = Field(None, max_length=20)
     anchor_item_ids: Optional[List[str]] = Field(None, max_length=6)
     exclude_item_ids: Optional[List[str]] = Field(None, max_length=12)
 
@@ -326,28 +329,32 @@ def _tool_compose_outfit(ctx: ToolContext, args: ComposeOutfitArgs) -> Dict[str,
             weather_note = forecast.to_public_dict()
 
     # Calendar-aware occasion/formality: when the model didn't specify them, fill
-    # from today's schedule (derived server-side in assemble_calendar). Explicit
-    # model values always win. Titles are never persisted — only the derived
-    # occasion/formality surface here.
+    # from the schedule for the day the request targets (derived server-side).
+    # target_day (tomorrow / a named weekday) pulls the occasion from THAT day's
+    # events; ambiguous → today. Explicit model values always win. Titles are
+    # never persisted — only the derived occasion/formality surface here.
     occasion = args.occasion
     formality_target = args.formality
     calendar_note: Optional[Dict[str, Any]] = None
     cal = ctx.calendar
     if cal is not None and getattr(cal, "available", False):
+        dctx = cal.dress_context_for(args.target_day)
         derived = False
-        if occasion is None and cal.occasion:
-            occasion = cal.occasion
+        if occasion is None and dctx.occasion:
+            occasion = dctx.occasion
             derived = True
-        if formality_target is None and cal.formality_target is not None:
-            formality_target = cal.formality_target
+        if formality_target is None and dctx.formality_target is not None:
+            formality_target = dctx.formality_target
             derived = True
         # Only surface a calendar note when the calendar ACTUALLY contributed —
         # an explicit occasion/formality from the model suppresses it.
         if derived:
             calendar_note = {
-                "derived_occasion": cal.occasion,
-                "derived_formality": cal.formality_target,
+                "derived_occasion": dctx.occasion,
+                "derived_formality": dctx.formality_target,
             }
+            if args.target_day:
+                calendar_note["for_day"] = args.target_day
 
     # Ownership choke point: report unresolvable anchors instead of guessing.
     owned_anchors = get_owned_items(ctx.db, ctx.user_id, anchor_ids)
@@ -596,7 +603,9 @@ def tool_declarations() -> List[Dict[str, Any]]:
                 "it is auto-derived from the user's live local weather (and the "
                 "result carries a `weather` block you can reference); pass warmth "
                 "explicitly only to override that (e.g. an indoor event or a trip "
-                "elsewhere)."
+                "elsewhere). When the user asks about a specific day (e.g. "
+                "\"tomorrow\", \"Friday\"), pass target_day so the occasion is "
+                "derived from THAT day's calendar events instead of today's."
             ),
             "parameters": {
                 "type": "object",
@@ -605,6 +614,12 @@ def tool_declarations() -> List[Dict[str, Any]]:
                     "formality": {"type": "integer"},
                     "warmth": {"type": "integer"},
                     "season": {"type": "string"},
+                    "target_day": {
+                        "type": "string",
+                        "description": "Day the outfit is for: an ISO date "
+                        "(YYYY-MM-DD), 'today', 'tomorrow', or a weekday name. "
+                        "Drives which day's calendar events set the occasion.",
+                    },
                     "anchor_item_ids": {"type": "array", "items": {"type": "string"}},
                     "exclude_item_ids": {"type": "array", "items": {"type": "string"}},
                 },

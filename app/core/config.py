@@ -571,6 +571,12 @@ class Settings(BaseSettings):
     CALENDAR_ENABLED: bool = True
     # How many of today's upcoming events the stylist context + Home tile read.
     CALENDAR_MAX_EVENTS: int = 6
+    # Rolling window (in days, incl. today) the STYLIST context reads so it can
+    # answer "what should I wear tomorrow / on Friday?" — every event is date +
+    # weekday tagged in the prompt so the model never guesses which day it's on.
+    # Still a LIVE per-request fetch; no titles persisted. The Home tile stays
+    # today-only (GET /calendar/today is unaffected by this).
+    CALENDAR_CONTEXT_DAYS: int = 7
     # Short-lived, per-user, IN-PROCESS cache for GET /calendar/today so rapid
     # Home re-mounts don't re-hit Google every time. EPHEMERAL memory only — no
     # DB storage, no event titles persisted (the no-titles-in-DB rule stands).
