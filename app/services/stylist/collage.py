@@ -366,7 +366,7 @@ def get_or_create_outfit_collage(
 # Today's Look GRID variant (Wave: Today's Look)
 # ---------------------------------------------------------------------------
 # A DIFFERENT card from the editorial lookbook above: every item of the day's
-# outfit knocked out on ONE PURE-WHITE field, equal cells, side by side — no
+# outfit knocked out on ONE warm off-white field, equal cells, side by side — no
 # hero/finishing bands, no title band. It reuses the same knockout + placement
 # spine (_normalize_item / _place) and the same content-addressed store, so it
 # inherits the dedup and the "never break compose" failure posture.
@@ -375,14 +375,16 @@ def get_or_create_outfit_collage(
 #   * every outfit slot gets a cell — an item WITHOUT a usable image renders a
 #     neutral placeholder tile, it is NEVER skipped (so the grid always mirrors
 #     the composed outfit one-to-one);
-#   * the background is literally (255,255,255), not the porcelain field.
+#   * the background is the shared porcelain off-white (_CANVAS, #FAF9F7) — the
+#     same field the editorial card knocks items out onto (grid-v2; grid-v1 was
+#     pure white), so cutouts sit seamlessly rather than on a clinical white.
 # ===========================================================================
-_GRID_LAYOUT_VERSION = "grid-v1"
+_GRID_LAYOUT_VERSION = "grid-v2"
 _GRID_W = 1080
 _GRID_PAD = 48
 _GRID_GUTTER = 24
 _GRID_CELL_H = 520
-_GRID_BG = (255, 255, 255)      # pure white, per spec
+_GRID_BG = _CANVAS              # warm porcelain off-white (#FAF9F7), shared with lookbook-v2
 _GRID_PLACEHOLDER = (238, 236, 232)  # neutral tile for a missing item image
 _GRID_PLACEHOLDER_FILL = 0.84   # placeholder panel size as fraction of its cell
 

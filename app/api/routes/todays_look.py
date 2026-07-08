@@ -41,6 +41,7 @@ from app.dependencies import get_current_user
 from app.models import ClothingItem, SavedOutfit, TodaysLookCache, User
 from app.services.events_service import EventValidationError, log_event
 from app.services.stylist import outfit_feedback as credit
+from app.services.stylist.collage import _GRID_LAYOUT_VERSION
 from app.services.stylist.limits import RateLimited, check_rate_limit
 from app.services.stylist.profile import assemble_profile
 from app.services.stylist.retrieval import get_owned_items
@@ -132,7 +133,13 @@ def _closet_signature(db: Session, user_id: UUID) -> str:
 def _signature(
     bucket: str, warmth: Optional[int], occasion: Optional[str], closet_sig: str
 ) -> str:
-    raw = "|".join([bucket, str(warmth), occasion or "", closet_sig])
+    # The collage layout version is part of the signature so a renderer change
+    # (e.g. grid-v1 white bg -> grid-v2 porcelain) invalidates every cached row
+    # once — a stale collage URL can never survive a bg/layout bump on unchanged
+    # weather/occasion/closet factors.
+    raw = "|".join(
+        [_GRID_LAYOUT_VERSION, bucket, str(warmth), occasion or "", closet_sig]
+    )
     return hashlib.sha256(raw.encode()).hexdigest()
 
 

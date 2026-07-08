@@ -305,6 +305,30 @@ def test_cache_hit_returns_identical_without_recompute(client, db, user1, tok1):
     assert db.query(TodaysLookCache).filter_by(user_id=user1.id).count() == 1
 
 
+def test_grid_collage_background_is_porcelain():
+    # grid-v2: warm off-white, reusing the shared lookbook constant (not pure white).
+    assert collage_mod._GRID_BG == collage_mod._CANVAS == (250, 249, 247)
+    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v2"
+
+
+def test_collage_version_bump_invalidates_cache(client, db, user1, tok1, monkeypatch):
+    # The collage layout version is folded into factor_signature, so a bg/layout
+    # bump forces a one-time recompute even when weather/occasion/closet are
+    # unchanged — a stale collage URL can never persist.
+    import app.api.routes.todays_look as route
+
+    _full_closet(db, user1)
+    client.get("/todays-look", headers=_auth(tok1))  # miss -> compose + cache
+    assert db.query(StyleEvent).filter_by(
+        user_id=user1.id, event_type="outfit_shown").count() == 1
+
+    # Simulate the cached row having been rendered under a DIFFERENT grid version.
+    monkeypatch.setattr(route, "_GRID_LAYOUT_VERSION", "grid-vOLD")
+    client.get("/todays-look", headers=_auth(tok1))  # signature differs -> recompute
+    assert db.query(StyleEvent).filter_by(
+        user_id=user1.id, event_type="outfit_shown").count() == 2
+
+
 def test_cache_invalidates_on_closet_change(client, db, user1, tok1):
     _full_closet(db, user1)
     client.get("/todays-look", headers=_auth(tok1))
