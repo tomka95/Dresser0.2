@@ -21,6 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.dependencies import get_current_user, get_db
 from app.gmail_closet.fetch_service import ingest_background
 from app.gmail_closet.review_service import (
@@ -28,6 +29,7 @@ from app.gmail_closet.review_service import (
     confirm_candidates,
     list_pending_candidates,
 )
+from app.platform.jobs import enqueue
 from app.platform.usage import get_user_cost_summary
 from app.models import GoogleAccount, IngestRun, User
 from app.services.events_service import EventValidationError, log_event
@@ -223,16 +225,33 @@ def start_ingest(
     sync_id = uuid.uuid4()
     run = IngestRun(sync_id=sync_id, user_id=current_user.id, status="running")
     db.add(run)
-    db.commit()
 
-    # Starlette routes sync BackgroundTasks through run_in_threadpool — safe to block.
-    background_tasks.add_task(
-        ingest_background,
-        str(current_user.id),
-        str(sync_id),
-    )
+    # Durable-queue cutover (P3.8/R1), read ONCE here. Flag OFF -> the legacy
+    # BackgroundTasks path, byte-identical to before. Flag ON -> enqueue a jobs
+    # row in the SAME transaction as the IngestRun (transactional enqueue: the run
+    # and its owning job commit atomically), and let the worker do the sync.
+    if settings.JOBS_GMAIL_INGEST_ENABLED:
+        job = enqueue(
+            db,
+            type="gmail_ingest",
+            user_id=current_user.id,
+            payload={"user_id": str(current_user.id), "sync_id": str(sync_id)},
+            max_attempts=settings.JOBS_MAX_ATTEMPTS,
+        )
+        run.job_id = job.id
+        db.commit()
+        logger.info("sync_id=%s: ingest enqueued job=%s for user=%s",
+                    sync_id, job.id, current_user.id)
+    else:
+        db.commit()
+        # Starlette routes sync BackgroundTasks through run_in_threadpool — safe to block.
+        background_tasks.add_task(
+            ingest_background,
+            str(current_user.id),
+            str(sync_id),
+        )
+        logger.info("sync_id=%s: ingest scheduled for user=%s", sync_id, current_user.id)
 
-    logger.info("sync_id=%s: ingest scheduled for user=%s", sync_id, current_user.id)
     return StartIngestResponse(sync_id=str(sync_id))
 
 

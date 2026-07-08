@@ -42,7 +42,7 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from uuid import UUID
 
 import httpx
@@ -159,8 +159,14 @@ def _resolve_targets(
     search_budget: SearchBudget,
     usage: Optional[UsageAccumulator],
     stats: ImageFillStats,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> None:
-    """Fill image_url/image_status for ``targets`` in place. Cache-first, then slow."""
+    """Fill image_url/image_status for ``targets`` in place. Cache-first, then slow.
+
+    ``should_cancel`` is checked before each SLOW source-email tier (the minutes-
+    long og:image / feed / search work). On cancel the loop stops and leaves the
+    remaining targets 'pending' — identical to the budget-exhausted path, so a
+    later run's self-heal fills them. Default None -> never cancels."""
     if not targets:
         return
 
@@ -191,6 +197,11 @@ def _resolve_targets(
 
     # --- Pass 2: SLOW tiers per source email (og:image / feed / search) ----------
     for msg_id, group in by_msg.items():
+        if should_cancel is not None and should_cancel():
+            # Graceful worker shutdown: stop promptly, leave the rest 'pending'
+            # (same as budget-exhausted) so a later self-heal run fills them.
+            stats.budget_stopped = True
+            break
         if fetch_budget.remaining <= 0:
             stats.budget_stopped = True
             break  # leave the rest 'pending' for a later run (NOT 'placeholder')
@@ -275,6 +286,7 @@ def run_image_fill(
     include_confirmed: bool = True,
     candidate_limit: Optional[int] = None,
     confirmed_limit: Optional[int] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> ImageFillStats:
     """Background image fill + self-heal for ONE user. Never raises (background tail).
 
@@ -375,6 +387,7 @@ def run_image_fill(
                 user_id=user_id, token=token, http=http, storage_client=storage_client,
                 cache=cache, verify_budget=verify_budget, fetch_budget=fetch_budget,
                 search_budget=search_budget, usage=usage, stats=stats,
+                should_cancel=should_cancel,
             )
         finally:
             if client_cm is not None:

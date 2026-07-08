@@ -361,6 +361,39 @@ class Settings(BaseSettings):
     # ENRICHMENT_MAX_LLM_CALLS_PER_RUN). Decay + recompute are pure-Python + free.
     DISTILL_MAX_NARRATIVE_CALLS_PER_RUN: int = 1000
 
+    # --- Durable job queue (P3.8, ARCHITECTURE_AUDIT R1, Wave 1) ------------
+    # A Postgres-native durable queue (jobs table, claimed via FOR UPDATE SKIP
+    # LOCKED, reclaimed after a crash by a stale-lock sweep) replaces the
+    # process-bound BackgroundTasks/daemon-thread dispatch for background work.
+    # Same "the DB is the one shared, durable store" posture as the chat rate
+    # limiter above -- no broker, no Redis. The worker runs as a SECOND long-lived
+    # process: `python -m app.worker`. See app/platform/jobs/ + app/worker.py.
+    #
+    # PER-TYPE cutover flags, default OFF -> byte-identical to today (routes keep
+    # calling background_tasks.add_task). Flip ON -> the route enqueues a jobs row
+    # (transactionally, with the IngestRun) and the worker does the work. The flag
+    # is read ONCE at request/dispatch time, so a sync already running in a
+    # threadpool thread when the flag flips finishes there untouched -- no drain,
+    # no in-flight breakage. Only the two already-idempotent jobs are wired in
+    # Wave 1; enrichment + distill are Wave 2.
+    JOBS_GMAIL_INGEST_ENABLED: bool = False
+    JOBS_PHOTO_GENERATION_ENABLED: bool = False
+
+    # Worker loop tuning (only consulted by app/worker.py; inert with flags OFF).
+    JOBS_POLL_INTERVAL_SECONDS: float = 2.0    # idle sleep between empty claims
+    # Stale-lock threshold: a 'running' job whose locked_at is older than this is
+    # assumed crashed and reclaimed. MUST exceed the worst-case healthy runtime of
+    # the longest job (gmail_ingest runs minutes) or a slow-but-healthy sync gets
+    # falsely reclaimed. Generous by default; a per-job heartbeat (Wave 2) is the
+    # way to tighten crash-detection latency without this tradeoff.
+    JOBS_STALE_SECONDS: float = 1800.0         # 30 min
+    JOBS_MAX_ATTEMPTS: int = 3                 # default retry ceiling per job
+    JOBS_RETRY_BASE_SECONDS: float = 2.0       # exp backoff base
+    JOBS_RETRY_MAX_SECONDS: float = 60.0       # exp backoff cap
+    # Worker identity stamped into jobs.locked_by (observability only). Defaults to
+    # the hostname when unset (resolved in app/worker.py).
+    JOBS_WORKER_ID: Optional[str] = None
+
     # --- Shopping feed: Stage-1 ranker + wardrobe-gap job (Wave F2) ---------
     # The feed scores each product with an INTERPRETABLE linear model (no learned
     # weights). All coefficients live HERE, never inlined in the ranker, so a weight

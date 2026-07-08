@@ -347,6 +347,13 @@ class IngestRun(Base):
 
     user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
+    # The durable job that owns this run (P3.8 / R1). Nullable + ON DELETE SET
+    # NULL: NULL for every pre-0026 run and for runs dispatched via the legacy
+    # BackgroundTasks path (flags OFF). When set, the reclaim sweep can flip a
+    # stuck 'running' status to 'error' after its owning job dies — so /status
+    # stops lying after a worker crash. Owned by migration 0026.
+    job_id = Column(GUID(), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+
     status = Column(Text, nullable=False, default="running")
 
     # Ingestion source for this run: 'gmail' (default) | 'photo'. The photo route sets

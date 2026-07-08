@@ -58,6 +58,7 @@ from app.models.stylist import (
 from app.models.ranking import Product, ProductEmbedding, UserWardrobeGap
 from app.models.monetization import AffiliateConversion, ProductClick
 from app.models.ops import Waitlist, WeatherCache
+from app.models.jobs import Job
 
 __all__ = [
     "Base",
@@ -90,4 +91,5 @@ __all__ = [
     "ChatRateWindow",
     "WeatherCache",
     "Waitlist",
+    "Job",
 ]

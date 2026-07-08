@@ -27,7 +27,7 @@ import uuid as _uuid_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID
 
 import httpx
@@ -337,6 +337,7 @@ def run_extraction_sync(
     user_id: UUID,
     db,
     sync_id: Optional[UUID] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> ExtractionStats:
     """Run one extraction pass for a user. Creates its own IngestRun (extraction run).
 
@@ -344,6 +345,12 @@ def run_extraction_sync(
     body, extracts, gates on clothing, stages candidates, and flips the status to
     'extracted'. ingest_runs.extracted_count is set to the number of staged
     candidates. Idempotent: re-running finds no status='fetched' rows left.
+
+    ``should_cancel``: checked at each extraction-batch boundary. On cancel the
+    loop stops promptly, the run is left 'running' (never finalized 'completed'),
+    and status='cancelled' is returned. Already-extracted messages are committed
+    incrementally and flipped to 'extracted', so a resumed run re-extracts only
+    what's left. Default None -> never cancels (legacy path unaffected).
     """
     t0 = time.time()
 
@@ -422,7 +429,15 @@ def run_extraction_sync(
                 max_keepalive_connections=_MAX_CONCURRENT,
             )
         ) as http:
+            cancelled = False
             for batch_start in range(0, len(message_ids), _BATCH_SIZE):
+                if should_cancel is not None and should_cancel():
+                    logger.info(
+                        "sync_id=%s: cancellation requested — stopping extraction at %d/%d",
+                        sync_id, batch_start, len(message_ids),
+                    )
+                    cancelled = True
+                    break
                 batch = message_ids[batch_start : batch_start + _BATCH_SIZE]
                 n_workers = min(_MAX_CONCURRENT, len(batch))
 
@@ -507,6 +522,22 @@ def run_extraction_sync(
                 )
 
         stats.candidates_staged = len(seen_keys)
+
+        # Cooperative cancel: leave the run 'running' (resumable) and report
+        # 'cancelled'. Already-extracted messages were committed + marked
+        # 'extracted' per batch, so a resumed run re-extracts only the remainder.
+        # Record the partial (real) cost best-effort before returning.
+        if cancelled:
+            record_extraction_usage(
+                db, sync_id,
+                input_tokens=stats.input_tokens,
+                output_tokens=stats.output_tokens,
+                cost_usd=stats.est_cost_realistic,
+            )
+            stats.status = "cancelled"
+            stats.elapsed = time.time() - t0
+            return stats
+
         # Images are no longer resolved during extraction (the background fill owns them),
         # so the images_* stats stay 0 here. The real Gemini extraction COST is recorded
         # onto the run below.

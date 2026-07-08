@@ -24,7 +24,7 @@ import uuid as _uuid_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, NamedTuple, Optional, Set, Tuple
+from typing import Callable, List, NamedTuple, Optional, Set, Tuple
 from uuid import UUID
 
 import httpx
@@ -295,6 +295,7 @@ def _run_ingest_core(
     sync_id: UUID,
     db: Session,
     finalize: bool = True,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> IngestStats:
     """List → skip-known → fetch → Tier-1 filter → persist → return IngestStats.
 
@@ -305,6 +306,13 @@ def _run_ingest_core(
     the extraction phase onto the SAME run (the full background pipeline). The
     returned IngestStats.status is still 'completed' to report the fetch phase
     outcome. Errors are always terminal regardless of finalize.
+
+    ``should_cancel``: cooperative-cancellation probe checked at each fetch-batch
+    boundary. When it returns True the loop stops promptly (within one batch),
+    leaves the run 'running' (never finalized), and returns status='cancelled'.
+    Per-batch commits mean partial progress is already durable and idempotent, so
+    a restarted worker resumes exactly-once. Default None -> never cancels
+    (the legacy BackgroundTasks path is unaffected).
     """
     t0 = time.time()
 
@@ -387,11 +395,19 @@ def _run_ingest_core(
             fetched_count = 0   # passed Tier-1
             filtered_out = 0    # failed Tier-1
             error_count = 0     # 404 / max-retries
+            cancelled = False
 
             # ----------------------------------------------------------------
             # Phase 3: fetch + Tier-1 filter in concurrent batches of _BATCH_SIZE
             # ----------------------------------------------------------------
             for batch_start in range(0, len(to_fetch), _BATCH_SIZE):
+                if should_cancel is not None and should_cancel():
+                    logger.info(
+                        "sync_id=%s: cancellation requested — stopping fetch at %d/%d",
+                        sync_id, batch_start, len(to_fetch),
+                    )
+                    cancelled = True
+                    break
                 batch = to_fetch[batch_start : batch_start + _BATCH_SIZE]
                 n_workers = min(_MAX_CONCURRENT, len(batch))
 
@@ -441,6 +457,17 @@ def _run_ingest_core(
                     "sync_id=%s: %d%% — fetched=%d filtered_out=%d errors=%d",
                     sync_id, pct, fetched_count, filtered_out, error_count,
                 )
+
+        # Cooperative cancel: leave the run 'running' (resumable) and report
+        # 'cancelled' so run_full_ingest stops before extraction. Partial fetch
+        # progress is already committed per batch and idempotency-skipped on replay.
+        if cancelled:
+            return IngestStats(
+                sync_id=sync_id, status="cancelled",
+                total_listed=len(all_ids), total_estimate=estimate,
+                skipped=skipped, fetched=fetched_count, filtered=filtered_out,
+                errors=error_count, elapsed=time.time() - t0,
+            )
 
         # Finalize the run only when this fetch is the whole job. When chained
         # before extraction (finalize=False) the run stays 'running' so the
@@ -496,6 +523,7 @@ def run_ingest_sync(
     db: Session,
     sync_id: Optional[UUID] = None,
     finalize: bool = True,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> IngestStats:
     """Create IngestRun (if needed) + run full sync + return IngestStats.
 
@@ -527,10 +555,16 @@ def run_ingest_sync(
         sync_id=sync_id,
         db=db,
         finalize=finalize,
+        should_cancel=should_cancel,
     )
 
 
-def run_full_ingest(user_id: UUID, db: Session, sync_id: UUID) -> None:
+def run_full_ingest(
+    user_id: UUID,
+    db: Session,
+    sync_id: UUID,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> None:
     """Run the COMPLETE pipeline on one sync_id: fetch → Tier-1 filter → extract → stage.
 
     This is the background job behind POST /gmail/ingest/start. It chains the two
@@ -551,17 +585,31 @@ def run_full_ingest(user_id: UUID, db: Session, sync_id: UUID) -> None:
 
     Phase A errors are terminal (the run is already marked 'error') and skip phase B/C.
     The fetch/filter/extract logic itself is unchanged — this only sequences them.
+
+    ``should_cancel`` (cooperative cancellation, used by the durable-job worker on
+    graceful shutdown) is threaded into every phase and checked between them: on
+    cancel each phase stops at a safe boundary leaving the run 'running', and this
+    function returns early WITHOUT marking anything failed — the worker re-queues
+    the job so a restart resumes it exactly-once (all progress is idempotent).
     """
     # Late import: extraction_service imports private helpers from this module, so a
     # module-level import here would be circular.
     from app.gmail_closet.extraction_service import run_extraction_sync
 
-    fetch_stats = run_ingest_sync(user_id=user_id, db=db, sync_id=sync_id, finalize=False)
+    fetch_stats = run_ingest_sync(
+        user_id=user_id, db=db, sync_id=sync_id, finalize=False, should_cancel=should_cancel)
+    if fetch_stats.status == "cancelled":
+        logger.info("sync_id=%s: fetch cancelled — run left 'running', will resume", sync_id)
+        return
     if fetch_stats.status != "completed":
         logger.error("sync_id=%s: fetch phase failed; skipping extraction", sync_id)
         return
+    if should_cancel is not None and should_cancel():
+        logger.info("sync_id=%s: cancelled between fetch and extraction — will resume", sync_id)
+        return
 
-    ext_stats = run_extraction_sync(user_id=user_id, db=db, sync_id=sync_id)
+    ext_stats = run_extraction_sync(
+        user_id=user_id, db=db, sync_id=sync_id, should_cancel=should_cancel)
     logger.info(
         "sync_id=%s: full pipeline done. fetched=%d filtered=%d skipped=%d "
         "fetch_err=%d | emails→llm=%d staged=%d rejected=%d llm_err=%d status=%s",
@@ -573,12 +621,13 @@ def run_full_ingest(user_id: UUID, db: Session, sync_id: UUID) -> None:
 
     # Phase C: background image fill + self-heal. The run is already finalized, so a
     # failure here can NEVER affect the deck; run_image_fill is itself best-effort and
-    # never raises. Skipped only when extraction itself errored.
+    # never raises. Skipped only when extraction itself errored or was cancelled.
     if ext_stats.status != "completed":
         return
     from app.gmail_closet.image_fill_service import run_image_fill
 
-    fill_stats = run_image_fill(user_id=user_id, db=db, sync_id=sync_id)
+    fill_stats = run_image_fill(
+        user_id=user_id, db=db, sync_id=sync_id, should_cancel=should_cancel)
     logger.info(
         "sync_id=%s: image fill done. cache=%d slow=%d exhausted=%d (candidates=%d confirmed=%d)",
         sync_id, fill_stats.cache_filled, fill_stats.slow_filled, fill_stats.exhausted,

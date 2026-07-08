@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Dict, List, Optional
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -40,8 +41,10 @@ from fastapi import (
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.dependencies import get_current_user, get_db
-from app.models import User
+from app.models import IngestRun, User
+from app.platform.jobs import enqueue
 from app.services.events_service import log_event
 from app.photo_closet.ingest_service import (
     PhotoSelection,
@@ -270,13 +273,33 @@ def commit_photo_selection(
     except PhotoSelectionInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Kick the background generation job (own DB session; Starlette threadpool). Gated on
-    # staged>0 to match run_photo_commit's defer condition, so the run is never left
-    # 'running' with no job to finalize it. Returns immediately with sync_id.
+    # Kick the background generation job. Gated on staged>0 to match
+    # run_photo_commit's defer condition, so the run is never left 'running' with no
+    # job to finalize it. Returns immediately with sync_id.
+    #
+    # Durable-queue cutover (P3.8/R1), read ONCE here. Flag OFF -> the legacy
+    # BackgroundTasks path, byte-identical to before. Flag ON -> enqueue a jobs row,
+    # link it onto the (already-committed, deferred) IngestRun, and let the worker
+    # generate. Generation is idempotent (_select_targets excludes ready/failed), so
+    # a retried/reclaimed job never double-generates.
     if will_generate and result.staged > 0:
-        background_tasks.add_task(
-            generate_background, str(current_user.id), result.sync_id,
-        )
+        if settings.JOBS_PHOTO_GENERATION_ENABLED:
+            job = enqueue(
+                db,
+                type="photo_generation",
+                user_id=current_user.id,
+                payload={"user_id": str(current_user.id), "sync_id": result.sync_id},
+                max_attempts=settings.JOBS_MAX_ATTEMPTS,
+            )
+            db.query(IngestRun).filter(
+                IngestRun.sync_id == UUID(result.sync_id)
+            ).update({"job_id": job.id}, synchronize_session=False)
+            db.commit()
+            logger.info("photo sync_id=%s: generation enqueued job=%s", result.sync_id, job.id)
+        else:
+            background_tasks.add_task(
+                generate_background, str(current_user.id), result.sync_id,
+            )
 
     # --- Interaction telemetry (Wave S0 Branch C) ---------------------------
     # Server-derived: the user committed these detected/manual regions from a photo.
