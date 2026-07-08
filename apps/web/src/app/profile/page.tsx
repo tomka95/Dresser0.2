@@ -28,6 +28,7 @@ import { useOutfitsStore } from '@/stores/useOutfitsStore';
 import { AppShell } from '@/components/layout/AppShell';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { GmailConnectCard } from '@/components/profile/GmailConnectCard';
+import { CalendarConnectCard } from '@/components/profile/CalendarConnectCard';
 import { DSAvatar, ErrorState, M, RoundBtn, Spark, Sk, SkCircle } from '@/components/ds';
 
 /* Local Row-style entry — the settings-style list rows on the profile card.
@@ -253,6 +254,11 @@ export default function ProfilePage() {
                 lastSyncAt={user?.gmail_sync_completed_at}
                 itemCount={items.length}
               />
+            </div>
+
+            {/* Google Calendar connection (REAL status) */}
+            <div style={{ marginTop: 12 }}>
+              <CalendarConnectCard />
             </div>
 
             {/* Entry rows — navigation only (toggles live in /settings now). */}

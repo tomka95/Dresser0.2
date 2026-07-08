@@ -42,6 +42,7 @@ from app.services.stylist.persistence import (
     get_or_create_conversation,
     recent_messages,
 )
+from app.services.stylist.calendar import assemble_calendar
 from app.services.stylist.profile import assemble_profile
 from app.services.stylist.retrieval import closet_summary
 from app.services.stylist.rls import rls_scoped_session
@@ -236,7 +237,8 @@ class TurnResult:
     model: str
 
 
-def _system_prompt(profile_block, summary: Dict[str, int], image_count: int) -> str:
+def _system_prompt(profile_block, summary: Dict[str, int], image_count: int,
+                   calendar_block=None) -> str:
     closet_line = (
         ", ".join(f"{count} {cat}" for cat, count in sorted(summary.items()))
         if summary
@@ -246,10 +248,17 @@ def _system_prompt(profile_block, summary: Dict[str, int], image_count: int) -> 
         f"\nThe user attached {image_count} image(s) to this message — use "
         "analyze_image to see them.\n" if image_count else ""
     )
+    # Today's calendar (ephemeral — event titles are read live, never persisted).
+    calendar_note = ""
+    if calendar_block is not None:
+        cal_text = calendar_block.to_prompt_text()
+        if cal_text:
+            calendar_note = f"\n\n{cal_text}"
     return (
         f"{_PERSONA}\n\n"
         f"=== THIS USER ===\n{profile_block.to_prompt_text()}\n\n"
         f"Closet at a glance (counts only — search for actual items): {closet_line}."
+        f"{calendar_note}"
         f"{image_note}"
     )
 
@@ -307,6 +316,12 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
 
         profile_block = assemble_profile(db, request.user_id)
         summary = closet_summary(db, request.user_id)
+        # Today's calendar → per-turn dress context. Reads the connection row on
+        # this RLS-scoped session (enabled by the 0027 GRANT); skipped entirely in
+        # incognito. Fetches event titles live (never persisted).
+        calendar_block = assemble_calendar(
+            db, request.user_id, no_persist=request.no_persist
+        )
 
         # Resolve picker attachments through the ownership choke point; a
         # foreign id simply doesn't resolve.
@@ -354,6 +369,7 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
             db=db,
             user_id=request.user_id,
             profile=profile_block,
+            calendar=calendar_block,
             attachments=list(request.images),
             usage=serper_usage,
             no_persist=request.no_persist,
@@ -392,7 +408,8 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
         t_ctx = time.perf_counter()
         final_text = provider.chat(
             model=model,
-            system_instruction=_system_prompt(profile_block, summary, len(request.images)),
+            system_instruction=_system_prompt(profile_block, summary, len(request.images),
+                                               calendar_block),
             contents=contents,
             tool_declarations=tool_declarations(),
             tool_executor=executor,

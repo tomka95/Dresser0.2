@@ -35,6 +35,7 @@ from app.db import Base, GUID
 from app.models.user import User
 from app.models.closet import ClothingItem, ItemImage
 from app.models.ingestion import (
+    CalendarAccount,
     GoogleAccount,
     IngestCandidate,
     IngestRun,
@@ -66,6 +67,7 @@ __all__ = [
     "User",
     "ClothingItem",
     "ItemImage",
+    "CalendarAccount",
     "GoogleAccount",
     "ProcessedMessage",
     "IngestCandidate",

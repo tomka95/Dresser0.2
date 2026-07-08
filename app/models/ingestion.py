@@ -66,6 +66,49 @@ class GoogleAccount(Base):
     user = relationship("User", back_populates="google_account")
 
 
+class CalendarAccount(Base):
+    """Per-user Google Calendar OAuth token store (calendar.events.readonly).
+
+    Separate from google_accounts on purpose: a distinct OAuth surface (distinct
+    dedicated Google client + scope) gets its own token row, so connecting/
+    disconnecting calendar never touches the Gmail grant. NO calendar content is
+    ever stored here — events are read LIVE per request via CalendarOAuthClient.
+    Only the OAuth tokens live here, ENCRYPTED at rest (AES-256-GCM,
+    app/core/token_crypto); the columns are text holding `v1:` ciphertext.
+
+    RLS (auth.uid() = user_id, 4-verb) + an explicit GRANT to the authenticated
+    role are applied by migration 0027 (RLS is not expressible in the ORM; the
+    GRANT is required because the RLS-scoped agent turn reads this row).
+    """
+
+    __tablename__ = "calendar_accounts"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", name="calendar_accounts_user_id_key"),
+    )
+
+    # Live column is bigint (bigserial). SQLite only auto-increments a plain
+    # INTEGER PRIMARY KEY, so map bigint on Postgres, Integer on the sqlite
+    # dev/test path — keeps metadata matching the migration (bigserial) while
+    # letting create_all() inserts get an id.
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # Stored ENCRYPTED at rest (text columns holding `v1:` ciphertext).
+    access_token = Column(Text, nullable=False)
+
+    refresh_token = Column(Text, nullable=True)
+
+    scope = Column(Text, nullable=True)
+
+    token_expiry = Column(_tstz(), nullable=True)
+
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
+
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 # --- Gmail->closet ingestion (phase 3a) --------------------------------------
 # Foundation tables for the rebuilt ingestion pipeline (3b writes through these).
 # All three carry per-user RLS (auth.uid() = user_id) applied in migration 0006;
