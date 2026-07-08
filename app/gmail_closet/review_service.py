@@ -35,50 +35,13 @@ from sqlalchemy.orm import Session
 from app.gmail_closet.extraction_schema import normalize_currency, normalize_order_date
 from app.gmail_closet.product_image_cache import make_cache_key
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
-from app.services.enrichment import normalize_category
-
-logger = logging.getLogger(__name__)
-
-
-# Candidate core fields -> (attributes_json key, confidence_json['fields'] key). Written
-# with provenance='extracted' at confirm: these came DIRECTLY from the inline extraction
-# LLM reading the receipt/photo. The async enricher fills the rest as 'inferred' and
-# never overwrites these. Seeded on INSERT only (see _upsert_clothing_item).
-_EXTRACTED_ATTR_MAP = (
-    ("category", "category"),
-    ("color_primary", "color"),
-    ("brand", "brand"),
-    ("size", "size"),
+from app.services.closet_canonicalize import (
+    CanonFields,
+    canonicalize_fields,
+    load_user_facts,
 )
 
-
-def _extracted_attributes(cand: IngestCandidate, *, category: Optional[str]) -> Dict[str, Any]:
-    """Build the provenance='extracted' attributes_json seed from a candidate's core fields.
-
-    Values come from the candidate (category already NORMALIZED by the caller); per-field
-    confidence from confidence_json['fields']. Only non-empty fields are recorded. This is
-    a pure reshape of already-extracted data — no LLM, so it stays on the fast confirm path.
-    """
-    cj = cand.confidence_json if isinstance(cand.confidence_json, dict) else {}
-    per_field = cj.get("fields") if isinstance(cj.get("fields"), dict) else {}
-    values = {
-        "category": category,
-        "color_primary": cand.color,
-        "brand": cand.brand,
-        "size": cand.size,
-    }
-    attrs: Dict[str, Any] = {}
-    for attr_key, conf_key in _EXTRACTED_ATTR_MAP:
-        v = values.get(attr_key)
-        if v is None or (isinstance(v, str) and not v.strip()):
-            continue
-        score = per_field.get(conf_key)
-        attrs[attr_key] = {
-            "value": v,
-            "confidence": score if isinstance(score, (int, float)) else None,
-            "provenance": "extracted",
-        }
-    return attrs
+logger = logging.getLogger(__name__)
 
 
 # Fields the swipe UI can flag as weak (null value OR low per-field confidence).
@@ -306,13 +269,23 @@ def _apply_edits(cand: IngestCandidate, edits: Dict[str, Any]) -> None:
 
 
 def _upsert_clothing_item(
-    db: Session, user_id: UUID, cand: IngestCandidate, ga_id: Optional[int]
+    db: Session,
+    user_id: UUID,
+    cand: IngestCandidate,
+    ga_id: Optional[int],
+    user_facts: Optional[Dict[str, Any]] = None,
 ) -> WrittenItem:
     """UPSERT one accepted candidate into clothing_items on UNIQUE(user_id, source_line_key).
 
     ON CONFLICT DO UPDATE refreshes the carried fields (so applied edits land even on
     a re-confirm) and bumps updated_at; it never inserts a duplicate. The RETURNING
     `(xmax = 0)` flag distinguishes a fresh INSERT (true) from a dedup UPDATE (false).
+
+    Every core field passes through the ONE canonicalization chokepoint
+    (app.services.closet_canonicalize) FIRST: category is guaranteed non-null, name is
+    guaranteed descriptive, size defaults from the user's onboarding sizes (facts.sizes,
+    passed as ``user_facts``), and the provenance='extracted' attributes_json seed is
+    built there. Common items resolve with zero LLM calls (pure rules + a size lookup).
     """
     tbl = ClothingItem.__table__
     # Wave 2a: persist merchant onto the closet row (no more display-time join) and
@@ -343,20 +316,35 @@ def _upsert_clothing_item(
         closet_image_url = cand.generated_image_url
     else:
         closet_image_url = cand.image_url
-    # Branch B: fold legacy aliases (shoes->footwear, accessories->accessory) so the
-    # closet data tightens at confirm; 'other'/canonical pass through (the async enricher
-    # resolves 'other' from its chosen subcategory). Seed provenance='extracted'
-    # attributes_json from the core fields — on INSERT only (see on_conflict set_ below),
-    # so a re-confirm never clobbers a row the enricher/user has since enriched/edited.
-    category = normalize_category(cand.category)
-    extracted_attrs = _extracted_attributes(cand, category=category)
+    # THE canonicalization chokepoint. Folds legacy category aliases + guarantees a
+    # non-null category, a descriptive name, and a profile-defaulted size, and builds the
+    # provenance seed (source values -> 'extracted'; derived -> 'inferred'; size default /
+    # 'other' -> 'default'). Seeded on INSERT only (NOT in the on_conflict set_ below), so
+    # a re-confirm never clobbers a row the enricher/user has since enriched/edited.
+    cj = cand.confidence_json if isinstance(cand.confidence_json, dict) else {}
+    per_field = cj.get("fields") if isinstance(cj.get("fields"), dict) else None
+    canon = canonicalize_fields(
+        CanonFields(
+            name=cand.name,
+            category=cand.category,
+            color=cand.color,
+            brand=cand.brand,
+            size=cand.size,
+            merchant=cand.merchant,
+            confidence=per_field if isinstance(per_field, dict) else None,
+        ),
+        user_facts,
+        source_provenance="extracted",
+    )
+    category = canon.category
+    extracted_attrs = canon.attributes
     vals = dict(
         user_id=user_id,
-        name=cand.name,
+        name=canon.name,
         category=category,
-        color_primary=cand.color,
-        brand=cand.brand,
-        size=cand.size,
+        color_primary=canon.color,
+        brand=canon.brand,
+        size=canon.size,
         quantity=cand.quantity or 1,
         unit_price=cand.unit_price,
         currency=cand.currency,
@@ -484,6 +472,10 @@ def confirm_candidates(
     )
     ga_id = account[0] if account else None
 
+    # The user's onboarding sizes (facts.sizes) — loaded ONCE, passed to every upsert so
+    # canonicalize can default an empty size by category. {} when the user has no profile.
+    user_facts = load_user_facts(db, user_id)
+
     result = ConfirmResult()
 
     # --- Accepts: apply edits -> validate -> upsert -> mark accepted ----------
@@ -495,7 +487,7 @@ def confirm_candidates(
             # clothing_items.name is NOT NULL; refuse rather than write a blank item.
             raise ConfirmError(f"candidate {cid}: name is required to accept")
 
-        written = _upsert_clothing_item(db, user_id, cand, ga_id)
+        written = _upsert_clothing_item(db, user_id, cand, ga_id, user_facts)
         result.written.append(written)
         if written.inserted:
             result.inserted_count += 1

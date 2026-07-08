@@ -55,6 +55,9 @@ def _auth(t):
 
 
 def _item(db, user, **kw):
+    # clothing_items.category is NOT NULL (migration 0030); default it so these
+    # event/favorite tests (which don't exercise category) still insert a valid row.
+    kw.setdefault("category", "top")
     it = ClothingItem(user_id=user.id, name=kw.pop("name", "Tee"), **kw)
     db.add(it); db.commit(); db.refresh(it)
     return it

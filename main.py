@@ -31,7 +31,6 @@ from app.api.routes import (
     gmail_oauth,
     onboarding,
     outfit_feedback,
-    outfit_image,
     photo_ingest,
     shop,
     todays_look,
@@ -113,10 +112,6 @@ app.include_router(calendar_oauth.router)
 app.include_router(calendar.router)
 
 app.include_router(monetization_routes.router)
-
-# Authenticated multi-item outfit-image upload (legacy flow; see the router's
-# own docstring for why it's kept separate from photo_ingest).
-app.include_router(outfit_image.router)
 
 
 @app.get("/health")
