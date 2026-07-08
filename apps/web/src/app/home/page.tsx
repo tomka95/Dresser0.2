@@ -105,7 +105,14 @@ export default function HomePage() {
     if (isAuth && !hasFetchedItems) fetchItems();
   }, [isAuth, hasFetchedItems, fetchItems]);
 
-  // Greeting name: backend profile first, session metadata as fallback.
+  // First name straight from the in-memory Supabase session metadata — present
+  // synchronously the moment this (auth-gated) page renders, so the greeting shows the
+  // real name on FIRST paint with no "there" flash. getCurrentUser below only refines it.
+  const sessionMeta = (session?.user?.user_metadata ?? {}) as { full_name?: string; name?: string };
+  const sessionFirstName = (sessionMeta.full_name || sessionMeta.name)?.trim().split(/\s+/)[0] || null;
+
+  // Greeting name: refine with the backend profile (display_name) once it lands. Never
+  // downgrades the synchronous session name to null.
   useEffect(() => {
     if (!isAuth) return;
     let active = true;
@@ -116,8 +123,7 @@ export default function HomePage() {
         if (name) setFirstName(name.trim().split(/\s+/)[0]);
       })
       .catch(() => {
-        const meta = (session?.user?.user_metadata ?? {}) as { full_name?: string };
-        if (active && meta.full_name) setFirstName(meta.full_name.trim().split(/\s+/)[0]);
+        /* session metadata (below) already covers the greeting */
       });
     return () => {
       active = false;
@@ -246,7 +252,7 @@ export default function HomePage() {
               {today}
             </div>
             <h1 className="m-0 mt-1 text-[31px] font-bold tracking-[-0.9px] text-white">
-              Hey, {firstName ?? 'there'}
+              Hey, {firstName ?? sessionFirstName ?? 'there'}
             </h1>
           </div>
           <RoundBtn
