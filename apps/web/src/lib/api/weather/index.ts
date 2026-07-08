@@ -37,20 +37,47 @@ export interface WeatherResponse {
   as_of?: string | null;
 }
 
+/**
+ * Module-level stale-while-revalidate cache (survives client-side navigation,
+ * resets on full reload). Lets Home re-mounts render the tile instantly instead
+ * of showing a skeleton + waiting on the network every time.
+ */
+const WEATHER_TTL_MS = 10 * 60 * 1000; // 10 min
+let _weatherCache: { data: WeatherResponse; ts: number } | null = null;
+
+/** Last cached weather, or null on a cold client. Synchronous — for instant paint. */
+export function getCachedWeather(): WeatherResponse | null {
+  return _weatherCache?.data ?? null;
+}
+
+/** True when the cache exists and is within TTL (skip the network entirely). */
+export function isWeatherFresh(): boolean {
+  return _weatherCache != null && Date.now() - _weatherCache.ts < WEATHER_TTL_MS;
+}
+
 /** Fetch the current user's weather. Returns `{ available: false }` on any
- * failure (auth/network/backend) so callers never need a try/catch to render. */
+ * failure (auth/network/backend) so callers never need a try/catch to render.
+ * Caches only STABLE results (available, or no_location) — a transient
+ * 'unavailable' never overwrites a previously-good cache or pins a failure. */
 export async function getWeather(): Promise<WeatherResponse> {
   const token = await getAccessToken();
   if (!token) return { available: false, reason: 'unavailable' };
 
+  let result: WeatherResponse;
   try {
     const response = await fetch(`${API_BASE_URL}/weather`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!response.ok) return { available: false, reason: 'unavailable' };
-    return (await response.json()) as WeatherResponse;
+    result = response.ok
+      ? ((await response.json()) as WeatherResponse)
+      : { available: false, reason: 'unavailable' };
   } catch {
-    return { available: false, reason: 'unavailable' };
+    result = { available: false, reason: 'unavailable' };
   }
+
+  if (result.available || result.reason === 'no_location') {
+    _weatherCache = { data: result, ts: Date.now() };
+  }
+  return result;
 }

@@ -571,6 +571,10 @@ class Settings(BaseSettings):
     CALENDAR_ENABLED: bool = True
     # How many of today's upcoming events the stylist context + Home tile read.
     CALENDAR_MAX_EVENTS: int = 6
+    # Short-lived, per-user, IN-PROCESS cache for GET /calendar/today so rapid
+    # Home re-mounts don't re-hit Google every time. EPHEMERAL memory only — no
+    # DB storage, no event titles persisted (the no-titles-in-DB rule stands).
+    CALENDAR_TODAY_CACHE_TTL_SECONDS: int = 90
 
     # NOTE: the legacy custom-JWT settings (JWT_SECRET_KEY / JWT_ALGORITHM /
     # JWT_ACCESS_TOKEN_EXPIRE_MINUTES) were REMOVED in the auth-hardening pass.

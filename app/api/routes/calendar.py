@@ -7,7 +7,10 @@ titles are returned to the user's OWN client only and are never stored server-si
 """
 from __future__ import annotations
 
-from typing import List, Optional
+import threading
+import time
+from typing import Dict, List, Optional, Tuple
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -19,6 +22,30 @@ from app.dependencies import get_current_user, get_db
 from app.models import CalendarAccount, User
 
 router = APIRouter(tags=["calendar"])
+
+# EPHEMERAL, in-process, per-user cache for today's events. Purely a fetch-lag
+# fix so rapid Home re-mounts don't re-hit Google every time. Lives in memory for
+# one worker process; NOT persisted to the DB, NOT shared across workers, gone on
+# restart — the "no event titles in the DB" rule is unaffected (this is the same
+# process memory the live response already passes through). Keyed by user id.
+_today_cache: Dict[UUID, Tuple[float, "CalendarTodayResponse"]] = {}
+_today_cache_lock = threading.Lock()
+
+
+def _cache_get(user_id: UUID) -> Optional["CalendarTodayResponse"]:
+    with _today_cache_lock:
+        entry = _today_cache.get(user_id)
+    if entry is None:
+        return None
+    ts, value = entry
+    if time.monotonic() - ts > settings.CALENDAR_TODAY_CACHE_TTL_SECONDS:
+        return None
+    return value
+
+
+def _cache_put(user_id: UUID, value: "CalendarTodayResponse") -> None:
+    with _today_cache_lock:
+        _today_cache[user_id] = (time.monotonic(), value)
 
 
 class CalendarEventOut(BaseModel):
@@ -40,19 +67,28 @@ def calendar_today(
     if not settings.CALENDAR_ENABLED:
         return CalendarTodayResponse(connected=False)
 
+    # Serve a fresh in-process cache hit without touching the DB or Google.
+    cached = _cache_get(current_user.id)
+    if cached is not None:
+        return cached
+
     account = (
         db.query(CalendarAccount)
         .filter(CalendarAccount.user_id == current_user.id)
         .one_or_none()
     )
     if account is None or not account.refresh_token:
+        # Not connected is cheap (no Google call) — don't cache it, so a fresh
+        # connect is reflected on the next mount.
         return CalendarTodayResponse(connected=False)
 
     events = fetch_today_events(account, db)
-    return CalendarTodayResponse(
+    result = CalendarTodayResponse(
         connected=True,
         events=[
             CalendarEventOut(summary=e.summary, start=e.start_label(), location=e.location)
             for e in events
         ],
     )
+    _cache_put(current_user.id, result)  # ephemeral; TTL-bounded
+    return result
