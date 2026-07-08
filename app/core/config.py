@@ -458,6 +458,21 @@ class Settings(BaseSettings):
     # unscoped. Only disable for local Postgres without Supabase roles.
     CHAT_RLS_ENFORCED: bool = True
 
+    # --- Weather context (Open-Meteo; NO API key) --------------------------
+    # Real weather for the stylist, compose_outfit warmth, and the Home tile.
+    # Open-Meteo is free and keyless, so the feature ships ENABLED by default.
+    # The service is a read-through cache over `weather_cache` (service-role
+    # read/write — the table is deny-all under RLS); location comes from the
+    # already-captured style_profiles.facts.location (lat/lon coarsened ~1km).
+    #   WEATHER_API_BASE_URL : override only to self-host or point tests at a stub.
+    #   WEATHER_CACHE_TTL_SECONDS : read-through freshness window (current conditions
+    #                     refresh at most this often per ~1km cell).
+    WEATHER_ENABLED: bool = True
+    WEATHER_PROVIDER: str = "open_meteo"
+    WEATHER_API_BASE_URL: str = "https://api.open-meteo.com/v1/forecast"
+    WEATHER_TIMEOUT_SECONDS: float = 8.0
+    WEATHER_CACHE_TTL_SECONDS: int = 3600  # 1 hour
+
     # --- CORS ---------------------------------------------------------------
     # Comma-separated list of allowed browser origins, parsed by `cors_origins`.
     # The localhost defaults are DEV-ONLY; every shipped environment overrides
@@ -525,6 +540,37 @@ class Settings(BaseSettings):
     # the database, so a DB compromise alone yields only ciphertext. Decryption
     # happens exclusively inside the token-refresh service.
     GMAIL_TOKEN_ENC_KEY: Optional[str] = None
+
+    # --- Calendar-connect OAuth (dedicated "Tailor Calendar" Google client) -----
+    # SEPARATE Google OAuth client used ONLY to obtain a calendar.events.readonly
+    # refresh token. NOT the login client (Supabase owns login) and NOT the Gmail
+    # ingest client — a distinct surface gets a distinct client, mirroring the
+    # Gmail-connect split. The backend always uses CALENDAR_OAUTH_REDIRECT_URI from
+    # env and never honors a caller-supplied redirect_uri (open-redirect defense).
+    CALENDAR_OAUTH_CLIENT_ID: Optional[str] = None
+    CALENDAR_OAUTH_CLIENT_SECRET: Optional[str] = None
+    CALENDAR_OAUTH_REDIRECT_URI: str = "http://localhost:3000/calendar/oauth/callback"
+    # The ONLY scope this client ever requests. Read-only event access — enough to
+    # read "what's on your day" + derive dress-code hints, nothing more (no write,
+    # no calendar-list/settings, no freebusy-only blind spot). Server-fixed.
+    CALENDAR_OAUTH_SCOPE: str = "https://www.googleapis.com/auth/calendar.events.readonly"
+
+    # Secret signing the short-lived OAuth `state` (CSRF) token for the calendar
+    # flow. Independent of the Gmail state secret. The state's `purpose` claim is
+    # 'calendar_oauth_connect' so a Gmail-issued state can NEVER be replayed into
+    # the calendar callback (purpose check rejects it even if secrets matched).
+    CALENDAR_OAUTH_STATE_SECRET: Optional[str] = None
+    CALENDAR_OAUTH_STATE_TTL_SECONDS: int = 600  # consent must complete within 10 min
+
+    # Calendar token at-rest encryption reuses app/core/token_crypto (AES-256-GCM)
+    # and the SAME GMAIL_TOKEN_ENC_KEY — one env-only key, never in the DB. The
+    # per-field AAD ("access_token"/"refresh_token") is unchanged.
+    #
+    # Per-turn stylist context reads calendar events LIVE (never persisted). This
+    # toggles the whole feature; OFF => assemble_calendar/endpoint no-op.
+    CALENDAR_ENABLED: bool = True
+    # How many of today's upcoming events the stylist context + Home tile read.
+    CALENDAR_MAX_EVENTS: int = 6
 
     # NOTE: the legacy custom-JWT settings (JWT_SECRET_KEY / JWT_ALGORITHM /
     # JWT_ACCESS_TOKEN_EXPIRE_MINUTES) were REMOVED in the auth-hardening pass.

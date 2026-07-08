@@ -22,6 +22,8 @@ from app.core.config import settings
 from app.db import check_database_connection
 from app.api.routes import (
     auth_google,
+    calendar,
+    calendar_oauth,
     chat,
     closet,
     events,
@@ -32,6 +34,7 @@ from app.api.routes import (
     outfit_image,
     photo_ingest,
     shop,
+    weather,
 )
 from app.monetization import routes as monetization_routes
 
@@ -96,6 +99,13 @@ app.include_router(outfit_feedback.router)
 
 # Shopping feed (Wave F2: closet-aware Stage-1 ranker -> GET /shop mixed cards)
 app.include_router(shop.router)
+
+# Weather context (Open-Meteo -> read-through weather_cache -> GET /weather)
+app.include_router(weather.router)
+
+# Calendar-connect OAuth (calendar.events.readonly token plumbing) + live reads
+app.include_router(calendar_oauth.router)
+app.include_router(calendar.router)
 
 app.include_router(monetization_routes.router)
 

@@ -40,6 +40,7 @@ from app.services.stylist.retrieval import (
     search_closet_items,
     serialize_item,
 )
+from app.services.weather import extract_location, forecast_for_facts
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,10 @@ class ToolContext:
     profile: ProfileBlock
     attachments: List[ImageAttachment] = field(default_factory=list)
     usage: Any = None                # UsageAccumulator for Serper credits
+    # Per-turn calendar context (CalendarBlock or None). Assembled server-side
+    # like ``profile``; live event titles are ephemeral (never persisted). None
+    # in incognito turns — no calendar is read.
+    calendar: Any = None
     outfit_payloads: List[Dict[str, Any]] = field(default_factory=list)
     tool_log: List[Dict[str, Any]] = field(default_factory=list)
     # Incognito: write-tools (save_outfit, record_preference) become no-ops so
@@ -110,6 +115,12 @@ class ProductSearchArgs(BaseModel):
     query: str = Field(..., min_length=2, max_length=200)
     brand: Optional[str] = Field(None, max_length=80)
     color: Optional[str] = Field(None, max_length=40)
+
+
+class WeatherArgs(BaseModel):
+    # No inputs: the user's location is server-held (facts.location); the model
+    # never names a place, so it can't probe arbitrary coordinates.
+    model_config = ConfigDict(extra="forbid")
 
 
 class ComposeOutfitArgs(BaseModel):
@@ -270,9 +281,73 @@ def _tool_product_search(ctx: ToolContext, args: ProductSearchArgs) -> Dict[str,
     }
 
 
+def _tool_weather(ctx: ToolContext, args: WeatherArgs) -> Dict[str, Any]:
+    """Live weather for the user's stored location (facts.location).
+
+    Fail-soft: returns available=false with a reason the model relays honestly
+    (no location on file, or the provider is unavailable) — never fabricates a
+    forecast. warmth_band (1 hot..3 cold) matches compose_outfit's warmth arg, so
+    the model can pass it straight through when the user asks for a weather-aware
+    outfit."""
+    if extract_location(ctx.profile.facts) is None:
+        return {
+            "available": False,
+            "reason": "no_location",
+            "note": (
+                "No location on file for this user, so I can't check live "
+                "weather. They can set it in onboarding."
+            ),
+        }
+    forecast = forecast_for_facts(ctx.profile.facts)
+    if forecast is None:
+        return {
+            "available": False,
+            "reason": "unavailable",
+            "note": "Live weather is unavailable right now.",
+        }
+    return forecast.to_public_dict()
+
+
 def _tool_compose_outfit(ctx: ToolContext, args: ComposeOutfitArgs) -> Dict[str, Any]:
     anchor_ids = _parse_uuids(args.anchor_item_ids, field_name="anchor_item_ids")
     exclude_ids = _parse_uuids(args.exclude_item_ids, field_name="exclude_item_ids")
+
+    # Weather-aware warmth: when the model did NOT specify a warmth band, derive
+    # it from the user's live local weather (feels-like -> 1 hot..3 cold) and feed
+    # it through the composer's existing warmth_target path. An explicit warmth
+    # from the model always wins (the user may be dressing for elsewhere/indoors).
+    # Fail-soft: no location / weather outage just leaves warmth unconstrained.
+    warmth_target = args.warmth
+    weather_note: Optional[Dict[str, Any]] = None
+    if warmth_target is None:
+        forecast = forecast_for_facts(ctx.profile.facts)
+        if forecast is not None:
+            warmth_target = forecast.warmth_band
+            weather_note = forecast.to_public_dict()
+
+    # Calendar-aware occasion/formality: when the model didn't specify them, fill
+    # from today's schedule (derived server-side in assemble_calendar). Explicit
+    # model values always win. Titles are never persisted — only the derived
+    # occasion/formality surface here.
+    occasion = args.occasion
+    formality_target = args.formality
+    calendar_note: Optional[Dict[str, Any]] = None
+    cal = ctx.calendar
+    if cal is not None and getattr(cal, "available", False):
+        derived = False
+        if occasion is None and cal.occasion:
+            occasion = cal.occasion
+            derived = True
+        if formality_target is None and cal.formality_target is not None:
+            formality_target = cal.formality_target
+            derived = True
+        # Only surface a calendar note when the calendar ACTUALLY contributed —
+        # an explicit occasion/formality from the model suppresses it.
+        if derived:
+            calendar_note = {
+                "derived_occasion": cal.occasion,
+                "derived_formality": cal.formality_target,
+            }
 
     # Ownership choke point: report unresolvable anchors instead of guessing.
     owned_anchors = get_owned_items(ctx.db, ctx.user_id, anchor_ids)
@@ -285,15 +360,23 @@ def _tool_compose_outfit(ctx: ToolContext, args: ComposeOutfitArgs) -> Dict[str,
         ctx.db,
         ctx.user_id,
         ctx.profile,
-        occasion=args.occasion,
-        formality_target=args.formality,
-        warmth_target=args.warmth,
+        occasion=occasion,
+        formality_target=formality_target,
+        warmth_target=warmth_target,
         season=args.season,
         anchor_item_ids=[i.id for i in owned_anchors],
         exclude_item_ids=exclude_ids,
     )
     payload = outfit.to_payload()
     payload["warnings"] = warnings + payload.get("warnings", [])
+    # Surface the raw weather the warmth band came from so the model can explain
+    # the choice ("it's 8°C and drizzling, so I layered up").
+    if weather_note is not None:
+        payload["weather"] = weather_note
+    # Surface the calendar-derived dress context so the model can reference it
+    # ("since you've got the client review, I kept it sharp").
+    if calendar_note is not None:
+        payload["calendar"] = calendar_note
     if payload["slots"]:
         # Lookbook collage (Wave S3): one review image tiled from the outfit's
         # OWN item photos — pure PIL, no generation. Gate on COMPLETENESS (no
@@ -394,6 +477,7 @@ _TOOLS: Dict[str, tuple[type[BaseModel], Callable[[ToolContext, Any], Dict[str, 
     "analyze_image": (AnalyzeImageArgs, _tool_analyze_image),
     "add_photo_to_closet": (AddToClosetArgs, _tool_add_photo_to_closet),
     "product_search": (ProductSearchArgs, _tool_product_search),
+    "weather": (WeatherArgs, _tool_weather),
     "compose_outfit": (ComposeOutfitArgs, _tool_compose_outfit),
     "save_outfit": (SaveOutfitArgs, _tool_save_outfit),
     "record_preference": (RecordPreferenceArgs, _tool_record_preference),
@@ -405,6 +489,7 @@ TOOL_LABELS = {
     "analyze_image": "looking at your photo…",
     "add_photo_to_closet": "adding to your closet…",
     "product_search": "searching the shops…",
+    "weather": "checking the weather…",
     "compose_outfit": "composing an outfit…",
     "save_outfit": "saving your outfit…",
     "record_preference": "noting your taste…",
@@ -482,6 +567,20 @@ def tool_declarations() -> List[Dict[str, Any]]:
             },
         },
         {
+            "name": "weather",
+            "description": (
+                "Get the user's current local weather + today's forecast and a "
+                "warmth band (1 hot - 3 cold) derived from the feels-like "
+                "temperature. Takes NO arguments — it uses the location the user "
+                "saved. Use it when weather is relevant (an outdoor plan, 'what "
+                "should I wear today', dressing for the cold/heat/rain). Returns "
+                "available=false with a reason when the user has no saved location "
+                "or weather can't be fetched — relay that honestly, don't invent a "
+                "forecast. The warmth_band can be passed straight to compose_outfit."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+        {
             "name": "compose_outfit",
             "description": (
                 "Compose a full outfit from the user's OWNED items, honoring the "
@@ -493,7 +592,11 @@ def tool_declarations() -> List[Dict[str, Any]]:
                 "leaves that slot empty and returns sufficient=false plus a gaps "
                 "list. Read those fields and be honest with the user when the "
                 "closet lacks the right pieces — do not present a partial or "
-                "low-confidence result as a finished outfit."
+                "low-confidence result as a finished outfit. If you OMIT warmth, "
+                "it is auto-derived from the user's live local weather (and the "
+                "result carries a `weather` block you can reference); pass warmth "
+                "explicitly only to override that (e.g. an indoor event or a trip "
+                "elsewhere)."
             ),
             "parameters": {
                 "type": "object",

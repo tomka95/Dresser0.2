@@ -18,11 +18,13 @@
  * top-level navigation to /out/{clickId}. No destination URL is ever built here.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { CloudRain, Plus, Sun } from 'lucide-react';
+import { CloudRain, Cloud, Plus, Sun } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { getCurrentUser } from '@/lib/api/auth';
+import { getWeather, type WeatherResponse } from '@/lib/api/weather';
+import { getCalendarToday, type CalendarTodayResponse } from '@/lib/api/calendar';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useOnline } from '@/lib/useOnline';
 import { logEvent } from '@/lib/api/events';
@@ -250,9 +252,9 @@ export default function HomePage() {
           />
         </div>
 
-        {/* Bento: weather + calendar tiles. MOCK — there is no weather/calendar
-            backend, so these are clearly labeled "sample" and never imply live
-            data. The ranked feed below is the REAL /shop surface. */}
+        {/* Bento: weather + calendar tiles — both REAL now (GET /weather, GET
+            /calendar/today), each degrading quietly when unavailable. The ranked
+            feed below is the REAL /shop surface. */}
         {online && !starter && (
           <HomeBentoTiles />
         )}
@@ -622,58 +624,145 @@ function OutfitFeedCard({
   );
 }
 
+/** Real weather tile — self-fetches GET /weather, degrades quietly. */
+function WeatherTile() {
+  const [wx, setWx] = useState<WeatherResponse | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void getWeather().then((r) => {
+      if (alive) {
+        setWx(r);
+        setLoaded(true);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const tile = (children: ReactNode) => (
+    <div style={{ ...M.glass(24), padding: '15px 16px', position: 'relative' }}>{children}</div>
+  );
+
+  // Loading or unavailable → muted placeholder (never fake numbers).
+  if (!loaded) {
+    return tile(<div style={{ color: M.ghost, fontSize: 11.5 }}>Weather…</div>);
+  }
+  if (!wx?.available || !wx.current || !wx.today) {
+    const msg = wx?.reason === 'no_location' ? 'Set your location' : 'Weather unavailable';
+    return tile(
+      <div className="flex items-center gap-2.5">
+        <Cloud size={26} style={{ color: M.ghost }} />
+        <div style={{ color: M.faint, fontSize: 12 }}>{msg}</div>
+      </div>,
+    );
+  }
+
+  const { current, today } = wx;
+  const wet = current.precip_mm > 0 || (today.precip_chance_pct ?? 0) >= 50;
+  const Icon = wet ? CloudRain : Sun;
+  return tile(
+    <>
+      <div className="flex items-center gap-2.5">
+        <Icon size={26} style={{ color: wet ? M.ghost : '#f5d78e' }} />
+        <div>
+          <div className="text-[21px] font-bold tracking-[-0.4px] text-white">
+            {Math.round(current.temp_c)}°
+          </div>
+          <div style={{ color: M.faint, fontSize: 11.5 }}>{current.condition}</div>
+        </div>
+      </div>
+      <div className="mt-2.5 flex items-center gap-1.5" style={{ color: M.faint, fontSize: 11.5 }}>
+        <span>
+          H {Math.round(today.high_c)}° · L {Math.round(today.low_c)}°
+        </span>
+        {today.precip_chance_pct != null && today.precip_chance_pct >= 30 && (
+          <span style={{ color: M.ghost }}>· {today.precip_chance_pct}% rain</span>
+        )}
+      </div>
+    </>,
+  );
+}
+
 /**
- * Bento tiles — weather + calendar. MOCK: Tailor has no weather or calendar
- * backend, so these render fixed sample content and carry a "sample" tag so they
- * never read as live data. They exist for layout fidelity with the F1 bento; wire
- * to real endpoints if/when they exist.
+ * Bento tiles — weather + calendar, both REAL and self-fetching.
+ *
+ * Weather: GET /weather (conditions + today's range + warmth band from the saved
+ * location). Calendar: GET /calendar/today (live events for a connected user).
+ * Each fails soft to a muted placeholder rather than fake data.
  */
 function HomeBentoTiles() {
   return (
     <div className="grid gap-3" style={{ gridTemplateColumns: '1.15fr 1fr', marginTop: 20 }}>
-      {/* Weather (sample) */}
-      <div style={{ ...M.glass(24), padding: '15px 16px', position: 'relative' }}>
-        <span
-          className="absolute uppercase"
-          style={{ top: 10, right: 12, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.1em', color: M.ghost }}
-        >
-          sample
-        </span>
-        <div className="flex items-center gap-2.5">
-          <Sun size={26} style={{ color: '#f5d78e' }} />
-          <div>
-            <div className="text-[21px] font-bold tracking-[-0.4px] text-white">21°</div>
-            <div style={{ color: M.faint, fontSize: 11.5 }}>Clear until 18:00</div>
-          </div>
-        </div>
-        <div className="mt-2.5 flex items-center gap-1.5" style={{ color: M.faint, fontSize: 11.5 }}>
-          <CloudRain size={13} style={{ color: M.ghost }} /> Drizzle after 20:00 — bring a layer
-        </div>
-      </div>
-      {/* Calendar (sample) */}
-      <div style={{ ...M.glass(24), padding: '15px 16px', position: 'relative' }}>
-        <span
-          className="absolute uppercase"
-          style={{ top: 10, right: 12, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.1em', color: M.ghost }}
-        >
-          sample
-        </span>
-        <div
-          className="uppercase"
-          style={{ color: M.ghost, fontSize: 10, fontWeight: 650, letterSpacing: '0.13em' }}
-        >
-          Today
-        </div>
-        <div className="mt-1.5 text-[13.5px] font-semibold text-white" style={{ lineHeight: 1.35 }}>
-          Design review
-          <br />
-          <span style={{ color: M.faint, fontWeight: 450, fontSize: 12 }}>10:00 · office</span>
-        </div>
-        <div className="mt-1.5" style={{ color: M.faint, fontSize: 12 }}>
-          Dinner · 20:30
-        </div>
-      </div>
+      <WeatherTile />
+      <CalendarTile />
     </div>
+  );
+}
+
+/** Real calendar tile — self-fetches GET /calendar/today, degrades quietly. */
+function CalendarTile() {
+  const [data, setData] = useState<CalendarTodayResponse | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void getCalendarToday().then((r) => {
+      if (alive) {
+        setData(r);
+        setLoaded(true);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const shell = (children: ReactNode) => (
+    <div style={{ ...M.glass(24), padding: '15px 16px', position: 'relative' }}>
+      <div
+        className="uppercase"
+        style={{ color: M.ghost, fontSize: 10, fontWeight: 650, letterSpacing: '0.13em' }}
+      >
+        Today
+      </div>
+      {children}
+    </div>
+  );
+
+  if (!loaded) {
+    return shell(<div className="mt-1.5" style={{ color: M.ghost, fontSize: 12 }}>Calendar…</div>);
+  }
+  // Not connected → a quiet invitation (no fake events).
+  if (!data?.connected) {
+    return shell(
+      <div className="mt-1.5" style={{ color: M.faint, fontSize: 12, lineHeight: 1.35 }}>
+        Connect your calendar to dress for your day
+      </div>,
+    );
+  }
+  if (data.events.length === 0) {
+    return shell(<div className="mt-1.5" style={{ color: M.faint, fontSize: 12 }}>Nothing on today</div>);
+  }
+  const [first, ...rest] = data.events;
+  return shell(
+    <>
+      <div className="mt-1.5 text-[13.5px] font-semibold text-white" style={{ lineHeight: 1.35 }}>
+        {first.summary}
+        <br />
+        <span style={{ color: M.faint, fontWeight: 450, fontSize: 12 }}>
+          {first.start}
+          {first.location ? ` · ${first.location}` : ''}
+        </span>
+      </div>
+      {rest.slice(0, 1).map((e, i) => (
+        <div key={i} className="mt-1.5 truncate" style={{ color: M.faint, fontSize: 12 }}>
+          {e.summary} · {e.start}
+        </div>
+      ))}
+    </>,
   );
 }
 
