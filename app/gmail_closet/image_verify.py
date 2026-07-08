@@ -57,6 +57,12 @@ class _VerdictSchema(BaseModel):
     logo_count_ok: bool = True        # no duplicated/extra marks vs the reference count
     logo_placement_ok: bool = True    # mark(s) in the same region as the reference
     logo_identity_ok: bool = True     # same brand/mark, not a different or garbled one
+    # Wave B (Fix 4): a human/model/mannequin (or a worn body part) is visible in the
+    # image. Defaults False so the pre-Wave-B schema/prompt keeps parsing unchanged.
+    # EMAIL single-image pass: surfaced as on_model so the resolver can route an
+    # on-model shot through generation. GENERATED pair pass: a true value FAILS the
+    # candidate outright (the structural "no person in the closet" guarantee).
+    person_present: bool = False
     matches: bool
     score: float          # 0..1 confidence the image IS the expected item
     reason: str           # <= 12 words, no text copied from the image
@@ -78,6 +84,10 @@ class VerifyVerdict:
     model: str
     pattern_ok: bool = True
     logo_text_ok: bool = True
+    # A person/model/mannequin is visible. EMAIL (single-image) pass sets it so the
+    # resolver can route an on-model shot through generation; GENERATED (pair) pass
+    # already folded `not person_present` into ``matches`` before this is returned.
+    person_present: bool = False
     skipped: bool = False
 
 
@@ -127,6 +137,11 @@ _SYSTEM_INSTRUCTION = (
     "off-white~cream~ivory, grey~gray): be LENIENT on shade/lighting, but FALSE for a "
     "clearly different color family (red vs green).\n"
     "- matches: true ONLY if garment_ok AND color_ok.\n"
+    "- person_present: true if ANY human, model, or mannequin — or a worn body part "
+    "(a hand, arm, leg, torso, foot in a shoe) — is visible in the image. A flat "
+    "product/packshot, a ghost-mannequin/invisible-mannequin shot, or a laid-flat "
+    "garment has NO person: person_present=false. This does NOT affect matches (an "
+    "on-model shot of the right garment still matches); it is reported separately.\n"
     "- score: your 0..1 confidence that the image is the expected item.\n"
     "- reason: at most 12 words; do NOT copy any text seen in the image.\n"
     "\n"
@@ -175,9 +190,14 @@ _PAIR_SYSTEM_INSTRUCTION = (
     "violated. Small print illegible in BOTH images is ok. Do NOT perform OCR or "
     "transcription — judge count, placement, shape, and identity of marks, do not "
     "read them.\n"
+    "- person_present: true if the CANDIDATE (Image 2) shows ANY human, model, or "
+    "mannequin, or a worn body part (hand, arm, leg, torso, foot). A clean product "
+    "image has NONE. This is judged ONLY on the candidate, never the reference — the "
+    "reference may legitimately be an on-model or worn photo.\n"
     "- matches: true ONLY if garment_ok AND color_ok AND pattern_ok AND logo_text_ok "
     "AND logo_present_parity AND logo_count_ok AND logo_placement_ok AND "
-    "logo_identity_ok.\n"
+    "logo_identity_ok AND NOT person_present. A candidate with any person/model in "
+    "frame is NEVER a match — the closet shows product-only images.\n"
     "- score: your 0..1 confidence that the candidate faithfully depicts the "
     "reference garment.\n"
     "- reason: at most 12 words; do NOT copy any text seen in the images.\n"
@@ -350,6 +370,9 @@ def verify_image(
         # so matches keeps folding exactly garment_ok AND color_ok AND threshold.
         pattern_ok=True,
         logo_text_ok=True,
+        # Surfaced (does NOT gate matches here) so the email resolver can route an
+        # on-model shot through generation instead of storing a person in the closet.
+        person_present=bool(v.person_present),
     )
 
 
@@ -466,19 +489,25 @@ def verify_generated_image(
     # Recompute the decision in code — never trust the model's raw `matches` alone.
     # The reference image is always present, so (unlike verify_image) color is always
     # judgeable and gets no absent-attribute override.
+    # Wave B (Fix 4): a person/model/mannequin in a GENERATED candidate is an
+    # unconditional fail — this is the structural "no person in the closet"
+    # backstop. Folded into `trusted` here so no generated image with a person can
+    # ever be stored, regardless of how good the fidelity is.
+    person = bool(v.person_present)
     trusted = bool(
         v.matches
         and v.garment_ok
         and v.color_ok
         and v.pattern_ok
         and logo_ok
+        and not person
         and score >= threshold
     )
     logger.info(
         "generated-verify category=%s -> trusted=%s garment_ok=%s color_ok=%s "
-        "pattern_ok=%s logo_ok=%s (parity=%s count=%s place=%s ident=%s raw_logo=%s) "
-        "score=%.2f",
-        category, trusted, v.garment_ok, v.color_ok, v.pattern_ok, logo_ok,
+        "pattern_ok=%s logo_ok=%s person=%s (parity=%s count=%s place=%s ident=%s "
+        "raw_logo=%s) score=%.2f",
+        category, trusted, v.garment_ok, v.color_ok, v.pattern_ok, logo_ok, person,
         v.logo_present_parity, v.logo_count_ok, v.logo_placement_ok,
         v.logo_identity_ok, v.logo_text_ok, score,
     )
@@ -493,6 +522,7 @@ def verify_generated_image(
         # Report the COMPOSITE logo fidelity result (not just the model's overall
         # flag) so downstream + the bake-off's logo_violations reflect fidelity.
         logo_text_ok=logo_ok,
+        person_present=person,
     )
 
 

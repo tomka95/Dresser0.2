@@ -5,7 +5,7 @@ import time
 from typing import ClassVar, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -539,41 +539,58 @@ async def update_closet_item_endpoint(
         raise HTTPException(status_code=500, detail="Failed to update closet item")
 
 
-class RegenerateImageIn(BaseModel):
-    """Regenerate request. ``reason`` is OPTIONAL, untrusted free text ("what was wrong?")
-    that STEERS the generation — sanitized here and fenced again at the prompt layer; it
-    can hint about the garment but never bypass the mandatory verify gate."""
-
-    reason: Optional[str] = Field(
-        None, max_length=500, description="Optional 'what was wrong?' correction"
-    )
-
-
 class RegenerateImageOut(BaseModel):
     status: str            # 'regenerating'
     generationStatus: str  # 'generating'
 
 
+def _store_regenerate_reference(user_id: UUID, sanitized) -> Optional[str]:
+    """Upload a validated reference image to storage; return its URL (or None if storage
+    is down — the regenerate then proceeds without it). Content-addressed dedup."""
+    try:
+        from app.utils.image_blob_store import get_or_upload
+        from app.utils.supabase_storage import SupabaseStorageClient
+
+        sc = SupabaseStorageClient.from_env()
+        return get_or_upload(
+            sanitized.data,
+            lambda: sc.upload_bytes(
+                sanitized.data,
+                folder=f"regenerate_refs/{user_id}",
+                content_type=sanitized.content_type,
+                suffix=sanitized.suffix,
+            ),
+        )
+    except Exception as exc:
+        logger.warning("regenerate reference store failed (%s)", type(exc).__name__)
+        return None
+
+
 @router.post("/{item_id}/regenerate", response_model=RegenerateImageOut, status_code=202)
 async def regenerate_item_image_endpoint(
     item_id: UUID,
-    input_data: RegenerateImageIn,
     background_tasks: BackgroundTasks,
+    reason: Optional[str] = Form(None),
+    reference: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RegenerateImageOut:
-    """Regenerate a photo item's product-card image in the background (optional reason).
+    """Regenerate one item's product image in the background (Wave B / Fix 4). Multipart:
+    an OPTIONAL uploaded ``reference`` image + an OPTIONAL free-text ``reason``.
 
-    JWT-pinned + user-scoped: a foreign or unknown item_id is a 404 (cross-user reject).
-    Only PHOTO items with an existing image are eligible (Gmail cards are real product
-    photos, not model-generated). The current image is KEPT until a new image passes the
-    MANDATORY verify gate (reused via generation_service — never bypassed); on verify-fail
-    the existing image stays. A regenerate COUNTS toward the monthly photo quota (SCRUM-44).
-    """
+    JWT-pinned + user-scoped: a foreign or unknown item_id is a 404. ANY owned item is
+    eligible now — Gmail items and image-less items too (the photo-only gate is lifted):
+    with a reference (uploaded or the current image) it runs reference-conditioned
+    generation; with none it runs text-to-image from the item's attributes. Verify is
+    MANDATORY either way (never bypassed) and generated output must be person-free; the
+    current image is KEPT until a new one passes verify (never blanked). An uploaded
+    reference goes through validate_and_sanitize (magic-byte, EXIF strip, HEIC, size cap).
+    A regenerate COUNTS toward the monthly photo quota (SCRUM-44)."""
     # Late imports keep the module's import graph light + mirror the photo_ingest pattern.
     from app.platform.jobs import enqueue
     from app.photo_closet.generation_service import regenerate_item_background
     from app.photo_closet.quota import record_photo_usage
+    from app.utils.image_validation import ImageValidationError, validate_and_sanitize
 
     item = (
         db.query(ClothingItem)
@@ -586,14 +603,21 @@ async def regenerate_item_image_endpoint(
             status_code=404,
             detail=f"Clothing item {item_id} not found or access denied",
         )
-    if (item.source_type or "gmail") != "photo" or not item.image_url:
-        raise HTTPException(
-            status_code=400,
-            detail="Only photo items with an image can be regenerated.",
-        )
 
-    # Sanitize the reason (defense-in-depth; prompt._steering_clause fences again).
-    reason = " ".join((input_data.reason or "").split())[:500].strip() or None
+    # Sanitize the reason (defense-in-depth; prompt fences it again as untrusted).
+    reason_clean = " ".join((reason or "").split())[:500].strip() or None
+
+    # Optional uploaded reference: MUST pass validate_and_sanitize (no bypass) before it is
+    # stored + handed to the background job as a URL. A 400 on invalid image.
+    reference_url: Optional[str] = None
+    if reference is not None:
+        raw = await reference.read()
+        if raw:
+            try:
+                sanitized = validate_and_sanitize(raw)
+            except ImageValidationError as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid reference image: {exc}")
+            reference_url = _store_regenerate_reference(current_user.id, sanitized)
 
     # Mark 'generating' so the detail page (which polls generationStatus) shows the
     # in-flight state immediately WITHOUT blanking the card — image_url is untouched.
@@ -606,8 +630,10 @@ async def regenerate_item_image_endpoint(
 
     # Dispatch: durable queue when enabled (mirrors the commit path), else BackgroundTasks.
     payload = {"user_id": str(current_user.id), "item_id": str(item.id)}
-    if reason:
-        payload["reason"] = reason
+    if reason_clean:
+        payload["reason"] = reason_clean
+    if reference_url:
+        payload["reference_url"] = reference_url
     if settings.JOBS_PHOTO_GENERATION_ENABLED:
         enqueue(
             db,
@@ -619,7 +645,8 @@ async def regenerate_item_image_endpoint(
         db.commit()
     else:
         background_tasks.add_task(
-            regenerate_item_background, str(current_user.id), str(item.id), reason,
+            regenerate_item_background, str(current_user.id), str(item.id),
+            reason_clean, reference_url,
         )
 
     return RegenerateImageOut(status="regenerating", generationStatus="generating")

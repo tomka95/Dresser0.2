@@ -82,6 +82,30 @@ class _Fetched:
     content_type: str
 
 
+def _route_on_model(item, fetch, storage_client, user_id, gen_budget, verify_budget, usage):
+    """On-model email image -> a clean, person-free product generation (Wave B / Fix 4).
+
+    Lazy import keeps this gmail_closet module free of a top-level provider/services import
+    (and of any gmail_closet<->photo_closet cycle — the shared core lives in the neutral
+    app.services.image_generation layer). Returns a ready GenOutcome, or None on any miss so
+    the caller rejects the source and falls through; the on-model original is never stored."""
+    from app.services.image_generation.generate_core import (
+        generate_from_reference_bytes,
+        generation_armed,
+    )
+
+    if not generation_armed():
+        return None
+    out = generate_from_reference_bytes(
+        reference_bytes=fetch.raw,
+        reference_content_type=fetch.content_type,
+        name=item.name, category=item.category, color=item.color, brand=item.brand,
+        storage_client=storage_client, user_id=user_id,
+        gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
+    )
+    return out if out.outcome == "ready" else None
+
+
 def resolve_item_images(
     *,
     payload: dict,
@@ -97,6 +121,7 @@ def resolve_item_images(
     search_budget=None,
     tiers: Optional[frozenset] = None,
     usage=None,
+    gen_budget=None,
 ) -> List[ResolvedImage]:
     """Resolve one image per item: inline -> email-img -> CACHE -> og:image -> FEED -> SEARCH.
 
@@ -178,6 +203,32 @@ def resolve_item_images(
             )
             if not verdict.matches:
                 return False  # rejected (or skipped) -> try the next source / tier
+
+        # Wave B (Fix 4): ON-MODEL routing. A verified image that shows a person/model
+        # (person_present) is NOT stored as-is — the closet must be product-only. Generate
+        # a clean, person-free product image from THESE bytes and store that instead;
+        # promote it into the shared cache as source_tier='generated' so an identical
+        # mass-market item is generated once ever and served cross-user. Generation runs
+        # ONLY in the background (a gen_budget is supplied by the slow image-fill pass, not
+        # by blocking extraction), so it never delays the deck. On any generation miss we
+        # REJECT this source and fall through — the on-model original is never the fallback.
+        if verdict is not None and getattr(verdict, "person_present", False) and gen_budget is not None:
+            g = _route_on_model(
+                item, fetch, storage_client, user_id, gen_budget, verify_budget, usage,
+            )
+            if g is None:
+                return False
+            results[idx] = ResolvedImage(
+                tier="generated", stored_url=g.url, detail=f"on-model->gen:{domain}"
+            )
+            if ck and g.url:
+                promote_verified(
+                    brand=item.brand, name=item.name, color=item.color,
+                    image_url=g.url, content_sha256=g.content_sha256 or "",
+                    source_tier="generated", source_domain="generation",
+                    verify_score=g.verify_score,
+                )
+            return True
 
         value, _hit = cache.get_or_create(
             upload_key,

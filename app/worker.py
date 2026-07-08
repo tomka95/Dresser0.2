@@ -91,7 +91,9 @@ def _handle_photo_generation(payload: dict, should_cancel: ShouldCancel) -> None
         item_id = payload.get("item_id")
         if item_id:
             run_item_regeneration(
-                user_id, db, UUID(item_id), reason=payload.get("reason"),
+                user_id, db, UUID(item_id),
+                reason=payload.get("reason"),
+                reference_url=payload.get("reference_url"),
             )
             return
         sync_id = UUID(payload["sync_id"])

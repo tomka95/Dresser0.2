@@ -61,6 +61,7 @@ from app.gmail_closet.image_verify import VerifyBudget
 from app.gmail_closet.product_image_cache import lookup_verified, make_cache_key
 from app.gmail_closet.shopping_search import SearchBudget
 from app.platform.usage import UsageAccumulator, record_fill_usage
+from app.services.image_generation.base import GenerationBudget
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,8 @@ class ImageFillStats:
     confirmed_seen: int = 0
     cache_filled: int = 0          # filled by the shared cross-user cache (~0 cost)
     slow_filled: int = 0           # filled by a slow tier (og:image / feed / search)
-    exhausted: int = 0             # slow tiers ran, found nothing -> 'placeholder'
+    generated: int = 0             # Wave B: on-model routed OR t2i-from-attributes -> 'resolved'
+    exhausted: int = 0             # slow tiers ran + generation missed -> 'placeholder'
     fetch_errors: int = 0          # source email could not be re-fetched (left pending)
     budget_stopped: bool = False   # a per-run budget capped the pass (rest left pending)
     tier_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
@@ -145,6 +147,31 @@ def _resolver_item(t: _Target) -> ResolverItem:
 # The fill engine (cache-first, then email-based slow resolve)
 # ---------------------------------------------------------------------------
 
+def _maybe_t2i(t, storage_client, user_id, gen_budget, verify_budget, usage) -> Optional[str]:
+    """Text->image product image from a target's attributes (Wave B / Fix 4).
+
+    The LAST rung of the image fallback ladder — reached only when no source image
+    resolved. Runs ONLY when a gen_budget is supplied (background pass), storage is
+    available, and generation is armed; the image must pass verify_image AND be person-free
+    (enforced in generate_from_text). Returns a stored URL or None. Lazy import keeps this
+    gmail_closet module free of a top-level provider/services import."""
+    if gen_budget is None or storage_client is None:
+        return None
+    from app.services.image_generation.generate_core import (
+        generate_from_text,
+        generation_armed,
+    )
+
+    if not generation_armed():
+        return None
+    out = generate_from_text(
+        name=t.name, category=t.category, color=t.color, brand=t.brand,
+        storage_client=storage_client, user_id=user_id,
+        gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
+    )
+    return out.url if out.outcome == "ready" else None
+
+
 def _resolve_targets(
     db,
     targets: List[_Target],
@@ -160,6 +187,7 @@ def _resolve_targets(
     usage: Optional[UsageAccumulator],
     stats: ImageFillStats,
     should_cancel: Optional[Callable[[], bool]] = None,
+    gen_budget: Optional[GenerationBudget] = None,
 ) -> None:
     """Fill image_url/image_status for ``targets`` in place. Cache-first, then slow.
 
@@ -226,15 +254,30 @@ def _resolve_targets(
             # (inline/email-img/cache/og/feed/search) on the re-fetched email.
             tiers=ALL_TIERS,
             usage=usage,
+            # Wave B: on-model images resolve to a generated product-only card (resolver
+            # tier 'generated'); background-only, so it's passed only from this slow pass.
+            gen_budget=gen_budget,
         )
         for t, r in zip(group, resolved):
             if r.stored_url:
                 t.row.image_url = r.stored_url
                 t.row.image_status = "resolved"
-                stats.slow_filled += 1
+                if r.tier == "generated":
+                    stats.generated += 1
+                else:
+                    stats.slow_filled += 1
                 stats.tier_counts[r.tier] += 1
+                continue
+            # No source image resolved -> generate a product image from attributes (t2i),
+            # verified + person-free, BEFORE falling back to a placeholder.
+            gen_url = _maybe_t2i(t, storage_client, user_id, gen_budget, verify_budget, usage)
+            if gen_url:
+                t.row.image_url = gen_url
+                t.row.image_status = "resolved"
+                stats.generated += 1
+                stats.tier_counts["generated"] += 1
             else:
-                t.row.image_status = "placeholder"  # slow tiers exhausted -> terminal
+                t.row.image_status = "placeholder"  # slow tiers + t2i exhausted -> terminal
                 stats.exhausted += 1
         db.commit()
 
@@ -258,13 +301,26 @@ def _resolve_targets(
                 search_budget=search_budget,
                 tiers=_SOURCELESS_TIERS,
                 usage=usage,
+                gen_budget=gen_budget,
             )
             r = resolved[0]
             if r.stored_url:
                 t.row.image_url = r.stored_url
                 t.row.image_status = "resolved"
-                stats.slow_filled += 1
+                if r.tier == "generated":
+                    stats.generated += 1
+                else:
+                    stats.slow_filled += 1
                 stats.tier_counts[r.tier] += 1
+                db.commit()
+                continue
+            # No source image at all -> t2i from attributes before a placeholder.
+            gen_url = _maybe_t2i(t, storage_client, user_id, gen_budget, verify_budget, usage)
+            if gen_url:
+                t.row.image_url = gen_url
+                t.row.image_status = "resolved"
+                stats.generated += 1
+                stats.tier_counts["generated"] += 1
             else:
                 t.row.image_status = "placeholder"
                 stats.exhausted += 1
@@ -366,6 +422,11 @@ def run_image_fill(
         verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
         fetch_budget = FetchBudget(settings.GMAIL_FETCH_MAX_PER_RUN)
         search_budget = SearchBudget(settings.GMAIL_SEARCH_MAX_PER_RUN)
+        # Wave B (Fix 4): caps generations this pass (on-model routing + t2i fallback),
+        # shared across all targets. Generation is background-only — this budget is what
+        # enables it here (blocking extraction never constructs one), so the deck is never
+        # delayed by a generation call.
+        gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
         # Records the REAL vision-verify tokens + Serper credits this pass spends, for
         # per-sync cost attribution (persisted below when a sync_id is given).
         usage = UsageAccumulator()
@@ -387,7 +448,7 @@ def run_image_fill(
                 user_id=user_id, token=token, http=http, storage_client=storage_client,
                 cache=cache, verify_budget=verify_budget, fetch_budget=fetch_budget,
                 search_budget=search_budget, usage=usage, stats=stats,
-                should_cancel=should_cancel,
+                should_cancel=should_cancel, gen_budget=gen_budget,
             )
         finally:
             if client_cm is not None:

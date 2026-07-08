@@ -43,7 +43,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.gmail_closet.image_verify import VerifyBudget, verify_generated_image
+from app.gmail_closet.image_verify import VerifyBudget, verify_generated_image, verify_image
 from app.platform.usage import UsageAccumulator, record_fill_usage
 from app.models import ClothingItem, IngestCandidate, IngestRun
 from app.photo_closet.dedup import dedup_check
@@ -722,17 +722,23 @@ def run_item_regeneration(
     item_id: UUID,
     *,
     reason: Optional[str] = None,
+    reference_url: Optional[str] = None,
     storage_client=None,
     provider_ladder: Optional[Sequence[str]] = None,
 ) -> RegenOutcome:
-    """Regenerate ONE confirmed photo clothing_item's card. Never raises.
+    """Regenerate ONE clothing_item's product image. Never raises.
 
-    Eligible only for a photo item that already has an image to regenerate FROM. Reuses
-    the exact ladder + mandatory verify gate (via _generate_from_crop), optionally steered
-    by the untrusted ``reason`` (fenced in the prompt). On a verified pass image_url is
-    swapped and generation_status -> 'ready'; on ANY miss the existing image is kept and
-    the item is left 'pending_retry' (a later self-heal sweep may re-attempt, without the
-    reason). user_id-scoped: a foreign item_id is a no-op 'skipped'."""
+    Wave B (Fix 4): ANY owned item is eligible — Gmail items and image-less items too, not
+    just photo-items-with-an-image. Source preference, highest first:
+      1. ``reference_url`` — an uploaded reference image (already validated + stored by the
+         route) → reference-conditioned generation (verify_generated_image, person backstop).
+      2. the item's current ``image_url`` → same reference-conditioned path.
+      3. neither (image-less item, no upload) → text-to-image from the item's attributes
+         (verify_image + mandatory no-person).
+    Optionally steered by the untrusted ``reason`` (fenced in the prompt; never relaxes
+    verify). On a verified pass image_url is set and generation_status -> 'ready'; on ANY
+    miss the existing image is KEPT (never blanked) and the item is left 'pending_retry'.
+    user_id-scoped: a foreign/unknown item_id is a no-op 'skipped'."""
     item = None
     try:
         item = (
@@ -740,7 +746,7 @@ def run_item_regeneration(
             .filter(ClothingItem.id == item_id, ClothingItem.user_id == user_id)
             .first()
         )
-        if item is None or item.source_type != "photo" or not item.image_url:
+        if item is None:
             return RegenOutcome("skipped")
 
         ladder = tuple(provider_ladder or _GENERATION_LADDER)
@@ -750,35 +756,56 @@ def run_item_regeneration(
         verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
         usage = UsageAccumulator()
 
-        r = _generate_from_crop(
-            crop_url=item.image_url,
-            name=item.name,
-            category=item.category,
-            color=item.color_primary,
-            brand=item.brand,
-            storage_client=storage_client,
-            user_id=user_id,
-            ladder=ladder,
-            gen_budget=gen_budget,
-            verify_budget=verify_budget,
-            usage=usage,
-            steering=reason,
-        )
-        if r.url:
-            item.image_url = r.url
+        ref_url = reference_url or item.image_url
+        if ref_url:
+            r = _generate_from_crop(
+                crop_url=ref_url,
+                name=item.name,
+                category=item.category,
+                color=item.color_primary,
+                brand=item.brand,
+                storage_client=storage_client,
+                user_id=user_id,
+                ladder=ladder,
+                gen_budget=gen_budget,
+                verify_budget=verify_budget,
+                usage=usage,
+                steering=reason,
+            )
+            new_url, cost, miss = r.url, r.cost_usd, r.outcome
+        else:
+            # No reference at all -> text-to-image from attributes (verified + person-free).
+            from app.services.image_generation.generate_core import generate_from_text
+
+            g = generate_from_text(
+                name=item.name,
+                category=item.category,
+                color=item.color_primary,
+                brand=item.brand,
+                storage_client=storage_client,
+                user_id=user_id,
+                gen_budget=gen_budget,
+                verify_budget=verify_budget,
+                usage=usage,
+                steering=reason,
+            )
+            new_url, cost, miss = g.url, g.cost_usd, g.outcome
+
+        if new_url:
+            item.image_url = new_url
             item.generation_status = "ready"
             db.commit()
             logger.info(
-                "item regen user=%s item=%s: ready (steered=%s)",
-                user_id, item_id, bool(reason),
+                "item regen user=%s item=%s: ready (steered=%s ref=%s)",
+                user_id, item_id, bool(reason), bool(reference_url),
             )
-            return RegenOutcome("ready", changed=True, cost_usd=r.cost_usd)
+            return RegenOutcome("ready", changed=True, cost_usd=cost)
 
         # Miss (verify fail / provider down / budget / download error): keep the current
-        # image; mark pending_retry so a later self-heal can re-attempt.
+        # image (may be None for an image-less item); mark pending_retry for a later sweep.
         item.generation_status = "pending_retry"
         db.commit()
-        logger.info("item regen user=%s item=%s: held (%s)", user_id, item_id, r.outcome)
+        logger.info("item regen user=%s item=%s: held (%s)", user_id, item_id, miss)
         return RegenOutcome("held")
     except Exception as exc:
         logger.error("run_item_regeneration item=%s: %s", item_id, type(exc).__name__)
@@ -799,16 +826,23 @@ def run_item_regeneration(
 
 
 def regenerate_item_background(
-    user_id_str: str, item_id_str: str, reason: Optional[str] = None
+    user_id_str: str,
+    item_id_str: str,
+    reason: Optional[str] = None,
+    reference_url: Optional[str] = None,
 ) -> None:
     """BackgroundTasks entry point (mirrors generate_background): own DB session, never
     raises. Used when the durable-jobs flag is OFF; the worker path calls
-    run_item_regeneration directly."""
+    run_item_regeneration directly. ``reference_url`` is an optional uploaded reference
+    image (validated + stored by the route) to condition the regeneration on."""
     from app.db import SessionLocal  # late import avoids a module-level import cycle
 
     db = SessionLocal()
     try:
-        run_item_regeneration(UUID(user_id_str), db, UUID(item_id_str), reason=reason)
+        run_item_regeneration(
+            UUID(user_id_str), db, UUID(item_id_str),
+            reason=reason, reference_url=reference_url,
+        )
     except Exception as exc:
         logger.error(
             "regenerate_item_background: %s: %s", type(exc).__name__, exc
