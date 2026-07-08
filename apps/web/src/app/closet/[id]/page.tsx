@@ -135,8 +135,12 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
   const [regenerating, setRegenerating] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
   const [reason, setReason] = useState('');
+  const [refFile, setRefFile] = useState<File | null>(null);
   const preRegenImageRef = React.useRef<string | undefined>(undefined);
-  const canRegenerate = !!imageUrl && generationStatus != null;
+  // Wave B (Fix 4): the photo-only gate is lifted — every item is regenerable (Gmail +
+  // image-less too). With no image the server generates from attributes (t2i); an optional
+  // uploaded reference image steers it.
+  const canRegenerate = true;
 
   // Snapshot of the last-saved server values so Undo can PATCH them back verbatim.
   // Seeded on load; refreshed after every successful save.
@@ -389,8 +393,9 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
     preRegenImageRef.current = imageUrl;
     setReasonOpen(false);
     try {
-      await regenerateItemImage(id, reason.trim() || undefined);
+      await regenerateItemImage(id, reason.trim() || undefined, refFile);
       setReason('');
+      setRefFile(null);
       setGenerationStatus('generating');
       setRegenerating(true);
       pushToast({
@@ -791,9 +796,9 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
       <Sheet open={reasonOpen} onClose={() => setReasonOpen(false)} title="Regenerate image">
         <div style={{ padding: '4px 4px 8px' }}>
           <p style={{ color: M.faint, fontSize: 13, lineHeight: 1.5, margin: '0 0 12px' }}>
-            We&rsquo;ll press a cleaner product shot from your photo. Tell us what was wrong
-            (optional) and we&rsquo;ll try to fix it — your current image stays until the new
-            one passes our quality check.
+            We&rsquo;ll press a cleaner, product-only shot for this item. Tell us what was
+            wrong (optional) or upload a reference image to guide it — your current image
+            stays until the new one passes our quality check.
           </p>
           <textarea
             value={reason}
@@ -811,6 +816,28 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
             }}
             aria-label="What was wrong? (optional)"
           />
+          {/* Optional reference image — the server validates + conditions the new shot on it. */}
+          <div style={{ marginTop: 12 }}>
+            <label
+              htmlFor="regen-ref"
+              style={{ display: 'block', color: M.faint, fontSize: 12, margin: '0 0 6px' }}
+            >
+              Optional: upload a reference image
+            </label>
+            <input
+              id="regen-ref"
+              type="file"
+              accept="image/*"
+              onChange={(e) => setRefFile(e.target.files?.[0] ?? null)}
+              style={{ fontSize: 13, color: M.faint, maxWidth: '100%' }}
+              aria-label="Upload a reference image (optional)"
+            />
+            {refFile && (
+              <p style={{ color: M.faint, fontSize: 12, margin: '6px 0 0' }}>
+                Selected: {refFile.name}
+              </p>
+            )}
+          </div>
           <div style={{ marginTop: 14 }}>
             <Btn
               variant="mint"

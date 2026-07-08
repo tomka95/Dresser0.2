@@ -158,16 +158,22 @@ export interface RegenerateImageResult {
 }
 
 /**
- * Kick off a background regeneration of a photo item's product-card image.
+ * Kick off a background regeneration of an item's product-card image.
  *
- * `reason` is an OPTIONAL "what was wrong?" correction that steers generation (fenced +
- * verify-gated server-side). Returns immediately (202) with generationStatus 'generating';
- * the caller polls getClosetItem until generationStatus leaves 'generating', then compares
- * imageUrl (changed → new verified card; unchanged → verify miss, current image kept).
+ * multipart/form-data: an OPTIONAL `reason` ("what was wrong?" correction, steers +
+ * verify-gated server-side) and an OPTIONAL `reference` image the server conditions the
+ * generation on (validated + sanitized server-side). ANY item is eligible now (Gmail /
+ * image-less too). Returns immediately (202) with generationStatus 'generating'; the caller
+ * polls getClosetItem until generationStatus leaves 'generating', then compares imageUrl
+ * (changed → new verified card; unchanged → verify miss, current image kept).
+ *
+ * NOTE: do NOT set Content-Type — the browser adds the multipart boundary itself (mirrors
+ * the photo-ingest upload in lib/api/gmail). Setting application/json here would break it.
  */
 export async function regenerateItemImage(
   id: string,
-  reason?: string
+  reason?: string,
+  reference?: File | null
 ): Promise<RegenerateImageResult> {
   const token = await getAccessToken();
 
@@ -175,13 +181,16 @@ export async function regenerateItemImage(
     throw new Error('Not authenticated. Please sign in first.');
   }
 
+  const formData = new FormData();
+  if (reason && reason.trim()) formData.append('reason', reason.trim());
+  if (reference) formData.append('reference', reference);
+
   const response = await fetch(`${API_BASE_URL}/closet/${id}/regenerate`, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`,
     },
-    body: JSON.stringify(reason && reason.trim() ? { reason: reason.trim() } : {}),
+    body: formData,
   });
 
   if (!response.ok) {

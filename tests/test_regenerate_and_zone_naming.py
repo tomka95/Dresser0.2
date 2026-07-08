@@ -29,6 +29,20 @@ from tests._authutil import mint_supabase_token
 from main import app
 
 
+def _make_png(w: int = 4, h: int = 4) -> bytes:
+    """A real, decodable PNG so validate_and_sanitize (full decode) accepts it."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (200, 50, 50)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_PNG_BYTES = _make_png()
+
+
 # --------------------------------------------------------------------------- fixtures
 @pytest.fixture
 def db():
@@ -189,14 +203,37 @@ def test_regeneration_miss_keeps_current_image(db, user, monkeypatch):
     assert item.generation_status == "pending_retry"
 
 
-def test_regeneration_skips_non_photo_and_foreign(db, user, monkeypatch):
+def test_regeneration_allows_gmail_and_skips_foreign(db, user, monkeypatch):
+    # Wave B (Fix 4): a Gmail item WITH an image is now eligible — it regenerates from its
+    # own image_url. Only a foreign/unknown id is a no-op skip.
     called = {"n": 0}
-    monkeypatch.setattr(gs, "_generate_from_crop",
-                        lambda **k: called.__setitem__("n", called["n"] + 1) or gs._HealOutcome("ready", url="u"))
+    monkeypatch.setattr(
+        gs, "_generate_from_crop",
+        lambda **k: called.__setitem__("n", called["n"] + 1)
+        or gs._HealOutcome("ready", url="https://cdn.example.com/new.png"),
+    )
     gmail_item = _photo_item(db, user, source_type="gmail", generation_status=None)
-    assert gs.run_item_regeneration(user.id, db, gmail_item.id).status == "skipped"
+    assert gs.run_item_regeneration(user.id, db, gmail_item.id).status == "ready"
+    assert called["n"] == 1
     assert gs.run_item_regeneration(user.id, db, uuid.uuid4()).status == "skipped"
-    assert called["n"] == 0  # never reached the generator
+
+
+def test_regeneration_imageless_uses_t2i(db, user, monkeypatch):
+    # An item with NO image goes down the text-to-image branch (not the crop path).
+    from app.services.image_generation import generate_core
+
+    monkeypatch.setattr(gs, "_generate_from_crop",
+                        lambda **k: pytest.fail("image-less item must not use the crop path"))
+    monkeypatch.setattr(
+        generate_core, "generate_from_text",
+        lambda **k: generate_core.GenOutcome("ready", url="https://cdn.example.com/t2i.png", cost_usd=0.13),
+    )
+    item = _photo_item(db, user, source_type="gmail", image_url=None, generation_status=None)
+    out = gs.run_item_regeneration(user.id, db, item.id)
+    db.refresh(item)
+    assert out.status == "ready" and out.changed
+    assert item.image_url == "https://cdn.example.com/t2i.png"
+    assert item.generation_status == "ready"
 
 
 # --------------------------------------------------------------------------- quota counter
@@ -211,23 +248,49 @@ def test_record_photo_usage_upserts_monthly(db, user):
 
 # --------------------------------------------------------------------------- endpoint
 def test_regenerate_requires_auth(client):
-    assert client.post(f"/closet/{uuid.uuid4()}/regenerate", json={}).status_code == 401
+    assert client.post(f"/closet/{uuid.uuid4()}/regenerate").status_code == 401
 
 
 def test_regenerate_cross_user_is_404(client, db, user, other_user):
     item = _photo_item(db, user)
     tok = mint_supabase_token(sub=str(other_user.id))
-    r = client.post(f"/closet/{item.id}/regenerate", json={},
+    r = client.post(f"/closet/{item.id}/regenerate",
                     headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 404
 
 
-def test_regenerate_non_photo_is_400(client, db, user):
+def test_regenerate_gmail_item_now_allowed(client, db, user, monkeypatch):
+    # Wave B (Fix 4): the photo-only gate is LIFTED — a Gmail item is regenerate-able.
+    monkeypatch.setattr(settings, "JOBS_PHOTO_GENERATION_ENABLED", False)
+    scheduled = []
+    monkeypatch.setattr(
+        gs, "regenerate_item_background",
+        lambda uid, iid, reason=None, reference_url=None: scheduled.append((uid, iid, reason, reference_url)),
+    )
     item = _photo_item(db, user, source_type="gmail", generation_status=None)
     tok = mint_supabase_token(sub=str(user.id))
-    r = client.post(f"/closet/{item.id}/regenerate", json={"reason": "x"},
+    r = client.post(f"/closet/{item.id}/regenerate", data={"reason": "x"},
                     headers={"Authorization": f"Bearer {tok}"})
-    assert r.status_code == 400
+    assert r.status_code == 202
+    db.expire_all()
+    assert db.query(ClothingItem).filter(ClothingItem.id == item.id).one().generation_status == "generating"
+    assert scheduled and scheduled[0][2] == "x"
+
+
+def test_regenerate_image_less_item_dispatches_t2i(client, db, user, monkeypatch):
+    # An item with NO image is now eligible (t2i path); dispatch carries no reference_url.
+    monkeypatch.setattr(settings, "JOBS_PHOTO_GENERATION_ENABLED", False)
+    scheduled = []
+    monkeypatch.setattr(
+        gs, "regenerate_item_background",
+        lambda uid, iid, reason=None, reference_url=None: scheduled.append((uid, iid, reason, reference_url)),
+    )
+    item = _photo_item(db, user, source_type="gmail", image_url=None, generation_status=None)
+    tok = mint_supabase_token(sub=str(user.id))
+    r = client.post(f"/closet/{item.id}/regenerate",
+                    headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 202
+    assert scheduled and scheduled[0][3] is None  # no uploaded reference
 
 
 def test_regenerate_photo_marks_generating_and_records_quota(client, db, user, monkeypatch):
@@ -235,14 +298,14 @@ def test_regenerate_photo_marks_generating_and_records_quota(client, db, user, m
     scheduled = []
     monkeypatch.setattr(
         gs, "regenerate_item_background",
-        lambda uid, iid, reason=None: scheduled.append((uid, iid, reason)),
+        lambda uid, iid, reason=None, reference_url=None: scheduled.append((uid, iid, reason, reference_url)),
     )
     item = _photo_item(db, user, generation_status="ready")
     tok = mint_supabase_token(sub=str(user.id))
 
     r = client.post(
         f"/closet/{item.id}/regenerate",
-        json={"reason": "the swoosh should be red, not black"},
+        data={"reason": "the swoosh should be red, not black"},
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.status_code == 202
@@ -257,3 +320,40 @@ def test_regenerate_photo_marks_generating_and_records_quota(client, db, user, m
     assert photos_used_this_month(db, user.id) == 1
     # Background regenerate dispatched with the sanitized reason.
     assert scheduled and scheduled[0][2] == "the swoosh should be red, not black"
+
+
+def test_regenerate_multipart_reference_is_validated_and_passed(client, db, user, monkeypatch):
+    # An uploaded reference goes through validate_and_sanitize (no bypass) then flows to the
+    # job as a stored URL; a valid PNG is accepted and a reference_url is dispatched.
+    monkeypatch.setattr(settings, "JOBS_PHOTO_GENERATION_ENABLED", False)
+    scheduled = []
+    monkeypatch.setattr(
+        gs, "regenerate_item_background",
+        lambda uid, iid, reason=None, reference_url=None: scheduled.append((uid, iid, reason, reference_url)),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.closet._store_regenerate_reference",
+        lambda user_id, sanitized: "https://cdn.example.com/ref.png",
+    )
+    item = _photo_item(db, user, generation_status="ready")
+    tok = mint_supabase_token(sub=str(user.id))
+    r = client.post(
+        f"/closet/{item.id}/regenerate",
+        files={"reference": ("ref.png", _PNG_BYTES, "image/png")},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 202
+    assert scheduled and scheduled[0][3] == "https://cdn.example.com/ref.png"
+
+
+def test_regenerate_rejects_non_image_upload(client, db, user, monkeypatch):
+    monkeypatch.setattr(settings, "JOBS_PHOTO_GENERATION_ENABLED", False)
+    monkeypatch.setattr(gs, "regenerate_item_background", lambda *a, **k: None)
+    item = _photo_item(db, user, generation_status="ready")
+    tok = mint_supabase_token(sub=str(user.id))
+    r = client.post(
+        f"/closet/{item.id}/regenerate",
+        files={"reference": ("evil.txt", b"not an image", "text/plain")},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r.status_code == 400
