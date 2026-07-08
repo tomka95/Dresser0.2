@@ -131,6 +131,36 @@ function BoxLabel({ name, on }: { name: string; on?: boolean }) {
   );
 }
 
+/**
+ * Compact corner marker for an UNSELECTED, un-hovered detected box — a tiny numbered
+ * chip instead of the full name pill. This is what kills the label pile-up when many
+ * boxes overlap: only selected/active boxes carry a readable name; the rest stay quiet
+ * (dashed outline + this dot) yet fully tappable.
+ */
+function BoxMarker({ n }: { n: number }) {
+  return (
+    <span
+      aria-hidden
+      className="absolute flex items-center justify-center font-bold tabular-nums text-white"
+      style={{
+        top: 4,
+        left: 4,
+        width: 17,
+        height: 17,
+        borderRadius: 999,
+        fontSize: 9.5,
+        lineHeight: 1,
+        background: 'rgba(0,0,0,0.55)',
+        border: '1px solid rgba(255,255,255,0.4)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+      }}
+    >
+      {n}
+    </span>
+  );
+}
+
 /** Subtle amber occlusion/size warning chip at a box's bottom-left. Non-blocking. */
 function WarnBadge({ text }: { text: string }) {
   return (
@@ -175,6 +205,13 @@ export function RegionSelector({
     })),
   );
 
+  // Natural pixel size of the currently loaded photo (from the <img> onLoad). Used as a
+  // fallback aspect source for the card when the detect session omits width/height.
+  const [natSize, setNatSize] = useState<{ w: number; h: number } | null>(null);
+  // Detected region whose full name pill is currently surfaced by hover/focus (unselected
+  // boxes are otherwise reduced to a compact marker). Selected boxes always show their pill.
+  const [activeId, setActiveId] = useState<number | null>(null);
+
   const [drawMode, setDrawMode] = useState(false);
   // Live rubber-band rect while drawing, in px relative to the displayed image rect.
   const [draft, setDraft] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -209,14 +246,32 @@ export function RegionSelector({
   const isDup = current.session.duplicate || !current.session.session_id;
   const atManualCap = sel.manual.length >= MAX_MANUAL_BOXES;
 
-  // Contain-fit letterboxing: where the photo actually paints inside the frame.
+  // `frame` is the AVAILABLE space (the outer wrapper). We size an aspect-locked CARD to
+  // fit inside it so the contain-fit photo fills the card edge-to-edge with no letterbox
+  // band (the old bug: a fixed-tall card + object-contain left dead space above/below).
   const iw = current.session.width;
   const ih = current.session.height;
-  const scale = frame.w > 0 && frame.h > 0 && iw > 0 && ih > 0 ? Math.min(frame.w / iw, frame.h / ih) : 0;
+  // Card aspect: prefer the detect dims so the contain-fit rect equals the card and the
+  // box mapping stays 1:1 (ox/oy collapse to ~0); fall back to the image's natural size.
+  const arW = iw > 0 ? iw : natSize?.w ?? 0;
+  const arH = ih > 0 ? ih : natSize?.h ?? 0;
+  const aspect = arW > 0 && arH > 0 ? arW / arH : 0;
+  const ready = frame.w > 0 && frame.h > 0 && aspect > 0;
+  // Largest aspect-correct box that fits the available space (width-bound, else height-bound).
+  let cardW = frame.w;
+  let cardH = aspect > 0 ? frame.w / aspect : frame.h;
+  if (aspect > 0 && cardH > frame.h) {
+    cardH = frame.h;
+    cardW = frame.h * aspect;
+  }
+  // Contain-fit letterboxing INSIDE the card. When the card matches the image aspect (the
+  // normal path) this is dw≈cardW, dh≈cardH, ox≈oy≈0 — i.e. the image fills the card and
+  // the percentage-positioned boxes still land exactly on the painted image.
+  const scale = cardW > 0 && cardH > 0 && iw > 0 && ih > 0 ? Math.min(cardW / iw, cardH / ih) : 0;
   const dw = iw * scale;
   const dh = ih * scale;
-  const ox = (frame.w - dw) / 2;
-  const oy = (frame.h - dh) / 2;
+  const ox = (cardW - dw) / 2;
+  const oy = (cardH - dh) / 2;
 
   // Overlapping boxes: stack by area so the SMALLEST box paints on top and wins the
   // tap wherever boxes overlap (its non-overlapped siblings still get their own hits).
@@ -331,6 +386,8 @@ export function RegionSelector({
       setDrawMode(false);
       setDraft(null);
       drawStartRef.current = null;
+      setActiveId(null);
+      setNatSize(null);
     },
     [photos.length],
   );
@@ -519,18 +576,21 @@ export function RegionSelector({
         />
       </div>
 
-      {/* Photo card */}
-      <div
-        ref={frameRef}
-        className="relative min-h-0 w-full flex-1 overflow-hidden"
-        style={{
-          borderRadius: 28,
-          background: 'linear-gradient(180deg, rgba(16,32,31,0.82), rgba(9,20,20,0.88))',
-          border: '1px solid rgba(255,255,255,0.14)',
-          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 60px -12px rgba(0,0,0,0.65)',
-          minHeight: 280,
-        }}
-      >
+      {/* Photo card — the outer wrapper is the available space (measured); the inner card
+          is locked to the image aspect and centered so the contain-fit photo fills it with
+          no letterbox band. */}
+      <div ref={frameRef} className="relative flex min-h-0 w-full flex-1 items-center justify-center">
+        <div
+          className="relative overflow-hidden"
+          style={{
+            width: ready ? cardW : '100%',
+            height: ready ? cardH : '100%',
+            borderRadius: 28,
+            background: 'linear-gradient(180deg, rgba(16,32,31,0.82), rgba(9,20,20,0.88))',
+            border: '1px solid rgba(255,255,255,0.14)',
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 60px -12px rgba(0,0,0,0.65)',
+          }}
+        >
         <motion.div
           key={index}
           className="absolute inset-0"
@@ -543,6 +603,12 @@ export function RegionSelector({
             src={current.previewUrl}
             alt={`Photo ${index + 1}`}
             draggable={false}
+            onLoad={(e) => {
+              const el = e.currentTarget;
+              if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+                setNatSize({ w: el.naturalWidth, h: el.naturalHeight });
+              }
+            }}
             className="absolute inset-0 h-full w-full select-none object-contain"
             style={{ opacity: isDup ? 0.35 : 1 }}
           />
@@ -572,6 +638,17 @@ export function RegionSelector({
                 if (sel.adjusted.has(r.region_id)) return null;
                 const [ymin, xmin, ymax, xmax] = r.box_2d;
                 const isSel = sel.regionIds.has(r.region_id);
+                // Stable 1-based number for the compact marker (order the user reads them in,
+                // not the area-sorted paint order).
+                const ordinal =
+                  current.session.regions.findIndex((x) => x.region_id === r.region_id) + 1;
+                // Label density control. Sparse photos (≤3 regions, like the I4 frame) show
+                // the name pill on every selected box — calm and readable. Dense photos, where
+                // many boxes overlap on one person, would pile those pills into an unreadable
+                // cluster, so there the full pill shows ONLY on the actively hovered/focused/
+                // tapped box; the rest stay a quiet numbered marker (still selected + checked).
+                const dense = orderedRegions.length > 3;
+                const showLabel = activeId === r.region_id || (!dense && isSel);
                 return (
                   // Wrapper (no nested buttons): a fill toggle + a corner "adjust" control.
                   <div
@@ -597,6 +674,10 @@ export function RegionSelector({
                         });
                         toggleRegion(r.region_id);
                       }}
+                      onMouseEnter={() => setActiveId(r.region_id)}
+                      onMouseLeave={() => setActiveId((v) => (v === r.region_id ? null : v))}
+                      onFocus={() => setActiveId(r.region_id)}
+                      onBlur={() => setActiveId((v) => (v === r.region_id ? null : v))}
                       aria-pressed={isSel}
                       aria-label={`${r.name} region`}
                       className="absolute inset-0 p-0 text-left transition-opacity duration-150"
@@ -610,7 +691,7 @@ export function RegionSelector({
                         touchAction: 'manipulation',
                       }}
                     >
-                      <BoxLabel name={r.name} on={isSel} />
+                      {showLabel ? <BoxLabel name={r.name} on={isSel} /> : <BoxMarker n={ordinal} />}
                       {isSel && occWarnings.det[r.region_id] && (
                         <WarnBadge text={occWarnings.det[r.region_id]} />
                       )}
@@ -762,6 +843,7 @@ export function RegionSelector({
             </div>
           )}
         </motion.div>
+        </div>
       </div>
 
       {/* Toolbar: hint + add-missed-region pill */}
