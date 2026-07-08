@@ -1,279 +1,36 @@
-"""AI provider abstraction layer for supporting multiple LLM providers (Gemini, OpenAI, etc.)."""
-# STATUS: implements Gemini image+metadata generation with shared JSON extraction helper.
+"""Legacy multi-item outfit-photo detection + generation (P3.6 split).
 
+These four methods back ONLY the legacy POST /outfit-image flow
+(app/services/clothing_pipeline.py -> app/api/routes/outfit_image.py) --
+superseded in the current web client by the photo-ingest detect/commit flow
+and the Wave-2 image_generation provider seam. Split out of the god-module
+app/platform/ai_provider.py (ARCHITECTURE_AUDIT R8) into its own concern; kept
+as a mixin so AIProvider (app/platform/ai_provider/core.py) still exposes
+every method callers already use, unchanged.
+"""
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
 import logging
-from dataclasses import dataclass
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
-from google import genai
 from google.genai import types
 
 from app.core.config import settings
-
+from app.platform.ai_provider._json import extract_json_metadata
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class DetectedItem:
-    """Represents a detected clothing item."""
-    name: str
+class _LegacyOutfitGenerationMixin:
+    """Multi-item outfit-photo detect + per-item product-image generation.
 
-
-def extract_json_metadata(response_text: str) -> Dict[str, Any]:
+    Assumes the mixing-in class provides ``self._client`` (a configured
+    ``google.genai.Client``) -- see AIProvider.__init__.
     """
-    Extract a JSON object from a model text response.
-
-    Handles both raw JSON and ```json fenced blocks. Returns an empty dict
-    if parsing fails or the result is not a JSON object.
-    """
-    if not isinstance(response_text, str):
-        return {}
-
-    text = response_text.strip()
-
-    # Try to unwrap markdown fences if present
-    if "```" in text:
-        # Prefer ```json fences when present
-        if "```json" in text:
-            start = text.find("```json") + len("```json")
-        else:
-            start = text.find("```") + len("```")
-
-        end = text.find("```", start)
-        if end != -1:
-            text = text[start:end].strip()
-
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, dict) else {}
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("Failed to parse JSON metadata from model response: %s", exc)
-        return {}
-
-
-class AIProvider:
-    """Abstraction layer for AI providers (Gemini, OpenAI, etc.)."""
-    
-    def __init__(self):
-        """Initialize the AI provider based on configuration."""
-        provider = settings.LLM_PROVIDER
-        
-        if provider == "gemini":
-            self._provider = "gemini"
-            # Pass API key explicitly from settings, or let it read from GOOGLE_API_KEY env var
-            api_key = settings.GEMINI_API_KEY
-            if api_key:
-                self._client = genai.Client(api_key=api_key)
-            else:
-                # Fallback: let genai.Client() read from GOOGLE_API_KEY environment variable
-                self._client = genai.Client()
-        else:
-            raise ValueError(f"Unsupported LLM provider: {provider}")
-
-    def generate_structured(
-        self,
-        *,
-        model: str,
-        system_instruction: str,
-        user_text: str,
-        response_schema: Any,
-        image_parts: Optional[List[Dict[str, Any]]] = None,
-        temperature: float = 0.0,
-        media_resolution: Optional[Any] = None,
-    ):
-        """Synchronous structured-output generation (the phase-3c receipt extractor).
-
-        Forces valid typed JSON via responseMimeType=application/json + responseSchema,
-        so the caller NEVER regexes the model output. Returns the raw
-        GenerateContentResponse so the caller can read `.parsed` / `.text` and
-        `.usage_metadata` (for cost instrumentation).
-
-        Kept synchronous on purpose: the extraction pass mirrors the 3b fetch
-        service (sync, ThreadPoolExecutor), so a blocking SDK call inside a worker
-        thread is the right shape. This reuses the single Gemini SDK path; it does
-        NOT add a new provider integration.
-
-        `system_instruction` and `user_text` are kept separate so untrusted email
-        content (user_text) can never be confused with the extraction rules
-        (system_instruction) — the prompt-injection boundary.
-        """
-        contents_parts: List[Any] = []
-        if image_parts:
-            contents_parts.extend(image_parts)
-        contents_parts.append({"text": user_text})
-
-        config_kwargs: Dict[str, Any] = dict(
-            system_instruction=system_instruction,
-            response_mime_type="application/json",
-            response_schema=response_schema,
-            temperature=temperature,
-        )
-        # media_resolution=LOW lets the vision-verify pass pay for color+garment
-        # recognition without OCR-grade token cost. Optional / additive.
-        if media_resolution is not None:
-            config_kwargs["media_resolution"] = media_resolution
-        config = types.GenerateContentConfig(**config_kwargs)
-        return self._client.models.generate_content(
-            model=model,
-            contents=contents_parts,
-            config=config,
-        )
-
-    def embed_texts(
-        self,
-        texts: List[str],
-        *,
-        model: str,
-        dim: int,
-        task_type: str = "RETRIEVAL_DOCUMENT",
-    ) -> List[List[float]]:
-        """Embed one or more short product strings to fixed-width vectors.
-
-        Wave S0 Branch B: the item-embedding seam. Synchronous (mirrors
-        generate_structured — enrichment runs in a background thread, so a blocking
-        SDK call is the right shape). `output_dimensionality=dim` pins the width to
-        the vector(dim) column declared in migration 0018 (768; gemini-embedding-001's
-        native width is 3072, truncated via MRL). `task_type=RETRIEVAL_DOCUMENT` is
-        correct for indexing closet
-        items; a query-time embed would pass RETRIEVAL_QUERY.
-
-        The input is product attribute text ONLY (brand/subcategory/color/pattern/…),
-        never image bytes or PII — see app/services/embeddings.build_canonical_text.
-        Returns one vector per input, in order. Raises on API failure (the caller —
-        enrich_item — swallows it so a transient embed miss never breaks enrichment).
-        """
-        if not texts:
-            return []
-        resp = self._client.models.embed_content(
-            model=model,
-            contents=texts,
-            config=types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=dim,
-            ),
-        )
-        # google-genai returns .embeddings[i].values (list[float]) per input.
-        return [list(e.values) for e in resp.embeddings]
-
-    def chat(
-        self,
-        *,
-        model: str,
-        system_instruction: str,
-        contents: List[Any],
-        tool_declarations: Optional[List[Dict[str, Any]]] = None,
-        tool_executor: Optional[Any] = None,
-        on_text: Optional[Any] = None,
-        on_tool: Optional[Any] = None,
-        on_usage: Optional[Any] = None,
-        temperature: float = 0.4,
-        max_tool_rounds: int = 6,
-    ) -> str:
-        """The stylist tool-calling loop (Wave S2): stream -> dispatch -> repeat.
-
-        Synchronous by design (the SSE route runs it in a worker thread and
-        forwards events to the async stream). Each round streams one model
-        response; text deltas go to ``on_text(text)`` as they arrive; function
-        calls are collected, dispatched through ``tool_executor(name, args)``
-        (which is expected to be fail-closed and to AUTHORIZE nothing — the
-        executor's closure owns tenant scoping), and their responses are
-        appended for the next round. The loop hard-stops after
-        ``max_tool_rounds`` rounds by disabling tools for one final,
-        text-only round — the model can never spin forever.
-
-        ``on_tool(name, phase)`` fires with phase 'start'/'end' around each
-        dispatch (drives SSE progress). ``on_usage(model, response_chunk)``
-        receives the last chunk of each round for REAL usage_metadata
-        accounting. Returns the final assistant text.
-        """
-        contents = list(contents)
-        final_text_parts: List[str] = []
-        rounds = 0
-
-        while True:
-            tools_enabled = bool(tool_declarations) and rounds < max_tool_rounds
-            config_kwargs: Dict[str, Any] = dict(
-                system_instruction=system_instruction,
-                temperature=temperature,
-                # Manual dispatch only: the SDK must never call anything itself.
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                    disable=True
-                ),
-            )
-            if tools_enabled:
-                config_kwargs["tools"] = [
-                    types.Tool(
-                        function_declarations=[
-                            types.FunctionDeclaration(**decl)
-                            for decl in tool_declarations
-                        ]
-                    )
-                ]
-            config = types.GenerateContentConfig(**config_kwargs)
-
-            stream = self._client.models.generate_content_stream(
-                model=model, contents=contents, config=config
-            )
-
-            round_text_parts: List[str] = []
-            function_calls: List[Any] = []
-            last_chunk = None
-            for chunk in stream:
-                last_chunk = chunk
-                candidates = getattr(chunk, "candidates", None) or []
-                if not candidates:
-                    continue
-                content = getattr(candidates[0], "content", None)
-                parts = getattr(content, "parts", None) or []
-                for part in parts:
-                    fc = getattr(part, "function_call", None)
-                    if fc is not None:
-                        function_calls.append(fc)
-                        continue
-                    text = getattr(part, "text", None)
-                    if text:
-                        round_text_parts.append(text)
-                        if on_text is not None:
-                            on_text(text)
-
-            if on_usage is not None and last_chunk is not None:
-                on_usage(model, last_chunk)
-            final_text_parts.extend(round_text_parts)
-
-            if not function_calls:
-                return "".join(final_text_parts)
-
-            # Echo the model's function-call turn, then answer each call.
-            contents.append(
-                types.Content(
-                    role="model",
-                    parts=[types.Part(function_call=fc) for fc in function_calls],
-                )
-            )
-            response_parts: List[Any] = []
-            for fc in function_calls:
-                name = getattr(fc, "name", "") or ""
-                args = dict(getattr(fc, "args", None) or {})
-                if on_tool is not None:
-                    on_tool(name, "start")
-                if tool_executor is not None:
-                    result = tool_executor(name, args)
-                else:
-                    result = {"error": "no tools available"}
-                if on_tool is not None:
-                    on_tool(name, "end")
-                response_parts.append(
-                    types.Part.from_function_response(name=name, response=result)
-                )
-            contents.append(types.Content(role="user", parts=response_parts))
-            rounds += 1
 
     async def detect_clothing_items_from_image(
         self,
@@ -283,11 +40,11 @@ class AIProvider:
     ) -> Dict[str, Dict[str, Any]]:
         """
         Detect clothing items from an outfit image.
-        
+
         Args:
             outfit_image: Image object with `.data` (bytes) and `.format` (str or None)
             max_items: Maximum number of items to detect
-            
+
         Returns:
             Dictionary where keys are item display names (strings) and values are
             metadata dictionaries containing fields like name, brand, category,
@@ -360,14 +117,14 @@ Example format:
   }}
 }}
 """
-        
+
         # Determine MIME type from format or default to jpeg
         mime_type = "image/jpeg"
         if outfit_image.format:
             format_lower = outfit_image.format.lower()
             if format_lower in ["png", "jpg", "jpeg"]:
                 mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
-        
+
         # Prepare multimodal request parts
         parts = [
             {
@@ -378,30 +135,30 @@ Example format:
             },
             {"text": prompt}
         ]
-        
+
         # Run Gemini call in thread executor
-        # Using gemini-2.5-flash-lite for text-only JSON output (cheaper than flash-image)
+        # Text-only JSON output (cheaper than the image-generation model below).
         loop = asyncio.get_running_loop()
         resp = await loop.run_in_executor(
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-2.5-flash-lite",
+                model=settings.LEGACY_OUTFIT_DETECT_MODEL,
                 contents=parts
             )
         )
-        
+
         # Extract and parse response
         response_text = resp.text.strip()
-        
+
         # Parse JSON using the existing helper
         parsed = extract_json_metadata(response_text)
-        
+
         # Validate the parsed result
         if not isinstance(parsed, dict):
             logger.warning("Parsed result is not a dict, returning empty dict")
             return {}
-        
+
         # Ensure each value is a dict (coerce to {} if not) and add is_clothing field
         validated: Dict[str, Dict[str, Any]] = {}
         for key, value in parsed.items():
@@ -412,16 +169,16 @@ Example format:
             else:
                 logger.warning(f"Value for key '{key}' is not a dict, coercing to empty dict")
                 validated[str(key)] = {"is_clothing": True}
-        
+
         # Limit to max_items (preserve order)
         if len(validated) > max_items:
             # Convert to list of items, slice, then reconstruct dict to preserve order
             items_list = list(validated.items())[:max_items]
             validated = dict(items_list)
-        
+
         return validated
-    
-    
+
+
     async def generate_product_image_from_outfit(
         self,
         *,
@@ -431,11 +188,11 @@ Example format:
         """
         Generate a white-background e-commerce style product image by isolating
         a specific item from an outfit photo.
-        
+
         Args:
             item_name: Name of the clothing item to isolate (e.g., "t-shirt", "jeans")
             outfit_image: Image object with `.data` (bytes) and `.format` (str or None)
-            
+
         Returns:
             Image bytes of the generated product image
         """
@@ -449,14 +206,14 @@ Requirements:
 - Maintain the original style, color, and details of the {item_name}
 - Use professional e-commerce product photo styling
 """
-        
+
         # Determine MIME type from format or default to jpeg
         mime_type = "image/jpeg"
         if outfit_image.format:
             format_lower = outfit_image.format.lower()
             if format_lower in ["png", "jpg", "jpeg"]:
                 mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
-        
+
         # Prepare multimodal request parts
         parts = [
             {
@@ -467,18 +224,18 @@ Requirements:
             },
             {"text": prompt}
         ]
-        
+
         # Run Gemini call in thread executor
         loop = asyncio.get_running_loop()
         resp = await loop.run_in_executor(
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-2.5-flash-image",
+                model=settings.LEGACY_OUTFIT_IMAGE_MODEL,
                 contents=parts
             )
         )
-        
+
         # TODO: Extract raw image bytes from the response
         # The exact structure depends on Gemini's response format for image generation
         # For now, this is a placeholder that will need to be implemented based on
@@ -501,7 +258,7 @@ Requirements:
                                 return base64.b64decode(data)
                             except (base64.binascii.Error, ValueError):
                                 logger.warning("Failed to base64-decode inline image data")
-        
+
         # Fallback: raise an error if we can't extract the image
         raise ValueError("Could not extract image bytes from Gemini response")
 
@@ -544,7 +301,7 @@ Requirements:
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-2.5-flash-image",
+                model=settings.LEGACY_OUTFIT_IMAGE_MODEL,
                 contents=parts,
                 config=types.GenerateContentConfig(
                     response_modalities=["TEXT", "IMAGE"]
@@ -600,7 +357,7 @@ Requirements:
                 "has_inline_data": False,
                 "text_preview": None,
             }
-            
+
             if hasattr(resp, "candidates") and resp.candidates:
                 candidate = resp.candidates[0]
                 if (
@@ -622,12 +379,12 @@ Requirements:
                         if hasattr(part, "text") and part.text:
                             debug_info["text_preview"] = str(part.text)[:300]
                             break
-            
+
             logger.warning(
                 "No IMAGE part returned by Gemini in combined call. "
                 f"Debug info: {debug_info}. Falling back to image-only generation."
             )
-            
+
             # Check if JSON contains error response
             if json_text:
                 parsed_error = extract_json_metadata(json_text)
@@ -637,7 +394,7 @@ Requirements:
                     )
                     # Still try fallback even if error JSON is present
                     # metadata will be the error dict
-            
+
             # Fallback: use image-only generation method
             try:
                 image_bytes = await self.generate_product_image_from_outfit(
@@ -664,19 +421,19 @@ Requirements:
     ) -> Dict[str, bytes]:
         """
         Generate multiple product images from an outfit photo in a single call.
-        
+
         Args:
             outfit_image: Image object with `.data` (bytes) and `.format` (str or None)
             item_names: Ordered list of item names to generate images for
-            
+
         Returns:
             Dictionary mapping item names to image bytes. Returns empty dict if no images.
         """
         if not item_names:
             return {}
-        
+
         expected_count = len(item_names)
-        
+
         # Create numbered list string for clarity
         items_name_list_str = "\n".join(f"{i+1}. {name}" for i, name in enumerate(item_names))
         logger.info(f"Items name list string: {items_name_list_str}")
@@ -721,14 +478,14 @@ CRITICAL: You must return exactly {expected_count} images, one per item listed a
 
 Return ONLY the JSON first, then exactly {expected_count} images in order. No other text or explanation.
 """
-        
+
         # Determine MIME type from format or default to jpeg
         mime_type = "image/jpeg"
         if getattr(outfit_image, "format", None):
             format_lower = outfit_image.format.lower()
             if format_lower in ["png", "jpg", "jpeg"]:
                 mime_type = f"image/{format_lower if format_lower != 'jpg' else 'jpeg'}"
-        
+
         # Prepare multimodal request parts
         parts = [
             {
@@ -739,25 +496,25 @@ Return ONLY the JSON first, then exactly {expected_count} images in order. No ot
             },
             {"text": prompt},
         ]
-        
+
         # Run Gemini call in thread executor with TEXT + IMAGE modalities
         loop = asyncio.get_running_loop()
         resp = await loop.run_in_executor(
             None,
             partial(
                 self._client.models.generate_content,
-                model="gemini-2.5-flash-image",
+                model=settings.LEGACY_OUTFIT_IMAGE_MODEL,
                 contents=parts,
                 config=types.GenerateContentConfig(
                     response_modalities=["TEXT", "IMAGE"]
                 ),
             ),
         )
-        
+
         # Extract JSON text part and image parts
         json_text: Optional[str] = None
         image_parts: List[bytes] = []
-        
+
         if hasattr(resp, "candidates") and resp.candidates:
             candidate = resp.candidates[0]
             if (
@@ -773,7 +530,7 @@ Return ONLY the JSON first, then exactly {expected_count} images in order. No ot
                         if json_text is None:  # Take first text part as JSON
                             json_text = part.text
                             logger.debug("Found JSON text part in batch response")
-                    
+
                     # Extract image parts
                     if hasattr(part, "inline_data") and hasattr(part.inline_data, "data"):
                         data = part.inline_data.data
@@ -788,7 +545,7 @@ Return ONLY the JSON first, then exactly {expected_count} images in order. No ot
                                     logger.debug(f"Found image bytes (base64 string, decoded length: {len(decoded)})")
                                 except (base64.binascii.Error, ValueError):
                                     logger.warning("Failed to base64-decode inline image data in batch call")
-        
+
         # Parse JSON to get order array
         order: List[str] = item_names  # Fallback to original order
         if json_text:
@@ -809,7 +566,7 @@ Return ONLY the JSON first, then exactly {expected_count} images in order. No ot
                     )
             else:
                 logger.warning("JSON does not contain valid 'order' array, using fallback order")
-        
+
         # Map images to item names by order
         result: Dict[str, bytes] = {}
         for i, image_bytes in enumerate(image_parts):
@@ -819,23 +576,10 @@ Return ONLY the JSON first, then exactly {expected_count} images in order. No ot
                 logger.debug(f"Mapped image {i+1} to item '{item_name}'")
             else:
                 logger.warning(f"More images ({len(image_parts)}) than items ({len(order)}), skipping extra image {i+1}")
-        
+
         if result:
             logger.info(f"Generated {len(result)} product images from batch call for items: {list(result.keys())}")
         else:
             logger.warning("No images generated in batch call")
-        
+
         return result
-
-
-# Module-level singleton instance
-_ai_provider: Optional[AIProvider] = None
-
-
-def get_ai_provider() -> AIProvider:
-    """Get or create the singleton AI provider instance."""
-    global _ai_provider
-    if _ai_provider is None:
-        _ai_provider = AIProvider()
-    return _ai_provider
-
