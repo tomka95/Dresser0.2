@@ -56,6 +56,7 @@ from app.models.stylist import (
     StyleEvent,
     StylePreference,
     StyleProfile,
+    TodaysLookCache,
 )
 from app.models.ranking import Product, ProductEmbedding, UserWardrobeGap
 from app.models.monetization import AffiliateConversion, ProductClick
@@ -93,6 +94,7 @@ __all__ = [
     "SavedOutfit",
     "ChatUsage",
     "ChatRateWindow",
+    "TodaysLookCache",
     "WeatherCache",
     "Waitlist",
     "Job",

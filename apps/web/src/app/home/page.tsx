@@ -45,6 +45,7 @@ import { useAffiliateOpen } from '@/components/shop/useAffiliateOpen';
 import { AppShell } from '@/components/layout/AppShell';
 import { BottomNavBar } from '@/components/layout/BottomNavBar';
 import { AddItemDrawer } from '@/components/closet/AddItemDrawer';
+import { TodaysLookCard } from '@/components/home/TodaysLookCard';
 import { ItemImage } from '@/components/ui/ItemImage';
 import {
   Btn,
@@ -263,6 +264,11 @@ export default function HomePage() {
         {online && !starter && (
           <HomeBentoTiles />
         )}
+
+        {/* Today's Look — one auto-composed outfit for today (weather + calendar
+            + style profile) as a pure-white grid collage, with Wear this + Remix.
+            Same gate as the bento: a personalized (non-starter) user, online. */}
+        {online && !starter && <TodaysLookCard />}
 
         {/* Closet strip — REAL closet items (client store). Skipped while empty
             so a cold-start user isn't shown an empty rail. */}

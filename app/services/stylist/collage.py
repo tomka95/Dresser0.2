@@ -137,9 +137,16 @@ def _border_color(rgb: Image.Image) -> Tuple[int, int, int]:
     return tuple(meds)
 
 
-def _normalize_item(img: Image.Image) -> Tuple[Image.Image, Optional[Image.Image]]:
-    """Knock the item's own background out to the shared canvas color and trim
-    to the content box. Returns (normalized RGB, content mask or None).
+def _normalize_item(
+    img: Image.Image, canvas_bg: Tuple[int, int, int] = _CANVAS
+) -> Tuple[Image.Image, Optional[Image.Image]]:
+    """Knock the item's own background out to ``canvas_bg`` and trim to the content
+    box. Returns (normalized RGB, content mask or None).
+
+    ``canvas_bg`` is the field the cutout will sit on — flattening the feathered
+    edge to the SAME colour as the destination canvas keeps the soft edge seamless
+    (no light halo). Defaults to the editorial porcelain; the grid passes its own
+    warmer field.
 
     A busy photo (border not near-uniform / hardly any background) is returned
     untouched with no mask — it will sit as a plain rectangle, which is the
@@ -160,7 +167,7 @@ def _normalize_item(img: Image.Image) -> Tuple[Image.Image, Optional[Image.Image
         return rgb, None  # busy scene: no reliable background to unify
 
     feather = content.filter(ImageFilter.GaussianBlur(2))
-    flat = Image.new("RGB", rgb.size, _CANVAS)
+    flat = Image.new("RGB", rgb.size, canvas_bg)
     flat.paste(rgb, (0, 0), feather)
 
     box = content.getbbox()
@@ -176,10 +183,13 @@ def _normalize_item(img: Image.Image) -> Tuple[Image.Image, Optional[Image.Image
     return flat, content
 
 
-def _fit(size: Tuple[int, int], cell_w: int, cell_h: int) -> Tuple[int, int]:
-    """Scale to fill _FILL of the cell (long-edge fit), bounded upscaling."""
+def _fit(
+    size: Tuple[int, int], cell_w: int, cell_h: int, fill: float = _FILL
+) -> Tuple[int, int]:
+    """Scale to fill ``fill`` of the cell (long-edge / bounding-box fit, aspect
+    preserved), bounded upscaling."""
     w, h = size
-    scale = min(_FILL * cell_w / w, _FILL * cell_h / h, _MAX_UPSCALE)
+    scale = min(fill * cell_w / w, fill * cell_h / h, _MAX_UPSCALE)
     return max(1, int(w * scale)), max(1, int(h * scale))
 
 
@@ -187,10 +197,11 @@ def _place(
     canvas: Image.Image,
     item: Tuple[Image.Image, Optional[Image.Image]],
     cx: int, cy: int, cell_w: int, cell_h: int,
+    fill: float = _FILL,
 ) -> None:
     """Center one normalized item in its cell with a soft contact shadow."""
     flat, mask = item
-    w, h = _fit(flat.size, cell_w, cell_h)
+    w, h = _fit(flat.size, cell_w, cell_h, fill)
     flat = flat.resize((w, h), Image.LANCZOS)
     x, y = cx - w // 2, cy - h // 2
     if mask is not None:
@@ -357,6 +368,159 @@ def get_or_create_outfit_collage(
         return None
 
     url = _store(user_id, compose_lookbook(items, occasion))
+    if url:
+        _cache_put(key, url)
+    return url
+
+
+# ===========================================================================
+# Today's Look GRID variant (Wave: Today's Look)
+# ---------------------------------------------------------------------------
+# A DIFFERENT card from the editorial lookbook above: every item of the day's
+# outfit knocked out on ONE warm off-white field, equal cells, side by side — no
+# hero/finishing bands, no title band. It reuses the same knockout + placement
+# spine (_normalize_item / _place) and the same content-addressed store, so it
+# inherits the dedup and the "never break compose" failure posture.
+#
+# Two rules the editorial card doesn't have, both from the Today's Look spec:
+#   * every outfit slot gets a cell — an item WITHOUT a usable image renders a
+#     neutral placeholder tile, it is NEVER skipped (so the grid always mirrors
+#     the composed outfit one-to-one);
+#   * the background is a CLEARLY warm off-white (#F3EEE6) — visibly warmer than
+#     the near-white porcelain, tonal with the app's page bg (#EEEDE9) but a shade
+#     lighter so cutouts still pop (grid-v4; v3 warm strip, v2 porcelain, v1 white).
+#   * items fill ~90% of their (low-padding) cell and the canvas is a 1080x720
+#     (3:2) block matching the Home card's image container, so it fills it edge-to-
+#     edge with tall cells that let garments read large.
+# ===========================================================================
+_GRID_LAYOUT_VERSION = "grid-v4"
+_GRID_W = 1080
+_GRID_PAD = 24                 # tight outer margin (was 48) so items reach the edges
+_GRID_GUTTER = 16              # small consistent gutter between cells (was 24)
+_GRID_CELL_H = 672             # taller cell -> 1080x720 (3:2) canvas, larger items
+_GRID_FILL = 0.90              # item long-edge fill fraction of its cell
+# Clearly warm off-white — visibly differs from white; tonal with the app page bg.
+_GRID_BG = (243, 238, 230)     # #F3EEE6
+_GRID_PLACEHOLDER = (233, 228, 219)  # neutral tile (a touch darker than the bg)
+_GRID_PLACEHOLDER_FILL = 0.90   # placeholder panel size as fraction of its cell
+
+# Usable image = a real, resolved photo. A generated card that is still a raw
+# crop (pending_retry / failed) or an explicit placeholder / pending status is
+# NOT usable and renders as a neutral tile. resolved / ready / user_uploaded and
+# untagged manual items all pass — this is the inclusive reading of the spec's
+# "generation_status='ready' OR image_status='resolved'" that still keeps a real
+# user-uploaded photo (image_status='user_uploaded') on the card.
+_UNUSABLE_IMAGE_STATUS = frozenset({"placeholder", "pending"})
+_UNUSABLE_GEN_STATUS = frozenset({"failed", "pending_retry"})
+
+
+def usable_image_url(item: ClothingItem) -> Optional[str]:
+    """The item's image_url iff it points at a real, showable photo — else None."""
+    url = item.image_url
+    if not url:
+        return None
+    if (getattr(item, "image_status", None) or "") in _UNUSABLE_IMAGE_STATUS:
+        return None
+    if (getattr(item, "generation_status", None) or "") in _UNUSABLE_GEN_STATUS:
+        return None
+    return url
+
+
+def _grid_key(user_id: UUID, ordered: List[Tuple[str, ClothingItem]]) -> str:
+    """Order-sensitive hash of the ordered (id, usable-url-or-blank) pairs — a
+    missing image is part of the key so a later heal invalidates the card."""
+    pairs = [f"{it.id}:{usable_image_url(it) or ''}" for _, it in ordered]
+    head = [_GRID_LAYOUT_VERSION, str(user_id)]
+    return hashlib.sha256("|".join(head + pairs).encode()).hexdigest()
+
+
+def _place_placeholder(
+    canvas: Image.Image, cx: int, cy: int, cell_w: int, cell_h: int
+) -> None:
+    """A quiet neutral tile where an item has no usable image (never skipped)."""
+    w = int(cell_w * _GRID_PLACEHOLDER_FILL)
+    h = int(cell_h * _GRID_PLACEHOLDER_FILL)
+    x0, y0 = cx - w // 2, cy - h // 2
+    draw = ImageDraw.Draw(canvas)
+    try:
+        draw.rounded_rectangle((x0, y0, x0 + w, y0 + h), radius=28,
+                               fill=_GRID_PLACEHOLDER)
+    except AttributeError:  # Pillow < 8.2: plain rectangle
+        draw.rectangle((x0, y0, x0 + w, y0 + h), fill=_GRID_PLACEHOLDER)
+
+
+def compose_grid(cells: List[Optional[Image.Image]]) -> bytes:
+    """Render N cells side by side on one warm off-white field. ``None`` cells are
+    neutral placeholders — a cell is never dropped, so the grid width always
+    equals the outfit's item count. Items fill ~90% of their cell (bounding-box
+    fit) and the canvas is a short landscape strip so the card fills edge-to-edge."""
+    n = max(1, len(cells))
+    inner = _GRID_W - 2 * _GRID_PAD
+    cell_w = (inner - (n - 1) * _GRID_GUTTER) // n
+    height = _GRID_CELL_H + 2 * _GRID_PAD
+    canvas = Image.new("RGB", (_GRID_W, height), _GRID_BG)
+    cy = _GRID_PAD + _GRID_CELL_H // 2
+    for idx, img in enumerate(cells):
+        cx = _GRID_PAD + idx * (cell_w + _GRID_GUTTER) + cell_w // 2
+        if img is None:
+            _place_placeholder(canvas, cx, cy, cell_w, _GRID_CELL_H)
+        else:
+            # Reuse the editorial knockout + shadowed placement, flattened onto the
+            # grid's own warm field so the feathered edge stays seamless.
+            _place(
+                canvas, _normalize_item(img, _GRID_BG),
+                cx, cy, cell_w, _GRID_CELL_H, fill=_GRID_FILL,
+            )
+    out = io.BytesIO()
+    canvas.save(out, format="JPEG", quality=_JPEG_QUALITY)
+    return out.getvalue()
+
+
+def get_or_create_grid_collage(
+    user_id: UUID,
+    slots: Dict[str, ClothingItem],
+    *,
+    no_persist: bool = False,
+) -> Optional[str]:
+    """Stored URL of the pure-white side-by-side grid for this outfit, rendered
+    only on a cache miss. Every slot becomes a cell (missing image -> placeholder).
+
+    Returns None when there is nothing to render at all (no slots, or not a single
+    item image could be fetched/decoded — the caller then falls back to its own
+    client-side tile grid), or in incognito (``no_persist`` leaves no storage
+    trace). Best-effort throughout: never raises into the composer/route."""
+    ordered = _ordered_slots(slots)
+    if not ordered:
+        return None
+
+    key = _grid_key(user_id, ordered)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    cells: List[Optional[Image.Image]] = []
+    any_real = False
+    for _slot, item in ordered:
+        url = usable_image_url(item)
+        img: Optional[Image.Image] = None
+        if url:
+            fetched = _download(url)
+            if fetched is not None:
+                try:
+                    img = Image.open(io.BytesIO(fetched[0])).convert("RGB")
+                    any_real = True
+                except Exception:
+                    logger.info("grid collage: undecodable image (item=%s)", item.id)
+                    img = None
+        cells.append(img)
+
+    # A grid of only placeholders adds nothing over the client fallback.
+    if not any_real:
+        return None
+    if no_persist:
+        return None
+
+    url = _store(user_id, compose_grid(cells))
     if url:
         _cache_put(key, url)
     return url
