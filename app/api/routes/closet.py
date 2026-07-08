@@ -32,9 +32,10 @@ CATEGORY_ENUM = ['top', 'bottom', 'dress', 'outerwear', 'shoes', 'accessories', 
 
 # PATCH contract field -> attributes_json key. An explicit edit of one of these stamps
 # provenance='user_edited' (authoritative + sacred: the async enricher never overwrites
-# it), so a later manual title/attribute correction sticks. Mirrors the seed written on
-# manual create (closet_service._user_edited_attributes) and the 'extracted' seed at
-# confirm (review_service._extracted_attributes).
+# it), so a later manual title/attribute correction sticks. Mirrors the provenance seed
+# the canonicalization chokepoint writes on every intake path
+# (app.services.closet_canonicalize: source values -> 'extracted'/'user_edited',
+# derived -> 'inferred', profile size / 'other' -> 'default').
 _PATCH_PROVENANCE_KEYS = {
     "name": "name",
     "category": "category",

@@ -78,6 +78,13 @@ def _auth(t):
 
 
 def _item(db, user, **attrs) -> ClothingItem:
+    # clothing_items.category is NOT NULL (migration 0030). The swap-diff "category" axis
+    # keys off sub_category, so default the column consistently from sub_category (else
+    # 'top') — keeps the row valid without perturbing any feedback assertion.
+    from app.services.enrichment import SUBCATEGORY_TO_CATEGORY
+
+    attrs.setdefault("category",
+                     SUBCATEGORY_TO_CATEGORY.get(attrs.get("sub_category"), "top"))
     it = ClothingItem(user_id=user.id, name=attrs.pop("name", "Item"), **attrs)
     db.add(it); db.commit(); db.refresh(it)
     return it

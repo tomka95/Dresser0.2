@@ -106,7 +106,10 @@ class ClothingItem(Base):
     # Live: all of these are `text`.
     name = Column(Text, nullable=False)
 
-    category = Column(Text, nullable=True)
+    # NOT NULL (migration 0030): every write funnels through the canonicalization
+    # chokepoint (app.services.closet_canonicalize) which guarantees a category, so this
+    # is the hard backstop against a null-category leak. Value space = the CHECK below.
+    category = Column(Text, nullable=False)
 
     sub_category = Column(Text, nullable=True)
 
