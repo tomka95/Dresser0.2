@@ -32,6 +32,7 @@ import {
 } from '@/lib/api/calendar';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useOnline } from '@/lib/useOnline';
+import { homeGreeting } from '@/lib/greeting';
 import { logEvent } from '@/lib/api/events';
 import {
   getShopFeed,
@@ -252,7 +253,7 @@ export default function HomePage() {
               {today}
             </div>
             <h1 className="m-0 mt-1 text-[31px] font-bold tracking-[-0.9px] text-white">
-              Hey, {firstName ?? sessionFirstName ?? 'there'}
+              {homeGreeting(new Date(), firstName ?? sessionFirstName)}
             </h1>
           </div>
           <RoundBtn
