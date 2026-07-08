@@ -34,20 +34,60 @@ from app.models import CalendarAccount
 
 logger = logging.getLogger(__name__)
 
+try:  # stdlib since 3.9; fall back to UTC-only bucketing if unavailable
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
-def _utc_today() -> date:
-    return datetime.now(timezone.utc).date()
+def _tzinfo(tz_name: Optional[str]):
+    """The user's tz, or UTC when unknown/unparseable — the fallback everything
+    here shares so a missing facts.location.timezone degrades to UTC, never errors."""
+    if tz_name and ZoneInfo is not None:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:  # unknown tz name -> UTC
+            return timezone.utc
+    return timezone.utc
 
 
-def resolve_target_date(token: Optional[str], *, today: Optional[date] = None) -> Optional[date]:
-    """Map a model-supplied day token to a concrete UTC date, or None if it can't
-    be resolved (→ caller defaults to today). Accepts an ISO date (YYYY-MM-DD),
-    'today'/'tomorrow', or a weekday name (next occurrence on/after today)."""
+def _tz_from_facts(facts: Optional[Dict]) -> Optional[str]:
+    """IANA tz name from style_profiles.facts.location.timezone (same field the
+    weather path reads), or None → UTC fallback."""
+    loc = (facts or {}).get("location")
+    if isinstance(loc, dict):
+        tz = loc.get("timezone")
+        if isinstance(tz, str) and tz.strip():
+            return tz
+    return None
+
+
+def _today_local(tz_name: Optional[str]) -> date:
+    return datetime.now(timezone.utc).astimezone(_tzinfo(tz_name)).date()
+
+
+def _event_local_date(ev: CalendarEvent, tz_name: Optional[str]) -> date:
+    """The calendar date an event falls on in the user's tz. All-day events carry
+    a bare date (midnight UTC) — bucket them by that literal date, never shifted
+    by a tz conversion; timed events convert from UTC to local."""
+    if ev.all_day:
+        return ev.start.date()
+    return ev.start.astimezone(_tzinfo(tz_name)).date()
+
+
+def resolve_target_date(
+    token: Optional[str], *, today: Optional[date] = None, tz_name: Optional[str] = None
+) -> Optional[date]:
+    """Map a model-supplied day token to a concrete date in the user's tz, or None
+    if it can't be resolved (→ caller defaults to today). Accepts an ISO date
+    (YYYY-MM-DD), 'today'/'tomorrow', or a weekday name (next occurrence on/after
+    today). ``today`` overrides the reference day (tests); otherwise it is the
+    current local day in ``tz_name`` (UTC when absent)."""
     if not token:
         return None
-    today = today or _utc_today()
+    today = today or _today_local(tz_name)
     t = token.strip().lower()
     if t in ("today", "tonight"):
         return today
@@ -80,26 +120,30 @@ class CalendarBlock:
     ``occasion``/``formality_target`` are TODAY's derived dress context — the
     default compose_outfit falls back to when the request doesn't target a
     specific day. Per-day derivation is available via :meth:`dress_context_for`.
+    ``tz_name`` is the user's IANA timezone (facts.location.timezone); all
+    day-bucketing / today-tomorrow labels / target_day resolution happen in it,
+    falling back to UTC when absent.
     """
 
     connected: bool = False
     events: List[CalendarEvent] = field(default_factory=list)
     occasion: Optional[str] = None
     formality_target: Optional[int] = None
+    tz_name: Optional[str] = None
 
     @property
     def available(self) -> bool:
         return self.connected and bool(self.events)
 
     def events_on(self, day: date) -> List[CalendarEvent]:
-        """Events (UTC) that fall on ``day``."""
-        return [ev for ev in self.events if ev.start.date() == day]
+        """Events that fall on ``day`` in the user's local timezone."""
+        return [ev for ev in self.events if _event_local_date(ev, self.tz_name) == day]
 
     def dress_context_for(self, target_day: Optional[str]) -> "DressContext":
         """Derive occasion/formality for the day the request targets. Ambiguous or
         unresolvable → TODAY's context. A resolvable day with no events → empty
         (so a free day doesn't inherit today's occasion)."""
-        target = resolve_target_date(target_day)
+        target = resolve_target_date(target_day, tz_name=self.tz_name)
         if target is None:
             return DressContext(occasion=self.occasion, formality_target=self.formality_target)
         return derive_dress_context(self.events_on(target))
@@ -107,23 +151,29 @@ class CalendarBlock:
     def to_prompt_text(self) -> str:
         """Multi-day, date-labeled schedule for the system prompt (never persisted).
 
-        Each day is tagged with its weekday + date (and today/tomorrow), so the
-        model resolves 'today'/'tomorrow'/named days to the right events instead
-        of misattributing today's events to another day."""
+        Each day is tagged with its weekday + date (and today/tomorrow) in the
+        user's local timezone, so the model resolves 'today'/'tomorrow'/named days
+        to the right events instead of misattributing today's events to another
+        day. Clock times are shown local too, to match the day headers."""
         if not self.available:
             return ""
-        today = _utc_today()
+        tz_name = self.tz_name
+        tz = _tzinfo(tz_name)
+        today = _today_local(tz_name)
         tomorrow = today + timedelta(days=1)
         by_day: Dict[date, List[CalendarEvent]] = {}
         for ev in self.events:
-            by_day.setdefault(ev.start.date(), []).append(ev)
+            by_day.setdefault(_event_local_date(ev, tz_name), []).append(ev)
+
+        def _clock(ev: CalendarEvent) -> str:
+            return "all day" if ev.all_day else ev.start.astimezone(tz).strftime("%H:%M")
 
         lines: List[str] = []
         for day in sorted(by_day):
             rel = " (today)" if day == today else " (tomorrow)" if day == tomorrow else ""
             label = f"{day:%a %b} {day.day}{rel}"
             evs = "; ".join(
-                f"{ev.start_label()} {ev.summary}{f' ({ev.location})' if ev.location else ''}"
+                f"{_clock(ev)} {ev.summary}{f' ({ev.location})' if ev.location else ''}"
                 for ev in by_day[day]
             )
             lines.append(f"- {label}: {evs}.")
@@ -173,15 +223,24 @@ def derive_dress_context(events: List[CalendarEvent]) -> DressContext:
 
 
 def assemble_calendar(
-    db: Session, user_id: UUID, *, no_persist: bool = False
+    db: Session,
+    user_id: UUID,
+    *,
+    no_persist: bool = False,
+    facts: Optional[Dict] = None,
 ) -> CalendarBlock:
     """Build the per-turn calendar block, or an empty one when unavailable.
 
-    ``no_persist`` (incognito) short-circuits to empty BEFORE any token read or
-    network call — a private turn reads no calendar at all.
+    ``facts`` (style_profiles.facts) supplies the user's timezone via
+    ``facts.location.timezone`` — the same field the weather path reads — so
+    day-bucketing / today-tomorrow labels / target_day all resolve in local
+    time. Absent → UTC. ``no_persist`` (incognito) short-circuits to empty BEFORE
+    any token read or network call — a private turn reads no calendar at all.
     """
     if no_persist or not settings.CALENDAR_ENABLED:
         return CalendarBlock()
+
+    tz_name = _tz_from_facts(facts)
 
     # (1) RLS-scoped connectivity read — enabled by the 0027 GRANT.
     account = (
@@ -190,7 +249,7 @@ def assemble_calendar(
         .one_or_none()
     )
     if account is None or not account.refresh_token:
-        return CalendarBlock()
+        return CalendarBlock(tz_name=tz_name)
 
     # (2) Live fetch on an OWN owner session (token refresh commits there). The
     #     window spans today..+CALENDAR_CONTEXT_DAYS so "what about tomorrow?" sees
@@ -198,15 +257,18 @@ def assemble_calendar(
     #     derivation happens in compose_outfit when a request targets another day).
     events = _fetch_live_events(user_id, days_ahead=settings.CALENDAR_CONTEXT_DAYS)
     if not events:
-        return CalendarBlock(connected=True)
+        return CalendarBlock(connected=True, tz_name=tz_name)
 
-    today = _utc_today()
-    derived = derive_dress_context([ev for ev in events if ev.start.date() == today])
+    today = _today_local(tz_name)
+    derived = derive_dress_context(
+        [ev for ev in events if _event_local_date(ev, tz_name) == today]
+    )
     return CalendarBlock(
         connected=True,
         events=events,
         occasion=derived.occasion,
         formality_target=derived.formality_target,
+        tz_name=tz_name,
     )
 
 

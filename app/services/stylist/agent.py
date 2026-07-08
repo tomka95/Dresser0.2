@@ -320,7 +320,8 @@ def run_stylist_turn(request: TurnRequest, emit: EmitFn) -> TurnResult:
         # this RLS-scoped session (enabled by the 0027 GRANT); skipped entirely in
         # incognito. Fetches event titles live (never persisted).
         calendar_block = assemble_calendar(
-            db, request.user_id, no_persist=request.no_persist
+            db, request.user_id, no_persist=request.no_persist,
+            facts=profile_block.facts,
         )
 
         # Resolve picker attachments through the ownership choke point; a

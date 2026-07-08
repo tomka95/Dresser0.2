@@ -428,3 +428,44 @@ def test_resolve_target_date():
     assert resolve_target_date("wednesday", today=today) == today  # same-day weekday
     assert resolve_target_date("someday", today=today) is None
     assert resolve_target_date(None, today=today) is None
+
+
+# ---------------------------------------------------------------------------
+# Local-timezone bucketing across the UTC day boundary (the fix's whole point).
+# ---------------------------------------------------------------------------
+def test_local_tz_buckets_tomorrow_across_utc_boundary():
+    """Tokyo (UTC+9), late local evening. An 08:00-local tomorrow event lands at
+    23:00 UTC *today* — UTC bucketing files it under today (the bug); local
+    bucketing correctly files it tomorrow."""
+    tz = "Asia/Tokyo"
+    ev = CalendarEvent(
+        "Morning meeting", datetime(2026, 7, 8, 23, 0, tzinfo=timezone.utc), None, None, False
+    )
+    assert ev.start.date() == date(2026, 7, 8)                        # UTC calendar day
+    assert stylist_cal._event_local_date(ev, tz) == date(2026, 7, 9)  # local calendar day
+
+    block = CalendarBlock(connected=True, events=[ev], tz_name=tz)
+    # "tomorrow" relative to the late-evening-local reference day (Jul 8 local)
+    tmr = resolve_target_date("tomorrow", today=date(2026, 7, 8), tz_name=tz)
+    assert tmr == date(2026, 7, 9)
+    assert block.events_on(tmr) == [ev]              # bucketed under local tomorrow
+    assert block.events_on(date(2026, 7, 8)) == []   # NOT under today (would be the bug)
+
+
+def test_missing_tz_falls_back_to_utc():
+    ev = CalendarEvent(
+        "Late thing", datetime(2026, 7, 8, 23, 0, tzinfo=timezone.utc), None, None, False
+    )
+    # tz_name absent → UTC bucketing (unchanged legacy behavior)
+    assert stylist_cal._event_local_date(ev, None) == date(2026, 7, 8)
+    block = CalendarBlock(connected=True, events=[ev], tz_name=None)
+    assert block.events_on(date(2026, 7, 8)) == [ev]
+
+
+def test_all_day_event_not_shifted_by_tz():
+    """All-day events carry a bare date (midnight UTC); a tz conversion must not
+    drag them into the previous local day."""
+    ev = CalendarEvent(
+        "Conference", datetime(2026, 7, 9, 0, 0, tzinfo=timezone.utc), None, None, True
+    )
+    assert stylist_cal._event_local_date(ev, "America/New_York") == date(2026, 7, 9)

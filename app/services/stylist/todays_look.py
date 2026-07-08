@@ -255,10 +255,13 @@ def _read_weather(facts: Dict[str, Any]) -> tuple:
     return forecast.warmth_band, wet, forecast
 
 
-def _read_calendar(db: Session, user_id: UUID, no_persist: bool) -> CalendarBlock:
-    """Derived occasion/formality only. Best-effort — never raises."""
+def _read_calendar(
+    db: Session, user_id: UUID, no_persist: bool, facts: Optional[Dict[str, Any]] = None
+) -> CalendarBlock:
+    """Derived occasion/formality only (TODAY's, in the user's tz). Best-effort —
+    never raises."""
     try:
-        return assemble_calendar(db, user_id, no_persist=no_persist)
+        return assemble_calendar(db, user_id, no_persist=no_persist, facts=facts)
     except Exception as exc:  # noqa: BLE001
         logger.warning("todays_look calendar read failed: %s", type(exc).__name__)
         return CalendarBlock()
@@ -272,7 +275,7 @@ def derive_factors(
     (weather is cache-backed; calendar is a short live fetch)."""
     warmth, wet, forecast = _read_weather(profile.facts)
     tz = getattr(forecast, "timezone", None) if forecast is not None else None
-    cal = _read_calendar(db, user_id, no_persist)
+    cal = _read_calendar(db, user_id, no_persist, profile.facts)
     return Factors(
         warmth=warmth, wet=wet,
         occasion=cal.occasion, formality_target=cal.formality_target,
