@@ -39,7 +39,7 @@ from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
-from PIL import Image, ImageChops, ImageFilter, ImageFont, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from app.models import ClothingItem
 
@@ -137,34 +137,88 @@ def _border_color(rgb: Image.Image) -> Tuple[int, int, int]:
     return tuple(meds)
 
 
-def _normalize_item(
-    img: Image.Image, canvas_bg: Tuple[int, int, int] = _CANVAS
-) -> Tuple[Image.Image, Optional[Image.Image]]:
-    """Knock the item's own background out to ``canvas_bg`` and trim to the content
-    box. Returns (normalized RGB, content mask or None).
+def _source_alpha(img: Image.Image) -> Optional[Image.Image]:
+    """The image's own alpha channel iff it carries a REAL cutout (some
+    transparency), else None. Prefer this over re-keying a JPEG."""
+    if img.mode in ("RGBA", "LA"):
+        alpha = img.getchannel("A")
+    elif img.mode == "P" and "transparency" in img.info:
+        alpha = img.convert("RGBA").getchannel("A")
+    else:
+        return None
+    lo, _hi = alpha.getextrema()
+    if lo >= 250:  # effectively opaque -> no usable cutout, fall back to key-out
+        return None
+    return alpha
 
-    ``canvas_bg`` is the field the cutout will sit on — flattening the feathered
-    edge to the SAME colour as the destination canvas keeps the soft edge seamless
-    (no light halo). Defaults to the editorial porcelain; the grid passes its own
-    warmer field.
 
-    A busy photo (border not near-uniform / hardly any background) is returned
-    untouched with no mask — it will sit as a plain rectangle, which is the
-    honest fallback for a non-product-shot source.
+def _background_mask(rgb: Image.Image) -> Optional[Image.Image]:
+    """Content mask via BORDER-CONNECTED flood fill (255 = keep, 0 = background).
+
+    The old approach keyed out EVERY near-background pixel globally, which also
+    erased near-white regions INSIDE light garments (light denim, a white shoe) —
+    punching holes. Here we only remove the contiguous near-background region that
+    is REACHABLE FROM THE IMAGE BORDER: build a binary "near the border colour"
+    map, frame it with a guaranteed-background 1px border so all edges connect,
+    flood-fill that border region, and treat only the flooded pixels as background.
+    Interior near-white islands are never reached, so they are preserved.
+
+    Returns None when the border isn't a clean product-shot background (too little
+    of it flooded) — the caller then keeps the photo as-is.
     """
-    rgb = img.convert("RGB")
     bg = _border_color(rgb)
     diff = ImageChops.difference(rgb, Image.new("RGB", rgb.size, bg))
     r, g, b = diff.split()
     dist = ImageChops.lighter(ImageChops.lighter(r, g), b)  # max channel delta
-    content = dist.point(lambda v: 255 if v > _KNOCK_TOL else 0)
-    # Despeckle so jpeg noise / shadows don't ruin the trim box.
-    content = content.filter(ImageFilter.MedianFilter(5))
+    # 255 where the pixel is within tolerance of the border colour (candidate bg).
+    near_bg = dist.point(lambda v: 255 if v <= _KNOCK_TOL else 0)
 
-    hist = content.histogram()
-    bg_fraction = hist[0] / max(1, rgb.width * rgb.height)
-    if bg_fraction < _MIN_BG_FRACTION:
-        return rgb, None  # busy scene: no reliable background to unify
+    # Frame with a 1px all-background border so every edge segment is connected,
+    # then flood the border-connected background from a corner to a marker (128).
+    framed = ImageOps.expand(near_bg, border=1, fill=255)
+    ImageDraw.floodfill(framed, (0, 0), 128, thresh=0)
+    flooded = framed.crop((1, 1, 1 + rgb.width, 1 + rgb.height))
+
+    # Keep everything that is NOT border-connected background (128). Interior
+    # near-white islands stay 255 here, so they are kept as content.
+    content = flooded.point(lambda v: 0 if v == 128 else 255)
+    content = content.filter(ImageFilter.MedianFilter(5))  # despeckle
+
+    removed = content.histogram()[0] / max(1, rgb.width * rgb.height)
+    if removed < _MIN_BG_FRACTION:
+        return None  # border colour didn't flood a real background -> keep as-is
+    # Erode the mask edge ~1px so the anti-aliased background ring at the garment
+    # edge is dropped (no light halo against the off-white canvas).
+    return content.filter(ImageFilter.MinFilter(3))
+
+
+def _normalize_item(
+    img: Image.Image, canvas_bg: Tuple[int, int, int] = _CANVAS
+) -> Tuple[Image.Image, Optional[Image.Image]]:
+    """Cut the item out onto ``canvas_bg`` and trim to the content box. Returns
+    (normalized RGB, content mask or None).
+
+    Cutout source, in order of preference:
+      1. the image's OWN alpha channel, if it carries a real cutout;
+      2. a BORDER-CONNECTED flood fill of the near-background (see
+         :func:`_background_mask`) — which, unlike a global colour key, never
+         removes near-white regions INSIDE a light garment;
+      3. otherwise the photo is kept as a plain rectangle (honest fallback for a
+         non-product-shot / borderless source).
+
+    ``canvas_bg`` is the field the cutout will sit on — flattening the feathered
+    edge to the SAME colour as the destination keeps the soft edge seamless.
+    """
+    alpha = _source_alpha(img)
+    rgb = img.convert("RGB")
+
+    if alpha is not None:
+        content = alpha.point(lambda v: 255 if v > 16 else 0)
+        content = content.filter(ImageFilter.MinFilter(3))  # trim halo
+    else:
+        content = _background_mask(rgb)
+        if content is None:
+            return rgb, None  # borderless / busy: no reliable background to unify
 
     feather = content.filter(ImageFilter.GaussianBlur(2))
     flat = Image.new("RGB", rgb.size, canvas_bg)
@@ -388,21 +442,22 @@ def get_or_create_outfit_collage(
 #     the composed outfit one-to-one);
 #   * the background is a CLEARLY warm off-white (#F3EEE6) — visibly warmer than
 #     the near-white porcelain, tonal with the app's page bg (#EEEDE9) but a shade
-#     lighter so cutouts still pop (grid-v4; v3 warm strip, v2 porcelain, v1 white).
-#   * items fill ~90% of their (low-padding) cell and the canvas is a 1080x720
-#     (3:2) block matching the Home card's image container, so it fills it edge-to-
-#     edge with tall cells that let garments read large.
+#     lighter so cutouts still pop (grid-v5).
+#   * items are HEIGHT-NORMALIZED: each is scaled to a shared target height
+#     (~78% of the canvas) on a common vertical centre line with even gutters, so
+#     the row reads as one balanced product grid — not scattered/floating tiles.
+#   * canvas is 1080x540 (2:1) matching the Home card's image container.
 # ===========================================================================
-_GRID_LAYOUT_VERSION = "grid-v4"
+_GRID_LAYOUT_VERSION = "grid-v5"
 _GRID_W = 1080
-_GRID_PAD = 24                 # tight outer margin (was 48) so items reach the edges
-_GRID_GUTTER = 16              # small consistent gutter between cells (was 24)
-_GRID_CELL_H = 672             # taller cell -> 1080x720 (3:2) canvas, larger items
-_GRID_FILL = 0.90              # item long-edge fill fraction of its cell
+_GRID_H = 540                  # 2:1 canvas (was 1080x720)
+_GRID_GUTTER = 40              # even gutter between the height-normalized items
+_GRID_FILL = 0.90              # the row occupies up to this fraction of canvas width
+_GRID_TARGET_H_FRAC = 0.78     # each item scaled to ~78% of the canvas height
 # Clearly warm off-white — visibly differs from white; tonal with the app page bg.
 _GRID_BG = (243, 238, 230)     # #F3EEE6
 _GRID_PLACEHOLDER = (233, 228, 219)  # neutral tile (a touch darker than the bg)
-_GRID_PLACEHOLDER_FILL = 0.90   # placeholder panel size as fraction of its cell
+_GRID_PLACEHOLDER_AR = 0.72    # placeholder panel width:height (portrait tile)
 
 # Usable image = a real, resolved photo. A generated card that is still a raw
 # crop (pending_retry / failed) or an explicit placeholder / pending status is
@@ -434,43 +489,77 @@ def _grid_key(user_id: UUID, ordered: List[Tuple[str, ClothingItem]]) -> str:
     return hashlib.sha256("|".join(head + pairs).encode()).hexdigest()
 
 
-def _place_placeholder(
-    canvas: Image.Image, cx: int, cy: int, cell_w: int, cell_h: int
-) -> None:
-    """A quiet neutral tile where an item has no usable image (never skipped)."""
-    w = int(cell_w * _GRID_PLACEHOLDER_FILL)
-    h = int(cell_h * _GRID_PLACEHOLDER_FILL)
-    x0, y0 = cx - w // 2, cy - h // 2
-    draw = ImageDraw.Draw(canvas)
+def _placeholder_tile(w: int, h: int) -> Tuple[Image.Image, Image.Image]:
+    """A quiet neutral rounded tile (image, mask) for an item with no usable
+    photo — height-normalized like a real item so the row stays even."""
+    tile = Image.new("RGB", (w, h), _GRID_PLACEHOLDER)
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
     try:
-        draw.rounded_rectangle((x0, y0, x0 + w, y0 + h), radius=28,
-                               fill=_GRID_PLACEHOLDER)
-    except AttributeError:  # Pillow < 8.2: plain rectangle
-        draw.rectangle((x0, y0, x0 + w, y0 + h), fill=_GRID_PLACEHOLDER)
+        draw.rounded_rectangle((0, 0, w - 1, h - 1), radius=28, fill=255)
+    except AttributeError:  # Pillow < 8.2
+        draw.rectangle((0, 0, w - 1, h - 1), fill=255)
+    return tile, mask
+
+
+def _paste_item(
+    canvas: Image.Image, flat: Image.Image, mask: Optional[Image.Image], x: int, y: int
+) -> None:
+    """Paste one prepared item at (x, y) with a soft contact shadow (masked items)."""
+    if mask is not None:
+        shadow = mask.filter(ImageFilter.GaussianBlur(12)).point(lambda v: v * 10 // 100)
+        canvas.paste((203, 200, 194), (x, y + 10), shadow)  # grounded, 10% depth
+        canvas.paste(flat, (x, y), mask.filter(ImageFilter.GaussianBlur(2)))
+    else:
+        canvas.paste(flat, (x, y))
 
 
 def compose_grid(cells: List[Optional[Image.Image]]) -> bytes:
-    """Render N cells side by side on one warm off-white field. ``None`` cells are
-    neutral placeholders — a cell is never dropped, so the grid width always
-    equals the outfit's item count. Items fill ~90% of their cell (bounding-box
-    fit) and the canvas is a short landscape strip so the card fills edge-to-edge."""
+    """Render N items in one balanced, height-normalized row on a warm off-white
+    (#F3EEE6) 1080x540 field. Each item (or a neutral placeholder for a missing
+    photo — never dropped) is scaled to a SHARED target height (~78% of the
+    canvas), aspect preserved, aligned on a common vertical centre line with even
+    gutters; the whole row is shrunk to fit and centred. No bands, no title."""
     n = max(1, len(cells))
-    inner = _GRID_W - 2 * _GRID_PAD
-    cell_w = (inner - (n - 1) * _GRID_GUTTER) // n
-    height = _GRID_CELL_H + 2 * _GRID_PAD
-    canvas = Image.new("RGB", (_GRID_W, height), _GRID_BG)
-    cy = _GRID_PAD + _GRID_CELL_H // 2
-    for idx, img in enumerate(cells):
-        cx = _GRID_PAD + idx * (cell_w + _GRID_GUTTER) + cell_w // 2
+    target_h = int(_GRID_TARGET_H_FRAC * _GRID_H)
+
+    # Prepare each item at the shared target height (aspect preserved).
+    prepared: List[Tuple[Image.Image, Optional[Image.Image], int, int]] = []
+    for img in cells:
         if img is None:
-            _place_placeholder(canvas, cx, cy, cell_w, _GRID_CELL_H)
-        else:
-            # Reuse the editorial knockout + shadowed placement, flattened onto the
-            # grid's own warm field so the feathered edge stays seamless.
-            _place(
-                canvas, _normalize_item(img, _GRID_BG),
-                cx, cy, cell_w, _GRID_CELL_H, fill=_GRID_FILL,
-            )
+            w = max(1, int(target_h * _GRID_PLACEHOLDER_AR))
+            tile, mask = _placeholder_tile(w, target_h)
+            prepared.append((tile, mask, w, target_h))
+            continue
+        flat, mask = _normalize_item(img, _GRID_BG)
+        scale = target_h / max(1, flat.height)
+        w = max(1, int(flat.width * scale))
+        flat = flat.resize((w, target_h), Image.LANCZOS)
+        mask = mask.resize((w, target_h), Image.LANCZOS) if mask is not None else None
+        prepared.append((flat, mask, w, target_h))
+
+    # Shrink the row uniformly if it would exceed the allowed width.
+    gutters = _GRID_GUTTER * (n - 1)
+    row_w = sum(p[2] for p in prepared) + gutters
+    avail = int(_GRID_FILL * _GRID_W)
+    if row_w > avail:
+        shrink = (avail - gutters) / max(1, row_w - gutters)
+        resized: List[Tuple[Image.Image, Optional[Image.Image], int, int]] = []
+        for flat, mask, w, h in prepared:
+            nw, nh = max(1, int(w * shrink)), max(1, int(h * shrink))
+            flat = flat.resize((nw, nh), Image.LANCZOS)
+            mask = mask.resize((nw, nh), Image.LANCZOS) if mask is not None else None
+            resized.append((flat, mask, nw, nh))
+        prepared = resized
+        row_w = sum(p[2] for p in prepared) + gutters
+
+    canvas = Image.new("RGB", (_GRID_W, _GRID_H), _GRID_BG)
+    cy = _GRID_H // 2
+    x = (_GRID_W - row_w) // 2  # centre the whole row
+    for flat, mask, w, h in prepared:
+        _paste_item(canvas, flat, mask, x, cy - h // 2)  # common centre line
+        x += w + _GRID_GUTTER
+
     out = io.BytesIO()
     canvas.save(out, format="JPEG", quality=_JPEG_QUALITY)
     return out.getvalue()
@@ -482,8 +571,8 @@ def get_or_create_grid_collage(
     *,
     no_persist: bool = False,
 ) -> Optional[str]:
-    """Stored URL of the pure-white side-by-side grid for this outfit, rendered
-    only on a cache miss. Every slot becomes a cell (missing image -> placeholder).
+    """Stored URL of the warm off-white side-by-side grid for this outfit, rendered
+    only on a cache miss. Every slot becomes an item (missing image -> placeholder).
 
     Returns None when there is nothing to render at all (no slots, or not a single
     item image could be fetched/decoded — the caller then falls back to its own
@@ -507,7 +596,10 @@ def get_or_create_grid_collage(
             fetched = _download(url)
             if fetched is not None:
                 try:
-                    img = Image.open(io.BytesIO(fetched[0])).convert("RGB")
+                    # Do NOT force RGB here: keep any real alpha cutout so
+                    # _normalize_item can prefer it over re-keying the JPEG.
+                    img = Image.open(io.BytesIO(fetched[0]))
+                    img.load()
                     any_real = True
                 except Exception:
                     logger.info("grid collage: undecodable image (item=%s)", item.id)
