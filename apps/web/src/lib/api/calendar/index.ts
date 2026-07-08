@@ -69,17 +69,45 @@ export async function disconnectCalendar(): Promise<void> {
 }
 
 /** Today's upcoming events (live). Returns `{ connected:false }` on any failure. */
+/**
+ * Module-level stale-while-revalidate cache (survives client-side navigation,
+ * resets on full reload). Shorter TTL than weather — a day's schedule can change.
+ */
+const CALENDAR_TTL_MS = 2 * 60 * 1000; // 2 min
+let _calendarCache: { data: CalendarTodayResponse; ts: number } | null = null;
+
+/** Last cached calendar, or null on a cold client. Synchronous — for instant paint. */
+export function getCachedCalendarToday(): CalendarTodayResponse | null {
+  return _calendarCache?.data ?? null;
+}
+
+/** True when the cache exists and is within TTL (skip the network entirely). */
+export function isCalendarFresh(): boolean {
+  return _calendarCache != null && Date.now() - _calendarCache.ts < CALENDAR_TTL_MS;
+}
+
+/** Today's upcoming events (live). Returns `{ connected:false }` on any failure.
+ * Caches only CONNECTED results (the slow Google-hitting path); a not-connected
+ * or transient-error result never overwrites a good cache. */
 export async function getCalendarToday(): Promise<CalendarTodayResponse> {
   const token = await getAccessToken();
   if (!token) return { connected: false, events: [] };
+
+  let result: CalendarTodayResponse;
   try {
     const response = await fetch(`${API_BASE_URL}/calendar/today`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!response.ok) return { connected: false, events: [] };
-    return (await response.json()) as CalendarTodayResponse;
+    result = response.ok
+      ? ((await response.json()) as CalendarTodayResponse)
+      : { connected: false, events: [] };
   } catch {
-    return { connected: false, events: [] };
+    result = { connected: false, events: [] };
   }
+
+  if (result.connected) {
+    _calendarCache = { data: result, ts: Date.now() };
+  }
+  return result;
 }

@@ -23,8 +23,13 @@ import { useRouter } from 'next/navigation';
 import { CloudRain, Cloud, Plus, Sun } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { getCurrentUser } from '@/lib/api/auth';
-import { getWeather, type WeatherResponse } from '@/lib/api/weather';
-import { getCalendarToday, type CalendarTodayResponse } from '@/lib/api/calendar';
+import { getWeather, getCachedWeather, isWeatherFresh, type WeatherResponse } from '@/lib/api/weather';
+import {
+  getCalendarToday,
+  getCachedCalendarToday,
+  isCalendarFresh,
+  type CalendarTodayResponse,
+} from '@/lib/api/calendar';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useOnline } from '@/lib/useOnline';
 import { logEvent } from '@/lib/api/events';
@@ -626,11 +631,15 @@ function OutfitFeedCard({
 
 /** Real weather tile — self-fetches GET /weather, degrades quietly. */
 function WeatherTile() {
-  const [wx, setWx] = useState<WeatherResponse | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  // Seed from the module cache so a re-mount paints instantly; skeleton only on
+  // a cold client (no cache yet).
+  const [wx, setWx] = useState<WeatherResponse | null>(() => getCachedWeather());
+  const [loaded, setLoaded] = useState(() => getCachedWeather() !== null);
 
   useEffect(() => {
+    if (isWeatherFresh()) return; // fresh cache — skip the network entirely
     let alive = true;
+    // Revalidate in the background (cache already painted, so no skeleton flash).
     void getWeather().then((r) => {
       if (alive) {
         setWx(r);
@@ -704,11 +713,14 @@ function HomeBentoTiles() {
 
 /** Real calendar tile — self-fetches GET /calendar/today, degrades quietly. */
 function CalendarTile() {
-  const [data, setData] = useState<CalendarTodayResponse | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  // Seed from the module cache; skeleton only on a cold client.
+  const [data, setData] = useState<CalendarTodayResponse | null>(() => getCachedCalendarToday());
+  const [loaded, setLoaded] = useState(() => getCachedCalendarToday() !== null);
 
   useEffect(() => {
+    if (isCalendarFresh()) return; // fresh cache — skip the network entirely
     let alive = true;
+    // Revalidate in the background (cache already painted, so no skeleton flash).
     void getCalendarToday().then((r) => {
       if (alive) {
         setData(r);
