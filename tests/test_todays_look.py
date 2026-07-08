@@ -53,13 +53,17 @@ def client():
     return TestClient(app)
 
 
+def _tiny_png() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (24, 24), (120, 120, 120)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @pytest.fixture(autouse=True)
 def _stub_collage_io(monkeypatch):
     """Deterministic + offline collage: a tiny real PNG for every download, a
     fixed URL for every store. compose_grid still runs for real."""
-    buf = io.BytesIO()
-    Image.new("RGB", (24, 24), (120, 120, 120)).save(buf, format="PNG")
-    png = buf.getvalue()
+    png = _tiny_png()
     monkeypatch.setattr(collage_mod, "_download", lambda url: (png, "image/png"))
     monkeypatch.setattr(
         collage_mod, "_store", lambda user_id, data: "https://cdn.test/grid.jpg"
@@ -305,10 +309,26 @@ def test_cache_hit_returns_identical_without_recompute(client, db, user1, tok1):
     assert db.query(TodaysLookCache).filter_by(user_id=user1.id).count() == 1
 
 
-def test_grid_collage_background_is_porcelain():
-    # grid-v2: warm off-white, reusing the shared lookbook constant (not pure white).
-    assert collage_mod._GRID_BG == collage_mod._CANVAS == (250, 249, 247)
-    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v2"
+def test_grid_collage_background_is_warm_offwhite():
+    # grid-v3: a CLEARLY warm off-white (#F3EEE6) that visibly differs from white
+    # and from the near-white porcelain.
+    assert collage_mod._GRID_BG == (243, 238, 230)
+    assert collage_mod._GRID_BG != (255, 255, 255)
+    assert collage_mod._GRID_BG != collage_mod._CANVAS
+    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v3"
+    assert collage_mod._GRID_FILL >= 0.85  # items fill their cell
+
+
+def test_grid_collage_dimensions_are_landscape_strip():
+    # 3 items -> 1080 x 478 landscape strip (matches the card container ratio).
+    from PIL import Image
+
+    png = _tiny_png()
+    data = collage_mod.compose_grid([
+        Image.open(io.BytesIO(png)).convert("RGB") for _ in range(3)
+    ])
+    w, h = Image.open(io.BytesIO(data)).size
+    assert (w, h) == (1080, 478)
 
 
 def test_collage_version_bump_invalidates_cache(client, db, user1, tok1, monkeypatch):

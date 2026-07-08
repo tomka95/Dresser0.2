@@ -137,9 +137,16 @@ def _border_color(rgb: Image.Image) -> Tuple[int, int, int]:
     return tuple(meds)
 
 
-def _normalize_item(img: Image.Image) -> Tuple[Image.Image, Optional[Image.Image]]:
-    """Knock the item's own background out to the shared canvas color and trim
-    to the content box. Returns (normalized RGB, content mask or None).
+def _normalize_item(
+    img: Image.Image, canvas_bg: Tuple[int, int, int] = _CANVAS
+) -> Tuple[Image.Image, Optional[Image.Image]]:
+    """Knock the item's own background out to ``canvas_bg`` and trim to the content
+    box. Returns (normalized RGB, content mask or None).
+
+    ``canvas_bg`` is the field the cutout will sit on — flattening the feathered
+    edge to the SAME colour as the destination canvas keeps the soft edge seamless
+    (no light halo). Defaults to the editorial porcelain; the grid passes its own
+    warmer field.
 
     A busy photo (border not near-uniform / hardly any background) is returned
     untouched with no mask — it will sit as a plain rectangle, which is the
@@ -160,7 +167,7 @@ def _normalize_item(img: Image.Image) -> Tuple[Image.Image, Optional[Image.Image
         return rgb, None  # busy scene: no reliable background to unify
 
     feather = content.filter(ImageFilter.GaussianBlur(2))
-    flat = Image.new("RGB", rgb.size, _CANVAS)
+    flat = Image.new("RGB", rgb.size, canvas_bg)
     flat.paste(rgb, (0, 0), feather)
 
     box = content.getbbox()
@@ -176,10 +183,13 @@ def _normalize_item(img: Image.Image) -> Tuple[Image.Image, Optional[Image.Image
     return flat, content
 
 
-def _fit(size: Tuple[int, int], cell_w: int, cell_h: int) -> Tuple[int, int]:
-    """Scale to fill _FILL of the cell (long-edge fit), bounded upscaling."""
+def _fit(
+    size: Tuple[int, int], cell_w: int, cell_h: int, fill: float = _FILL
+) -> Tuple[int, int]:
+    """Scale to fill ``fill`` of the cell (long-edge / bounding-box fit, aspect
+    preserved), bounded upscaling."""
     w, h = size
-    scale = min(_FILL * cell_w / w, _FILL * cell_h / h, _MAX_UPSCALE)
+    scale = min(fill * cell_w / w, fill * cell_h / h, _MAX_UPSCALE)
     return max(1, int(w * scale)), max(1, int(h * scale))
 
 
@@ -187,10 +197,11 @@ def _place(
     canvas: Image.Image,
     item: Tuple[Image.Image, Optional[Image.Image]],
     cx: int, cy: int, cell_w: int, cell_h: int,
+    fill: float = _FILL,
 ) -> None:
     """Center one normalized item in its cell with a soft contact shadow."""
     flat, mask = item
-    w, h = _fit(flat.size, cell_w, cell_h)
+    w, h = _fit(flat.size, cell_w, cell_h, fill)
     flat = flat.resize((w, h), Image.LANCZOS)
     x, y = cx - w // 2, cy - h // 2
     if mask is not None:
@@ -375,18 +386,22 @@ def get_or_create_outfit_collage(
 #   * every outfit slot gets a cell — an item WITHOUT a usable image renders a
 #     neutral placeholder tile, it is NEVER skipped (so the grid always mirrors
 #     the composed outfit one-to-one);
-#   * the background is the shared porcelain off-white (_CANVAS, #FAF9F7) — the
-#     same field the editorial card knocks items out onto (grid-v2; grid-v1 was
-#     pure white), so cutouts sit seamlessly rather than on a clinical white.
+#   * the background is a CLEARLY warm off-white (#F3EEE6) — visibly warmer than
+#     the near-white porcelain, tonal with the app's page bg (#EEEDE9) but a shade
+#     lighter so cutouts still pop (grid-v3; grid-v2 was porcelain, v1 pure white).
+#   * items fill ~90% of their (low-padding) cell and the canvas is a landscape
+#     strip matching the Home card's image container, so it fills edge-to-edge.
 # ===========================================================================
-_GRID_LAYOUT_VERSION = "grid-v2"
+_GRID_LAYOUT_VERSION = "grid-v3"
 _GRID_W = 1080
-_GRID_PAD = 48
-_GRID_GUTTER = 24
-_GRID_CELL_H = 520
-_GRID_BG = _CANVAS              # warm porcelain off-white (#FAF9F7), shared with lookbook-v2
-_GRID_PLACEHOLDER = (238, 236, 232)  # neutral tile for a missing item image
-_GRID_PLACEHOLDER_FILL = 0.84   # placeholder panel size as fraction of its cell
+_GRID_PAD = 24                 # tight outer margin (was 48) so items reach the edges
+_GRID_GUTTER = 16              # small consistent gutter between cells (was 24)
+_GRID_CELL_H = 430             # shorter cell (was 520) -> less vertical dead space
+_GRID_FILL = 0.90              # item long-edge fill fraction of its cell (was ~0.4 effective)
+# Clearly warm off-white — visibly differs from white; tonal with the app page bg.
+_GRID_BG = (243, 238, 230)     # #F3EEE6
+_GRID_PLACEHOLDER = (233, 228, 219)  # neutral tile (a touch darker than the bg)
+_GRID_PLACEHOLDER_FILL = 0.90   # placeholder panel size as fraction of its cell
 
 # Usable image = a real, resolved photo. A generated card that is still a raw
 # crop (pending_retry / failed) or an explicit placeholder / pending status is
@@ -434,9 +449,10 @@ def _place_placeholder(
 
 
 def compose_grid(cells: List[Optional[Image.Image]]) -> bytes:
-    """Render N cells side by side on one pure-white field. ``None`` cells are
+    """Render N cells side by side on one warm off-white field. ``None`` cells are
     neutral placeholders — a cell is never dropped, so the grid width always
-    equals the outfit's item count."""
+    equals the outfit's item count. Items fill ~90% of their cell (bounding-box
+    fit) and the canvas is a short landscape strip so the card fills edge-to-edge."""
     n = max(1, len(cells))
     inner = _GRID_W - 2 * _GRID_PAD
     cell_w = (inner - (n - 1) * _GRID_GUTTER) // n
@@ -448,8 +464,12 @@ def compose_grid(cells: List[Optional[Image.Image]]) -> bytes:
         if img is None:
             _place_placeholder(canvas, cx, cy, cell_w, _GRID_CELL_H)
         else:
-            # Reuse the editorial knockout + shadowed placement, on white.
-            _place(canvas, _normalize_item(img), cx, cy, cell_w, _GRID_CELL_H)
+            # Reuse the editorial knockout + shadowed placement, flattened onto the
+            # grid's own warm field so the feathered edge stays seamless.
+            _place(
+                canvas, _normalize_item(img, _GRID_BG),
+                cx, cy, cell_w, _GRID_CELL_H, fill=_GRID_FILL,
+            )
     out = io.BytesIO()
     canvas.save(out, format="JPEG", quality=_JPEG_QUALITY)
     return out.getvalue()

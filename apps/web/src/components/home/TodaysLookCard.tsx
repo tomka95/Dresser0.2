@@ -116,10 +116,14 @@ export function TodaysLookCard() {
 
   return (
     <div style={{ ...M.ai(24), overflow: 'hidden', marginTop: 20 }}>
-      {/* Collage — server white-grid collage if present, else a 2×2 of items. */}
-      {/* Porcelain off-white — matches the grid collage bg (#FAF9F7) so a
-          contain-fit image never shows a white frame. */}
-      <div className="relative" style={{ height: 208, background: '#faf9f7' }}>
+      {/* Collage — server grid collage if present, else a 2×2 of items. The
+          container matches the grid collage's aspect ratio (1080×478) and its warm
+          off-white bg (#F3EEE6) so a contain-fit image fills edge-to-edge with no
+          letterbox frame. */}
+      <div
+        className="relative"
+        style={{ aspectRatio: '1080 / 478', background: '#f3eee6' }}
+      >
         {look.collageUrl ? (
           <ItemImage src={look.collageUrl} alt={look.title} fit="contain" />
         ) : slots.length > 0 ? (
