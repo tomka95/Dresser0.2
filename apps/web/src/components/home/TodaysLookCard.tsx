@@ -117,12 +117,12 @@ export function TodaysLookCard() {
   return (
     <div style={{ ...M.ai(24), overflow: 'hidden', marginTop: 20 }}>
       {/* Collage — server grid collage if present, else a 2×2 of items. The
-          container matches the grid collage's aspect ratio (1080×478) and its warm
-          off-white bg (#F3EEE6) so a contain-fit image fills edge-to-edge with no
-          letterbox frame. */}
+          container matches the grid collage's aspect ratio (1080×720, 3:2) and its
+          warm off-white bg (#F3EEE6) so a contain-fit image fills edge-to-edge with
+          no letterbox frame. */}
       <div
         className="relative"
-        style={{ aspectRatio: '1080 / 478', background: '#f3eee6' }}
+        style={{ aspectRatio: '1080 / 720', background: '#f3eee6' }}
       >
         {look.collageUrl ? (
           <ItemImage src={look.collageUrl} alt={look.title} fit="contain" />

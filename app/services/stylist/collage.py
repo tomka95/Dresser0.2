@@ -388,16 +388,17 @@ def get_or_create_outfit_collage(
 #     the composed outfit one-to-one);
 #   * the background is a CLEARLY warm off-white (#F3EEE6) — visibly warmer than
 #     the near-white porcelain, tonal with the app's page bg (#EEEDE9) but a shade
-#     lighter so cutouts still pop (grid-v3; grid-v2 was porcelain, v1 pure white).
-#   * items fill ~90% of their (low-padding) cell and the canvas is a landscape
-#     strip matching the Home card's image container, so it fills edge-to-edge.
+#     lighter so cutouts still pop (grid-v4; v3 warm strip, v2 porcelain, v1 white).
+#   * items fill ~90% of their (low-padding) cell and the canvas is a 1080x720
+#     (3:2) block matching the Home card's image container, so it fills it edge-to-
+#     edge with tall cells that let garments read large.
 # ===========================================================================
-_GRID_LAYOUT_VERSION = "grid-v3"
+_GRID_LAYOUT_VERSION = "grid-v4"
 _GRID_W = 1080
 _GRID_PAD = 24                 # tight outer margin (was 48) so items reach the edges
 _GRID_GUTTER = 16              # small consistent gutter between cells (was 24)
-_GRID_CELL_H = 430             # shorter cell (was 520) -> less vertical dead space
-_GRID_FILL = 0.90              # item long-edge fill fraction of its cell (was ~0.4 effective)
+_GRID_CELL_H = 672             # taller cell -> 1080x720 (3:2) canvas, larger items
+_GRID_FILL = 0.90              # item long-edge fill fraction of its cell
 # Clearly warm off-white — visibly differs from white; tonal with the app page bg.
 _GRID_BG = (243, 238, 230)     # #F3EEE6
 _GRID_PLACEHOLDER = (233, 228, 219)  # neutral tile (a touch darker than the bg)

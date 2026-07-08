@@ -315,12 +315,12 @@ def test_grid_collage_background_is_warm_offwhite():
     assert collage_mod._GRID_BG == (243, 238, 230)
     assert collage_mod._GRID_BG != (255, 255, 255)
     assert collage_mod._GRID_BG != collage_mod._CANVAS
-    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v3"
+    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v4"
     assert collage_mod._GRID_FILL >= 0.85  # items fill their cell
 
 
-def test_grid_collage_dimensions_are_landscape_strip():
-    # 3 items -> 1080 x 478 landscape strip (matches the card container ratio).
+def test_grid_collage_dimensions_are_three_by_two():
+    # 3 items -> 1080 x 720 (3:2) block (matches the card container ratio).
     from PIL import Image
 
     png = _tiny_png()
@@ -328,7 +328,8 @@ def test_grid_collage_dimensions_are_landscape_strip():
         Image.open(io.BytesIO(png)).convert("RGB") for _ in range(3)
     ])
     w, h = Image.open(io.BytesIO(data)).size
-    assert (w, h) == (1080, 478)
+    assert (w, h) == (1080, 720)
+    assert round(w / h, 3) == 1.5
 
 
 def test_collage_version_bump_invalidates_cache(client, db, user1, tok1, monkeypatch):
