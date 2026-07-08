@@ -15,13 +15,25 @@ import { Check, Shuffle } from 'lucide-react';
 import {
   getTodaysLook,
   getCachedTodaysLook,
-  isTodaysLookFresh,
   remixTodaysLook,
   wearTodaysLook,
   type TodaysLookResponse,
 } from '@/lib/api/todays-look';
 import { ItemImage } from '@/components/ui/ItemImage';
 import { Btn, Spark, Sk, ImageFill, useToastStore, M } from '@/components/ds';
+
+/** Cheap structural equality for the fields that drive the card — lets a
+ * background revalidation skip the state swap (and its re-render) when the
+ * look is unchanged. */
+function sameLook(a: TodaysLookResponse, b: TodaysLookResponse): boolean {
+  return (
+    a.kind === b.kind &&
+    a.collageUrl === b.collageUrl &&
+    a.title === b.title &&
+    a.caption === b.caption &&
+    a.itemIds.join(',') === b.itemIds.join(',')
+  );
+}
 
 export function TodaysLookCard() {
   const pushToast = useToastStore((s) => s.toast);
@@ -31,13 +43,16 @@ export function TodaysLookCard() {
   const [worn, setWorn] = useState(false);
   const [wearing, setWearing] = useState(false);
 
+  // Cache-first: the cached look (if any) is already painted from the initial
+  // state; ALWAYS revalidate in the background (the server half-day-caches, so
+  // this is cheap) and swap only if the payload actually changed — no skeleton
+  // flicker on navigation, no needless re-render when nothing moved.
   useEffect(() => {
-    if (isTodaysLookFresh()) return; // fresh cache — skip the network entirely
     let alive = true;
     void getTodaysLook().then((r) => {
       if (!alive) return;
-      setLook(r);
       setLoaded(true);
+      setLook((prev) => (prev && sameLook(prev, r) ? prev : r));
     });
     return () => {
       alive = false;
@@ -70,7 +85,7 @@ export function TodaysLookCard() {
     setRemixing(true);
     try {
       const next = await remixTodaysLook(look.itemIds);
-      if (next.kind === 'look' && next.itemIds.length > 0) {
+      if (next.kind === 'normal' && next.itemIds.length > 0) {
         setLook(next);
         setWorn(false); // a new look hasn't been worn
       } else {

@@ -345,3 +345,40 @@ class ChatRateWindow(Base):
     user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     window_start = Column(_tstz(), nullable=False)
     count = Column(Integer, nullable=False, default=0)
+
+
+class TodaysLookCache(Base):
+    """Half-daily cache of the user's composed Today's Look (migration 0029).
+
+    ONE row per user (unique user_id, upserted). GET /todays-look returns the
+    stored ``outfit_json`` verbatim — no recompose, no collage regen, no re-emitted
+    outfit_shown — as long as the cached ``factor_signature`` still matches the
+    live factors AND we're in the same ``half_day_bucket`` (AM/PM of the local
+    date). Any factor change (warmth band, derived occasion, closet count/mtime)
+    flips the signature and forces a fresh compose; Remix overwrites the row.
+
+    Per-user RLS (auth.uid() = user_id, 4-verb) + an explicit GRANT to the
+    ``authenticated`` role are applied by migration 0029 (RLS is not expressible in
+    the ORM; the GRANT is required because the RLS-scoped route reads/writes this
+    row as role authenticated)."""
+
+    __tablename__ = "todays_look"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", name="todays_look_user_id_key"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Hash of (half-day bucket, warmth band, derived occasion, closet signature).
+    factor_signature = Column(Text, nullable=False)
+    # The full GET payload, returned verbatim on a cache hit.
+    outfit_json = Column(_jsonb(), nullable=False)
+    collage_url = Column(Text, nullable=True)
+    title = Column(Text, nullable=True)
+    caption = Column(Text, nullable=True)
+    warmth = Column(Integer, nullable=True)
+    occasion = Column(Text, nullable=True)
+    # 'YYYY-MM-DD:AM' | 'YYYY-MM-DD:PM' in the user's local (or UTC) date.
+    half_day_bucket = Column(Text, nullable=False)
+    created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)

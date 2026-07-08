@@ -24,7 +24,9 @@ export interface TodaysLookItem {
 }
 
 export interface TodaysLookResponse {
-  kind: 'look' | 'starter';
+  /** 'normal' = a complete look (even if below the day's ideal formality);
+   *  'starter' = no completable look at any formality (thin closet). */
+  kind: 'normal' | 'starter';
   itemIds: string[];
   items: TodaysLookItem[];
   collageUrl?: string | null;
@@ -33,6 +35,8 @@ export interface TodaysLookResponse {
   occasion?: string | null;
   /** 1 hot .. 3 cold. */
   warmth?: number | null;
+  /** The formality the look was actually composed at (may be below the ideal). */
+  formality?: number | null;
   note?: string | null;
   rationale?: string;
 }
@@ -53,6 +57,7 @@ const STARTER_FALLBACK: TodaysLookResponse = {
   caption: '',
   occasion: null,
   warmth: null,
+  formality: null,
   note: null,
   rationale: '',
 };
@@ -82,7 +87,8 @@ export function setCachedTodaysLook(data: TodaysLookResponse): void {
 
 /** Fetch the day's look. Returns a starter payload on any failure (auth/network/
  * backend) so callers never need a try/catch to render. Caches only a real
- * 'look' — a starter/error result never overwrites a previously-good cache. */
+ * look — a starter/error result never overwrites a previously-good cache. The
+ * server itself half-day-caches the look, so this call is cheap to revalidate. */
 export async function getTodaysLook(): Promise<TodaysLookResponse> {
   const token = await getAccessToken();
   if (!token) return STARTER_FALLBACK;
@@ -100,7 +106,7 @@ export async function getTodaysLook(): Promise<TodaysLookResponse> {
     result = STARTER_FALLBACK;
   }
 
-  if (result.kind === 'look') {
+  if (result.kind !== 'starter') {
     _cache = { data: result, ts: Date.now() };
   }
   return result;
@@ -125,7 +131,7 @@ export async function remixTodaysLook(itemIds: string[]): Promise<TodaysLookResp
   if (!response.ok) throw new Error('Could not remix your look. Please try again.');
 
   const data = (await response.json()) as TodaysLookResponse;
-  if (data.kind === 'look') setCachedTodaysLook(data);
+  if (data.kind !== 'starter') setCachedTodaysLook(data);
   return data;
 }
 

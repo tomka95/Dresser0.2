@@ -1,14 +1,17 @@
-"""Today's Look — GET / remix / wear.
+"""Today's Look — GET / remix / wear + formality step-down + half-daily cache.
 
 Runs on the real SQLite substrate (no live LLM, no network anywhere):
   * weather is inert (no saved location -> forecast_for_facts returns None),
-  * calendar is inert (no CalendarAccount -> empty block),
+  * calendar is inert (no CalendarAccount -> empty block); formality-target
+    behavior is exercised by passing Factors() straight to the service,
   * the grid collage's download + store seams are monkeypatched so compose_grid
     runs for real (pure PIL) without hitting Supabase.
 
 Covers: auth, cross-user reject, thin-closet starter fallback, deterministic
-stability, missing-image placeholder, remix variety + rate limit, wear
-persistence + idempotency + learning signals.
+stability, missing-image placeholder, formality step-down completes a look,
+owned-photo preference, undergarment/bag exclusion, remix variety + rate limit,
+wear persistence + idempotency + learning, half-daily cache hit / signature
+invalidation / remix overwrite.
 """
 from __future__ import annotations
 
@@ -25,9 +28,11 @@ from app.models import (
     PreferenceSignal,
     SavedOutfit,
     StyleEvent,
+    TodaysLookCache,
     User,
 )
 from app.services.stylist import collage as collage_mod
+from app.services.stylist.todays_look import Factors, compose_todays_look
 from main import app
 from tests._authutil import mint_supabase_token
 
@@ -50,8 +55,8 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _stub_collage_io(monkeypatch):
-    """Make the grid collage deterministic + offline: a tiny real PNG for every
-    download, a fixed URL for every store. compose_grid still runs for real."""
+    """Deterministic + offline collage: a tiny real PNG for every download, a
+    fixed URL for every store. compose_grid still runs for real."""
     buf = io.BytesIO()
     Image.new("RGB", (24, 24), (120, 120, 120)).save(buf, format="PNG")
     png = buf.getvalue()
@@ -59,7 +64,6 @@ def _stub_collage_io(monkeypatch):
     monkeypatch.setattr(
         collage_mod, "_store", lambda user_id, data: "https://cdn.test/grid.jpg"
     )
-    # A cold cache per test so the store stub is actually exercised.
     collage_mod._cache.clear()
 
 
@@ -100,7 +104,7 @@ def _item(db, user, name, category, **attrs):
 
 
 def _full_closet(db, user):
-    """A top + bottom + footwear -> a sufficient (complete) outfit."""
+    """A top + bottom + footwear -> a sufficient (complete) outfit at any formality."""
     top = _item(db, user, "Linen shirt", "top", formality=3, warmth=2)
     bottom = _item(db, user, "Black jeans", "bottom", formality=3, warmth=2)
     shoes = _item(db, user, "Chelsea boots", "footwear", formality=3, warmth=2)
@@ -111,13 +115,11 @@ def _full_closet(db, user):
 # Auth
 # ---------------------------------------------------------------------------
 def test_get_requires_auth(client):
-    r = client.get("/todays-look")
-    assert r.status_code in (401, 403)
+    assert client.get("/todays-look").status_code in (401, 403)
 
 
 def test_wear_requires_auth(client):
-    r = client.post("/todays-look/wear", json={"itemIds": []})
-    assert r.status_code in (401, 403)
+    assert client.post("/todays-look/wear", json={"itemIds": []}).status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------
@@ -128,20 +130,13 @@ def test_get_composes_a_look(client, db, user1, tok1):
     r = client.get("/todays-look", headers=_auth(tok1))
     assert r.status_code == 200
     body = r.json()
-    assert body["kind"] == "look"
+    assert body["kind"] == "normal"
     assert set(body["itemIds"]) == {str(top.id), str(bottom.id), str(shoes.id)}
-    # Title = item names joined.
     assert "Linen shirt" in body["title"]
-    # Pure-white grid collage produced (stubbed store URL).
     assert body["collageUrl"] == "https://cdn.test/grid.jpg"
-    # Caption is deterministic + non-empty.
     assert body["caption"]
-    # outfit_shown emitted (ids/counts only, no titles).
-    ev = (
-        db.query(StyleEvent)
-        .filter_by(user_id=user1.id, event_type="outfit_shown")
-        .one()
-    )
+    ev = db.query(StyleEvent).filter_by(
+        user_id=user1.id, event_type="outfit_shown").one()
     assert ev.properties.get("item_count") == 3
     assert "summary" not in ev.properties  # no event titles anywhere
 
@@ -151,68 +146,212 @@ def test_get_is_deterministic(client, db, user1, tok1):
     a = client.get("/todays-look", headers=_auth(tok1)).json()
     b = client.get("/todays-look", headers=_auth(tok1)).json()
     assert a["itemIds"] == b["itemIds"]
-    assert a["title"] == b["title"]
-    assert a["caption"] == b["caption"]
+    assert a["title"] == b["title"] and a["caption"] == b["caption"]
 
 
 # ---------------------------------------------------------------------------
-# Thin closet -> starter fallback (never 500)
+# Formality step-down (service-level; deterministic w/o a live calendar)
+# ---------------------------------------------------------------------------
+def test_formality_stepdown_completes_a_casual_look(db, user1):
+    # A casual closet (tops out at formality 2) vs a formality-4 "work" target.
+    tee = _item(db, user1, "Nike tee", "top", formality=1,
+                image_status="user_uploaded", generation_status="ready")
+    jeans = _item(db, user1, "Light wash jeans", "bottom", formality=2,
+                  image_status="user_uploaded", generation_status="ready")
+    af1 = _item(db, user1, "Air Force 1", "footwear", formality=1,
+                image_status="user_uploaded", generation_status="ready")
+
+    look = compose_todays_look(
+        db, user1.id,
+        factors=Factors(warmth=2, occasion="work", formality_target=4),
+    )
+    # A COMPLETE look, not a starter, even below the ideal formality.
+    assert look.kind == "normal"
+    assert set(look.item_ids) == {str(tee.id), str(jeans.id), str(af1.id)}
+    assert look.formality is not None and look.formality < 4  # stepped down
+    assert "sharper" in look.caption.lower()  # gentle below-ideal note
+
+
+def test_real_closet_shape_yields_wearable_look(db, user1):
+    """Reproduces the CONFIRMED-LIVE closet (16 items) that previously returned an
+    empty 'starter' with junk. The formality-4 'work' target must now step down to
+    a COMPLETE look built from the real user photos — not the image-less SHEIN
+    halter or a sports bra."""
+    up = dict(image_status="user_uploaded", generation_status="ready")
+    ph = dict(image_url=None, image_status="placeholder")
+    # Real owned photos (the wearable casual set)
+    _item(db, user1, "Nike T-shirt", "top", formality=1, **up)
+    _item(db, user1, "Plaid short-sleeve shirt", "top", formality=2, **up)
+    _item(db, user1, "Light wash jeans", "bottom", formality=2, **up)
+    _item(db, user1, "White-Red Nike Air Force 1", "footwear", formality=1, **up)
+    # Resolved product images that are NOT valid primaries (undergarments)
+    _item(db, user1, "Wunder Train Strappy Racer Bra Light Support", "top")
+    _item(db, user1, "Flow Y Bra Nulu Light Support", "top",
+          sub_category="sports_bra", formality=1)
+    # Resolved athletic bottoms (real images, formality 1)
+    _item(db, user1, "lululemon Align High-Rise Short", "bottom", formality=1)
+    _item(db, user1, "Wunder Train High-Rise Tight", "bottom", formality=1)
+    # Image-less receipt junk (placeholders)
+    _item(db, user1, "SHEIN ICON Going Out Backless Halter Top", "top",
+          formality=3, **ph)
+    _item(db, user1, "Metal Clip Hair Accessory Barrette Claw Clips", "accessory", **ph)
+    _item(db, user1, "Leopard Print Handbag Lunch Bag", "accessory",
+          sub_category="tote_bag", formality=1, **ph)
+    _item(db, user1, "MUSERA Boxy Denim Jacket", "outerwear", formality=2, **ph)
+
+    look = compose_todays_look(
+        db, user1.id,
+        factors=Factors(warmth=2, occasion="work", formality_target=4),
+    )
+    assert look.kind == "normal"
+    assert look.formality == 2  # stepped 4 -> 2 to reach the casual set
+    by_slot = {it["category"]: it for it in look.items}
+    # Top is a real garment photo, never the image-less halter or a bra.
+    assert by_slot["top"]["name"] in {"Nike T-shirt", "Plaid short-sleeve shirt"}
+    assert by_slot["top"]["hasImage"] is True
+    assert by_slot["footwear"]["name"] == "White-Red Nike Air Force 1"
+    assert by_slot["bottom"]["hasImage"] is True
+    # No bra / halter / bag anywhere in the look.
+    names = " ".join(it["name"].lower() for it in look.items)
+    assert "bra" not in names and "halter" not in names and "handbag" not in names
+    assert look.collage_url == "https://cdn.test/grid.jpg"
+
+
+def test_no_complete_look_at_any_formality_is_starter(db, user1):
+    _item(db, user1, "Lonely tee", "top", formality=2)  # no bottom/footwear
+    look = compose_todays_look(
+        db, user1.id, factors=Factors(occasion="work", formality_target=4))
+    assert look.kind == "starter"
+    assert look.note
+
+
+# ---------------------------------------------------------------------------
+# Prefer owned real photos; exclude undergarments / bags / hair accessories
+# ---------------------------------------------------------------------------
+def test_prefers_owned_real_photo_over_imageless(db, user1):
+    real = _item(db, user1, "Real tee", "top", formality=2,
+                 image_status="user_uploaded", generation_status="ready")
+    _item(db, user1, "Receipt tee", "top", formality=2,
+          image_url=None, image_status="placeholder")
+    _item(db, user1, "Jeans", "bottom", formality=2,
+          image_status="user_uploaded", generation_status="ready")
+    _item(db, user1, "Sneakers", "footwear", formality=2,
+          image_status="user_uploaded", generation_status="ready")
+
+    look = compose_todays_look(db, user1.id, factors=Factors(formality_target=2))
+    ids = set(look.item_ids)
+    assert str(real.id) in ids
+    top_names = [it["name"] for it in look.items if it["category"] == "top"]
+    assert top_names == ["Real tee"]  # the image-less receipt top never wins
+
+
+def test_excludes_undergarments_and_bags(db, user1):
+    bra = _item(db, user1, "Strappy Racer Bra Light Support", "top", formality=1)
+    bag = _item(db, user1, "Leopard Handbag Lunch Bag", "accessory",
+                sub_category="tote_bag", formality=1)
+    tee = _item(db, user1, "Cotton tee", "top", formality=2,
+                image_status="user_uploaded", generation_status="ready")
+    _item(db, user1, "Jeans", "bottom", formality=2)
+    _item(db, user1, "Sneakers", "footwear", formality=2)
+
+    look = compose_todays_look(db, user1.id, factors=Factors(formality_target=2))
+    ids = set(look.item_ids)
+    assert str(bra.id) not in ids   # undergarment never a primary
+    assert str(bag.id) not in ids   # bag never a primary
+    assert str(tee.id) in ids       # the real garment is chosen instead
+
+
+# ---------------------------------------------------------------------------
+# Thin / empty closet -> starter (never 500)
 # ---------------------------------------------------------------------------
 def test_thin_closet_returns_starter(client, db, user1, tok1):
-    _item(db, user1, "Lonely tee", "top")  # no bottom, no footwear
-    r = client.get("/todays-look", headers=_auth(tok1))
-    assert r.status_code == 200
-    body = r.json()
-    assert body["kind"] == "starter"
-    assert body["note"]
+    _item(db, user1, "Lonely tee", "top")
+    body = client.get("/todays-look", headers=_auth(tok1)).json()
+    assert body["kind"] == "starter" and body["note"]
 
 
 def test_empty_closet_returns_starter(client, db, user1, tok1):
-    r = client.get("/todays-look", headers=_auth(tok1))
-    assert r.status_code == 200
-    assert r.json()["kind"] == "starter"
+    assert client.get("/todays-look", headers=_auth(tok1)).json()["kind"] == "starter"
 
 
 # ---------------------------------------------------------------------------
 # Missing image -> placeholder tile, never skipped, never breaks
 # ---------------------------------------------------------------------------
 def test_missing_image_still_placed(client, db, user1, tok1):
-    _item(db, user1, "Linen shirt", "top")
-    _item(db, user1, "Black jeans", "bottom")
-    # Footwear present in the outfit but with NO usable image.
+    _item(db, user1, "Linen shirt", "top",
+          image_status="user_uploaded", generation_status="ready")
+    _item(db, user1, "Black jeans", "bottom",
+          image_status="user_uploaded", generation_status="ready")
     shoes = _item(db, user1, "Mystery shoes", "footwear",
                   image_url=None, image_status="pending")
-    r = client.get("/todays-look", headers=_auth(tok1))
-    assert r.status_code == 200
-    body = r.json()
-    # The imageless item is STILL in the outfit (not skipped)...
-    assert str(shoes.id) in body["itemIds"]
+    body = client.get("/todays-look", headers=_auth(tok1)).json()
+    assert str(shoes.id) in body["itemIds"]        # not skipped
     by_id = {it["id"]: it for it in body["items"]}
     assert by_id[str(shoes.id)]["hasImage"] is False
-    # ...and the collage still renders (other items have real images).
-    assert body["collageUrl"] == "https://cdn.test/grid.jpg"
+    assert body["collageUrl"] == "https://cdn.test/grid.jpg"  # still renders
 
 
 # ---------------------------------------------------------------------------
-# Remix — variety + rate limit + reject/shown events
+# Half-daily cache
+# ---------------------------------------------------------------------------
+def test_cache_hit_returns_identical_without_recompute(client, db, user1, tok1):
+    _full_closet(db, user1)
+    first = client.get("/todays-look", headers=_auth(tok1)).json()
+    second = client.get("/todays-look", headers=_auth(tok1)).json()
+    assert first == second
+    # Composed once => exactly one outfit_shown and one cache row.
+    assert db.query(StyleEvent).filter_by(
+        user_id=user1.id, event_type="outfit_shown").count() == 1
+    assert db.query(TodaysLookCache).filter_by(user_id=user1.id).count() == 1
+
+
+def test_cache_invalidates_on_closet_change(client, db, user1, tok1):
+    _full_closet(db, user1)
+    client.get("/todays-look", headers=_auth(tok1))
+    # Add a garment -> closet signature changes -> next GET recomposes.
+    _item(db, user1, "Extra jacket", "outerwear", formality=3, warmth=3)
+    client.get("/todays-look", headers=_auth(tok1))
+    assert db.query(StyleEvent).filter_by(
+        user_id=user1.id, event_type="outfit_shown").count() == 2
+
+
+def test_remix_overwrites_cache_and_get_returns_it(client, db, user1, tok1):
+    # Two of each slot so remix can produce a COMPLETE different look.
+    a_top = _item(db, user1, "Top A", "top", formality=2)
+    a_bot = _item(db, user1, "Bottom A", "bottom", formality=2)
+    a_shoe = _item(db, user1, "Shoe A", "footwear", formality=2)
+    _item(db, user1, "Top B", "top", formality=2)
+    _item(db, user1, "Bottom B", "bottom", formality=2)
+    _item(db, user1, "Shoe B", "footwear", formality=2)
+
+    remix = client.post(
+        "/todays-look/remix", headers=_auth(tok1),
+        json={"itemIds": [str(a_top.id), str(a_bot.id), str(a_shoe.id)]},
+    ).json()
+    # The excluded items are gone from the remixed look.
+    assert not ({str(a_top.id), str(a_bot.id), str(a_shoe.id)} & set(remix["itemIds"]))
+    # A follow-up GET returns the remixed look verbatim (cache overwritten),
+    # without composing again (no extra outfit_shown from the GET hit).
+    got = client.get("/todays-look", headers=_auth(tok1)).json()
+    assert got["itemIds"] == remix["itemIds"]
+    assert db.query(StyleEvent).filter_by(
+        user_id=user1.id, event_type="outfit_shown").count() == 1  # remix only
+
+
+# ---------------------------------------------------------------------------
+# Remix — variety + rate limit + foreign-id isolation
 # ---------------------------------------------------------------------------
 def test_remix_excludes_current_items(client, db, user1, tok1):
     top, bottom, shoes = _full_closet(db, user1)
-    # A second footwear option so remix can vary at least one slot.
-    alt = _item(db, user1, "White sneakers", "footwear", formality=2, warmth=2)
-    current = [str(top.id), str(bottom.id), str(shoes.id)]
+    alt = _item(db, user1, "White sneakers", "footwear", formality=3, warmth=2)
     r = client.post("/todays-look/remix", headers=_auth(tok1),
-                    json={"itemIds": current})
+                    json={"itemIds": [str(top.id), str(bottom.id), str(shoes.id)]})
     assert r.status_code == 200
     body = r.json()
-    # The excluded footwear must not reappear; the alternative should.
     assert str(shoes.id) not in body["itemIds"]
     assert str(alt.id) in body["itemIds"]
-    # reject(old) + shown(new) both logged.
     assert db.query(StyleEvent).filter_by(
         user_id=user1.id, event_type="outfit_reject").count() == 1
-    assert db.query(StyleEvent).filter_by(
-        user_id=user1.id, event_type="outfit_shown").count() == 1
 
 
 def test_remix_rate_limited(client, db, user1, tok1, monkeypatch):
@@ -228,13 +367,9 @@ def test_remix_rate_limited(client, db, user1, tok1, monkeypatch):
 
 
 def test_remix_rejects_foreign_item_ids(client, db, user1, user2, tok2):
-    top, bottom, shoes = _full_closet(db, user1)  # belong to user1
-    # user2 references user1's items — excludes are validated only as ids here,
-    # but the composed result must contain NONE of user1's items (RLS + app filter).
-    r = client.post("/todays-look/remix", headers=_auth(tok2),
-                    json={"itemIds": [str(top.id)]})
-    assert r.status_code == 200
-    body = r.json()
+    top, _b, _s = _full_closet(db, user1)  # belong to user1
+    body = client.post("/todays-look/remix", headers=_auth(tok2),
+                       json={"itemIds": [str(top.id)]}).json()
     assert str(top.id) not in body["itemIds"]
     assert body["kind"] == "starter"  # user2 has an empty closet
 
@@ -249,15 +384,10 @@ def test_wear_persists_worn_outfit(client, db, user1, tok1):
     assert r.status_code == 201
     body = r.json()
     assert body["ok"] and body["itemCount"] == 3 and body["idempotent"] is False
-
     saved = db.query(SavedOutfit).filter_by(user_id=user1.id).one()
-    assert saved.source == "composer"
-    assert saved.status == "worn"
-    assert saved.worn_at is not None
-    # Events: accept + worn.
+    assert saved.source == "composer" and saved.status == "worn" and saved.worn_at
     types = {e.event_type for e in db.query(StyleEvent).filter_by(user_id=user1.id)}
     assert {"outfit_accept", "outfit_worn"} <= types
-    # Reinforcement signals written + wear telemetry bumped.
     assert db.query(PreferenceSignal).filter_by(
         user_id=user1.id, source="outfit_feedback").count() >= 1
     db.refresh(top)
@@ -277,7 +407,7 @@ def test_wear_is_idempotent_per_day(client, db, user1, tok1):
 
 
 def test_wear_rejects_foreign_item_ids(client, db, user1, user2, tok2):
-    top, bottom, shoes = _full_closet(db, user1)  # belong to user1
+    top, _b, _s = _full_closet(db, user1)
     r = client.post("/todays-look/wear", headers=_auth(tok2),
                     json={"itemIds": [str(top.id)]})
     assert r.status_code == 422
@@ -285,5 +415,5 @@ def test_wear_rejects_foreign_item_ids(client, db, user1, user2, tok2):
 
 
 def test_wear_requires_item_ids(client, db, user1, tok1):
-    r = client.post("/todays-look/wear", headers=_auth(tok1), json={"itemIds": []})
-    assert r.status_code == 422
+    assert client.post("/todays-look/wear", headers=_auth(tok1),
+                       json={"itemIds": []}).status_code == 422
