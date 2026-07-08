@@ -8,9 +8,12 @@
  *   pick       — choose/capture up to 10 photos (client-side validation + previews);
  *   detecting  — POST /photo/ingest/detect finds garment regions per photo;
  *   select     — RegionSelector: toggle detected regions on/off, draw missed ones;
- *   committing — POST /photo/ingest/commit re-uploads the SAME File objects (the
- *                server re-matches them by content hash) + the selections, then
- *                routes to the /review swipe deck scoped to the new run.
+ *   preparing  — Add tapped: POST /photo/ingest/commit re-uploads the SAME File objects
+ *                (the server re-matches them by content hash) + the selections in the
+ *                background while a lightweight spinner shows. The MOMENT it stages we
+ *                route to the /review swipe deck scoped to the new run — product-image
+ *                generation is a background job and the deck streams cards in, so the tap
+ *                never blocks on generation.
  *
  * Files arrive two ways: picked here, or handed off in-memory from AddItemDrawer
  * via usePhotoPickStore (Files can't cross a navigation in a URL) — those jump
@@ -18,7 +21,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, Camera, CheckCircle2, ImagePlus, RotateCw, X } from 'lucide-react';
+import { Camera, ImagePlus, X } from 'lucide-react';
 
 import {
   commitPhotoIngest,
@@ -35,30 +38,18 @@ import {
   Btn,
   M,
   PermissionState,
-  ProcessingPill,
   ThinkingScreen,
   Thinking,
-  ImageFill,
 } from '@/components/ds';
 import { RegionSelector } from './RegionSelector';
 import { GenerationProgressPill } from './GenerationProgressPill';
 
-// 'preparing' = commit succeeded and product cards are generating in the background; the
-// non-blocking pill lets the user review whenever they choose (never a forced navigation).
-// 'commit-error' = the commit call failed; the per-item list shows which items stayed local.
-type Step = 'pick' | 'detecting' | 'select' | 'committing' | 'preparing' | 'commit-error';
-
-// One row in the Committing / commit-error list. `img` is the source-photo preview the
-// item was cut from (we don't have a per-item crop client-side); `label` is the detected
-// garment name; `category` is where it hangs. Status is presentation-only until the single
-// atomic commit resolves (see handleCommit) — the whole batch succeeds or fails together.
-interface CommitItem {
-  id: string;
-  label: string;
-  category: string;
-  img: string;
-}
-type CommitStatus = 'queued' | 'active' | 'done' | 'failed';
+// 'preparing' = Add was tapped; the commit (server-side cutout) is running. As soon as it
+// stages we route STRAIGHT to the run-scoped review deck — product-image generation is a
+// background job (photo_generation / self-heal) and the deck streams each card in as it's
+// verified, so the tap never blocks on generation. genRun is only set on the resume path
+// (returning to /add-photo with a run still generating), which shows the progress pill.
+type Step = 'pick' | 'detecting' | 'select' | 'preparing';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB — mirrors the backend cap
 const MAX_FILES = 10;
@@ -74,14 +65,6 @@ interface Picked {
 
 // Module-level id: object URLs aren't unique under the test stub, so keys use this.
 let pickedSeq = 0;
-
-// Map a detected garment category to a friendly "Hung in …" phrase for the commit rows.
-// The detect API returns a lowercase category (e.g. 'outerwear', 'top'); we title-case it
-// and fall back to a neutral phrase when absent.
-function prettyCategory(category: string | undefined | null): string {
-  if (!category) return 'your closet';
-  return category.charAt(0).toUpperCase() + category.slice(1);
-}
 
 // Drop a PROVISIONAL background indicator (one set with no sync_id while a commit was
 // still in flight). Real runs (syncId set) are left alone.
@@ -154,83 +137,13 @@ function DetectingScreen({
         </div>
       </div>
       <p className="mt-3 text-center text-[12.5px]" style={{ color: M.faint }}>
-        Usually under 10 seconds · HEIC converts automatically
+        Usually under 10 seconds 
       </p>
       <div className="mt-2">
         <Btn variant="ghost" size="md" fullWidth onClick={onCancel}>
           Cancel
         </Btn>
       </div>
-    </div>
-  );
-}
-
-// ── I3 · Committing / commit-error — per-item progress list ───────────────────
-// A row per detected item being committed: its source-photo thumb + status. NOTE the
-// backend reality — commitPhotoIngest is ONE ~10s atomic call returning sync_id + count;
-// it does NOT stream per-item status. So during the in-flight call we sequence rows to
-// 'active'/'done' PRESENTATIONALLY (honest: no per-item success is claimed — the pill only
-// appears once the real call resolves and the whole batch is confirmed). On failure the
-// caller marks the affected rows 'failed' from the real error.
-function CommitRow({ item, status }: { item: CommitItem; status: CommitStatus }) {
-  const failed = status === 'failed';
-  return (
-    <div
-      className="flex items-center gap-3"
-      style={{
-        padding: '13px 15px',
-        borderRadius: 20,
-        background: 'rgba(255,255,255,0.055)',
-        border: failed ? '1px solid rgba(251,44,54,0.32)' : '1px solid rgba(255,255,255,0.09)',
-      }}
-    >
-      {status === 'done' || status === 'failed' ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={item.img}
-          alt=""
-          style={{
-            width: 48,
-            height: 58,
-            objectFit: 'cover',
-            borderRadius: 12,
-            filter: failed ? 'grayscale(0.6)' : 'none',
-          }}
-        />
-      ) : (
-        <div style={{ width: 48 }}>
-          <ImageFill radius={12} />
-        </div>
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-white" style={{ fontSize: 14.5, fontWeight: 600 }}>
-          {item.label}
-        </div>
-        <div
-          style={{
-            fontSize: 12,
-            marginTop: 2,
-            color: status === 'done' ? 'var(--mint)' : failed ? '#ff9096' : M.faint,
-          }}
-        >
-          {status === 'done'
-            ? `Hung in ${item.category}`
-            : status === 'active'
-              ? 'Cutting out the background…'
-              : failed
-                ? "Didn't save — kept on this phone"
-                : 'Waiting'}
-        </div>
-      </div>
-      {status === 'done' && <CheckCircle2 size={18} style={{ color: 'var(--mint)' }} />}
-      {status === 'active' && <Thinking size={26} />}
-      {failed && <AlertCircle size={18} style={{ color: '#ff8087' }} />}
-      {status === 'queued' && (
-        <span
-          aria-hidden
-          style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed rgba(255,255,255,0.3)' }}
-        />
-      )}
     </div>
   );
 }
@@ -272,8 +185,9 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
   // Camera/photo access refused — surfaces the §0 PermissionState template. Cleared when
   // the user retries. Never blocks the file inputs beyond the tap that hit the denial.
   const [permissionDenied, setPermissionDenied] = useState<'camera' | 'photos' | null>(null);
-  // After a successful commit, the run whose product cards are generating — drives the
-  // non-blocking "Preparing N → Review" pill (step 'preparing').
+  // Resume path only: returning to /add-photo with a run still generating shows the
+  // "Preparing N → Review" progress pill. The commit flow never sets this — it routes
+  // straight to the review deck as soon as the commit stages.
   const [genRun, setGenRun] = useState<{ syncId: string; staged: number } | null>(null);
   // True while a HEIC/HEIF file is being transcoded to JPEG (async, can be slow on
   // large photos) — drives a lightweight "preparing" affordance so the UI isn't frozen.
@@ -284,13 +198,13 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
   // presentationally across photos while the single detect call is in flight — the real
   // call is one request; this just paces the "N of M" so multi-photo scans read honestly.
   const [detectIndex, setDetectIndex] = useState(0);
-  // Committing list: the items being committed + their presentation status. The commit is
-  // one atomic call, so statuses sequence for feel and all settle together on resolve.
-  const [commitItems, setCommitItems] = useState<CommitItem[]>([]);
-  const [commitStatus, setCommitStatus] = useState<Record<string, CommitStatus>>({});
   // Estimated staged count for the in-flight commit — the number the provisional
   // background indicator shows before commit returns the real sync_id + count.
   const stagedGuessRef = useRef(0);
+  // Set when the user taps "Tailor in the background" WHILE the commit is still running.
+  // A commit that resolves after this must NOT yank the user (now on /home) into the deck —
+  // it only patches the real sync_id onto the pending run so the global notice recovers it.
+  const backgroundedRef = useRef(false);
   // Set when the user taps Cancel on the detecting screen. The detect call can't be
   // aborted mid-flight, so runDetect checks this after it resolves and bails instead of
   // advancing to 'select'.
@@ -523,45 +437,6 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
     }
   }, [onPhaseChange, step, detectIndex, picked.length]);
 
-  // Derive the per-item Committing rows from the selections + detect sessions: each chosen
-  // detected region contributes a labelled row (its garment name + category, thumbed with
-  // the source photo it was cut from); each manual box is a generic "New item" row. Order
-  // mirrors the commit payload (photo order → region/manual order).
-  const buildCommitItems = useCallback(
-    (selections: PhotoCommitSelection[]): CommitItem[] => {
-      const sess = sessions;
-      if (!sess) return [];
-      const list = pickedRef.current;
-      const items: CommitItem[] = [];
-      selections.forEach((selection) => {
-        const i = sess.findIndex((s) => s.session_id === selection.session_id);
-        if (i < 0) return;
-        const photo = list[i];
-        const img = photo?.previewUrl ?? '';
-        for (const rid of selection.selected_region_ids) {
-          const region = sess[i].regions.find((r) => r.region_id === rid);
-          items.push({
-            id: `${selection.session_id}:r${rid}`,
-            label: region?.name ?? 'Item',
-            category: prettyCategory(region?.category),
-            img,
-          });
-        }
-        selection.manual_boxes.forEach((mb, mi) => {
-          const named = !Array.isArray(mb) && typeof mb.name === 'string' ? mb.name : null;
-          items.push({
-            id: `${selection.session_id}:m${mi}`,
-            label: named || 'New item',
-            category: 'your closet',
-            img,
-          });
-        });
-      });
-      return items;
-    },
-    [sessions],
-  );
-
   const handleCommit = useCallback(
     async (selections: PhotoCommitSelection[]) => {
       const sess = sessions;
@@ -572,15 +447,6 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
       const liveFiles = list
         .filter((_, i) => sess[i] && !sess[i].duplicate && sess[i].session_id)
         .map((p) => p.file);
-      // Show the "Tailoring your items" waiting screen INSTANTLY on tap — don't block it
-      // behind the commit call. commitPhotoIngest cuts out + stages every region server-
-      // side before it returns (~10s), which used to keep the RegionSelector on screen the
-      // whole time. We now flip to 'preparing' first (genRun null → indeterminate waiting
-      // copy) and run commit in the background; the progress pill fills in with the real
-      // count once the run id comes back.
-      // ⚠️ BACKEND: the ~10s is server-synchronous cutout in POST /photo/ingest/commit, so
-      // the run id + item count can't appear until it returns. If we want the COUNT instant
-      // too, commit must be split into a fast stage-ack + async cutout.
       // Estimate the staged count now (selected regions + manual boxes) so a provisional
       // background indicator can show a number instantly if the user backgrounds the flow
       // before commit returns.
@@ -591,50 +457,33 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
       setError(null);
       setNotice(null);
       setGenRun(null);
-
-      // ── Committing screen — a per-item list while the ONE atomic commit runs. ──
-      // We show every item being committed and pace their statuses (queued → active →
-      // done) for feel. This is HONEST about the backend: commitPhotoIngest is a single
-      // ~10s call that succeeds or fails as a WHOLE batch — no per-item timing exists. The
-      // pacing is presentation-only; a real "done" pill is only shown once the call resolves
-      // (below). On failure the whole batch flips to 'failed' (commit-error screen).
-      const items = buildCommitItems(selections);
-      setCommitItems(items);
-      setCommitStatus(Object.fromEntries(items.map((it) => [it.id, 'queued' as CommitStatus])));
-      setStep('committing');
-      // Sequence rows to 'active' one at a time; a row goes 'done' when the next starts.
-      // These timers are cleared implicitly by the resolve/reject setState transitions.
-      const paceTimers: ReturnType<typeof setTimeout>[] = [];
-      items.forEach((it, i) => {
-        paceTimers.push(
-          setTimeout(() => {
-            setCommitStatus((prev) => {
-              const next = { ...prev };
-              if (i > 0 && next[items[i - 1].id] === 'active') next[items[i - 1].id] = 'done';
-              if (next[it.id] === 'queued') next[it.id] = 'active';
-              return next;
-            });
-          }, 350 + i * 700),
-        );
-      });
-      const stopPacing = () => paceTimers.forEach(clearTimeout);
+      backgroundedRef.current = false;
+      // Leave the RegionSelector the INSTANT Add is tapped — flip to the lightweight
+      // "Preparing…" screen (genRun null → indeterminate spinner + a "Tailor in the
+      // background" escape) and run the commit in the background. commitPhotoIngest cuts out
+      // + stages every region server-side (~10s) before it returns the run id; we do NOT
+      // block the deck on it, and we NEVER block on product-image generation — that's a
+      // background job (photo_generation / self-heal) and the review deck streams each card
+      // in as it verifies. As soon as commit stages, we route straight to the run deck.
+      setStep('preparing');
 
       try {
         const res = await commitPhotoIngest(liveFiles, selections);
-        stopPacing();
         useClosetStore.getState().invalidate?.();
         if (res.staged > 0) {
-          // Batch confirmed. Flip every row to done for a beat, then hand off to the
-          // non-blocking "Preparing N → Review" pill (product cards generate in the bg).
-          setCommitStatus(Object.fromEntries(items.map((it) => [it.id, 'done' as CommitStatus])));
           list.forEach((p) => URL.revokeObjectURL(p.previewUrl));
           updatePicked([]);
           setSessions(null);
-          // Stash the run so the pill can resurface if the user navigates away (e.g. the
-          // in-deck "Tailor in the background" escape) and needs pulling back when ready.
+          // Stash the run so the global "review in background" notice can recover it if the
+          // user leaves the deck before confirming; the deck clears it on confirm. This also
+          // patches the real sync_id over any provisional pending set by backgrounding.
           useGenerationStore.getState().setPending({ syncId: res.sync_id, staged: res.staged });
-          setGenRun({ syncId: res.sync_id, staged: res.staged });
-          setStep('preparing');
+          // If the user already tapped "Tailor in the background" they're on /home now —
+          // don't yank them back; the global notice carries the (now real) run.
+          if (backgroundedRef.current) return;
+          // Route immediately — the deck shows each card's state at once and swaps in the
+          // verified product image live. No waiting on generation.
+          router.push(`/review?sync_id=${encodeURIComponent(res.sync_id)}`);
           return;
         }
         // Nothing staged — surface why and reset to pick. Drop any provisional background
@@ -643,62 +492,28 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
         list.forEach((p) => URL.revokeObjectURL(p.previewUrl));
         updatePicked([]);
         setSessions(null);
-        setCommitItems([]);
         setStep('pick');
         setNotice(res.message ?? 'No new items to review.');
       } catch (err) {
-        stopPacing();
         if (err instanceof PhotoSessionExpiredError) {
           // Detect sessions TTL'd out server-side — transparently re-scan the same
           // files. (Selections reset to all-selected: region ids may change.)
           clearProvisionalPending();
-          setCommitItems([]);
           setNotice('That scan expired — re-scanning your photos…');
           await runDetect(list);
           return;
         }
-        // Commit failed — a provisional background indicator would point at nothing, clear it.
-        // The whole atomic batch failed together: every row is 'failed' (kept on-device),
-        // and the commit-error screen offers Retry / Discard.
+        // Commit failed — a provisional background indicator would point at nothing, clear
+        // it. Back to the selector with the files intact so Add can be retried.
         clearProvisionalPending();
-        setCommitStatus(Object.fromEntries(items.map((it) => [it.id, 'failed' as CommitStatus])));
-        setStep('commit-error');
+        setStep('select');
         setError(err instanceof Error ? err.message : 'Failed to add items.');
       }
     },
-    [sessions, runDetect, updatePicked, buildCommitItems],
+    [sessions, runDetect, updatePicked, router],
   );
 
-  // Retry a failed commit: re-run the same selections against the still-picked files.
-  const handleRetryCommit = useCallback(() => {
-    if (!sessions) return;
-    setError(null);
-    // Rebuild selections from the current sessions (all live regions selected). The user's
-    // exact prior toggles aren't preserved across the error screen, but the retry commits
-    // everything detected — the safe superset; they can prune again if needed.
-    const selections: PhotoCommitSelection[] = sessions
-      .filter((s) => !s.duplicate && s.session_id)
-      .map((s) => ({
-        session_id: s.session_id as string,
-        selected_region_ids: s.regions.map((r) => r.region_id),
-        manual_boxes: [],
-      }));
-    void handleCommit(selections);
-  }, [sessions, handleCommit]);
-
-  // Discard the failed batch: kept-on-device photos are dropped, back to a clean pick.
-  const handleDiscardCommit = useCallback(() => {
-    pickedRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl));
-    updatePicked([]);
-    setSessions(null);
-    setCommitItems([]);
-    setCommitStatus({});
-    setError(null);
-    setNotice(null);
-    setStep('pick');
-  }, [updatePicked]);
-
-  const busy = step === 'detecting' || step === 'committing' || preparing;
+  const busy = step === 'detecting' || preparing;
 
   // ── Permission denied — full-panel §0 template (camera or photos). ─────────
   if (permissionDenied) {
@@ -752,10 +567,9 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
         <DetectingScreen photos={picked} index={detectIndex} onCancel={handleCancelDetect} />
       )}
 
-      {(step === 'select' || step === 'committing') && sessions && (
+      {step === 'select' && sessions && (
         <RegionSelector
           photos={picked.map((p, i) => ({ previewUrl: p.previewUrl, session: sessions[i] }))}
-          committing={step === 'committing'}
           onCancel={handleCancelSelect}
           onCommit={handleCommit}
         />
@@ -806,6 +620,10 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
           <button
             type="button"
             onClick={() => {
+              // Mark backgrounded so a commit that resolves after this leaves the user on
+              // /home (it only patches the real sync_id onto the pending run) instead of
+              // routing them into the deck.
+              backgroundedRef.current = true;
               // If commit hasn't returned a run yet, drop a PROVISIONAL pending so the home
               // indicator shows INSTANTLY (not after commit finishes ~10s later). It's
               // patched to the real sync_id the moment commit resolves.

@@ -139,7 +139,7 @@ beforeEach(() => {
 });
 
 describe('PhotoIngestUpload', () => {
-  it('detect reaches the select step; commit shows the Preparing pill and routes to /review on tap', async () => {
+  it('detect reaches select; Add stages then routes STRAIGHT to the run-scoped /review deck', async () => {
     const file = jpeg('a.jpg');
     detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
     commitPhotoIngest.mockResolvedValue({
@@ -167,50 +167,41 @@ describe('PhotoIngestUpload', () => {
       [file],
       [{ session_id: 'sess-1', selected_region_ids: [1, 2], manual_boxes: [] }],
     );
-    // Commit no longer force-navigates: a non-blocking "Tailoring" pill appears while the
-    // product cards generate, and routes to the run-scoped deck when tapped.
-    const pill = await screen.findByRole('button', { name: 'Tailoring 2 items' });
+    // Add no longer blocks on generation: the moment commit stages, we route to the
+    // run-scoped deck (which streams the product cards in). No pill tap needed.
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/review?sync_id=run-9'));
     expect(invalidate).toHaveBeenCalled();
-    expect(push).not.toHaveBeenCalled();
-    fireEvent.click(pill);
-    expect(push).toHaveBeenCalledWith('/review?sync_id=run-9');
+    // The run is stashed so the global "review in background" notice can recover it if the
+    // user leaves the deck before confirming.
+    expect(useGenerationStore.getState().pending).toEqual({ syncId: 'run-9', staged: 2 });
   });
 
-  it('auto-advances to /review when the run finishes while waiting on the preparing screen', async () => {
+  it('does not block on generation — routes without polling the run status', async () => {
     const file = jpeg('a.jpg');
     detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
     commitPhotoIngest.mockResolvedValue({
       sync_id: 'run-7', images_processed: 1, staged: 2, duplicates: 0,
       held_multi_person: 0, message: null,
     });
-    // The run is already done on the first poll → the pill fires onDone → auto-advance.
-    getIngestStatus.mockResolvedValue({
-      sync_id: 'run-7', status: 'completed',
-      progress: {
-        fetched: 0, filtered: 0, extracted: 0, total_estimate: null,
-        generation_total: 2, generation_ready: 2, generation_failed: 0,
-      },
-      started_at: null, finished_at: null,
-    });
+    // beforeEach reports the run still 'running' — routing must happen anyway.
 
     render(<PhotoIngestUpload />);
     pickFiles([file]);
     fireEvent.click(await screen.findByRole('button', { name: 'Find clothes in 1 photo' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Add 2 items' }));
 
-    await waitFor(() => expect(commitPhotoIngest).toHaveBeenCalledTimes(1));
-    // No tap: waiting on the screen auto-forwards to the run-scoped deck.
     await waitFor(() => expect(push).toHaveBeenCalledWith('/review?sync_id=run-7'));
+    // The commit flow never waits on generation, so it never polls /ingest/status.
+    expect(getIngestStatus).not.toHaveBeenCalled();
   });
 
-  it('"Tailor in the background" leaves for home and keeps the run pending for the notice', async () => {
+  it('"Tailor in the background" mid-commit leaves for home; a late commit only patches the run', async () => {
     const file = jpeg('a.jpg');
     detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
-    commitPhotoIngest.mockResolvedValue({
-      sync_id: 'run-5', images_processed: 1, staged: 2, duplicates: 0,
-      held_multi_person: 0, message: null,
-    });
-    // Default status is 'running' (beforeEach) → no auto-advance.
+    // Hold the commit open so the preparing screen (and its "Tailor in the background"
+    // escape) stays up while the cutout is still running.
+    let resolveCommit!: (v: unknown) => void;
+    commitPhotoIngest.mockReturnValue(new Promise((r) => { resolveCommit = r; }));
 
     render(<PhotoIngestUpload />);
     pickFiles([file]);
@@ -220,8 +211,19 @@ describe('PhotoIngestUpload', () => {
     const bg = await screen.findByRole('button', { name: 'Tailor in the background' });
     fireEvent.click(bg);
     expect(push).toHaveBeenCalledWith('/home');
-    // The run stays stashed so the global notice can bring the user back when ready.
-    expect(useGenerationStore.getState().pending).toEqual({ syncId: 'run-5', staged: 2 });
+    // Commit not back yet → a provisional pending (no id) shows the home notice instantly.
+    expect(useGenerationStore.getState().pending).toEqual({ syncId: null, staged: 2 });
+
+    // Commit lands after the user left: it patches the real id onto the pending run but
+    // must NOT yank the user (now on /home) into the deck.
+    resolveCommit({
+      sync_id: 'run-5', images_processed: 1, staged: 2, duplicates: 0,
+      held_multi_person: 0, message: null,
+    });
+    await waitFor(() =>
+      expect(useGenerationStore.getState().pending).toEqual({ syncId: 'run-5', staged: 2 }),
+    );
+    expect(push).not.toHaveBeenCalledWith('/review?sync_id=run-5');
   });
 
   it('toggling a region off before commit changes the payload', async () => {
