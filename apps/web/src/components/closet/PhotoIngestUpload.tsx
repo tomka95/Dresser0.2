@@ -291,6 +291,10 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
   // Estimated staged count for the in-flight commit — the number the provisional
   // background indicator shows before commit returns the real sync_id + count.
   const stagedGuessRef = useRef(0);
+  // Set when the user taps Cancel on the detecting screen. The detect call can't be
+  // aborted mid-flight, so runDetect checks this after it resolves and bails instead of
+  // advancing to 'select'.
+  const detectCancelledRef = useRef(false);
 
   const galleryRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -303,14 +307,18 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
     setPicked(next);
   }, []);
 
-  // Revoke any surviving preview object-URLs when this screen goes away (covers
-  // the navigate-to-/review path; revoking an already-revoked URL is a no-op).
-  useEffect(
-    () => () => {
-      pickedRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl));
-    },
-    [],
-  );
+  // NOTE: do NOT revoke preview object-URLs in a []-deps unmount cleanup. In the
+  // drawer-handoff path `addFiles` runs synchronously (no await before
+  // createObjectURL for non-HEIC), so pickedRef is populated *before* React 18
+  // StrictMode's dev-only mount→unmount→remount probe fires — and a []-cleanup
+  // would then revoke the blob the zone-selector still needs to render, while the
+  // remount can't recreate it (the handoff store was already consumed). That
+  // produced a dead blob URL (naturalWidth 0 / ERR_FILE_NOT_FOUND) behind the
+  // detection boxes. Every intentional exit already revokes: removeAt(),
+  // all-duplicate, commit-success, commit-nothing, and discard. A mid-flow
+  // abandon (navigating away without acting) leaves a couple of preview blobs
+  // that the browser reclaims when the document/tab unloads — an acceptable,
+  // bounded trade for a preview that actually renders.
 
   /**
    * Validate + wrap incoming files; returns the resulting picked list.
@@ -411,6 +419,7 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
       setError(null);
       setSessions(null);
       setDetectIndex(0);
+      detectCancelledRef.current = false;
       // Pace the "N of M" across the picked photos while the single detect call runs. The
       // request is one round-trip; this timer only advances which photo is visibly scanning
       // so a multi-photo batch reads as progressing (it stops at the last photo).
@@ -423,6 +432,7 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
       try {
         const res = await detectPhotoIngest(list.map((p) => p.file));
         paceTimers.forEach(clearTimeout);
+        if (detectCancelledRef.current) return; // user tapped Cancel mid-scan — already on 'pick'
         const detected = res.sessions ?? [];
         // Sessions come back in file order; a mismatch means we can't align overlays.
         if (detected.length !== list.length) {
@@ -444,6 +454,7 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
         setStep('select');
       } catch (err) {
         paceTimers.forEach(clearTimeout);
+        if (detectCancelledRef.current) return; // cancelled — don't surface an error on 'pick'
         setStep('pick'); // recoverable: files stay picked, the CTA retries
         setError(err instanceof Error ? err.message : 'Failed to scan photos.');
       }
@@ -492,6 +503,25 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
     setNotice(null);
     setStep('pick');
   }, []);
+
+  const handleCancelDetect = useCallback(() => {
+    // Abandon an in-flight scan: flag it so runDetect bails when the request resolves,
+    // then drop back to pick with the files intact for a retry.
+    detectCancelledRef.current = true;
+    setDetectIndex(0);
+    setStep('pick');
+  }, []);
+
+  // Mirror the pipeline phase (+ "N of M" during detection) up to the host page so it can
+  // reflect scan progress in the TopBar sub. Cleared (null) outside the detecting step.
+  useEffect(() => {
+    if (!onPhaseChange) return;
+    if (step === 'detecting') {
+      onPhaseChange({ step, index: detectIndex, total: picked.length });
+    } else {
+      onPhaseChange(null);
+    }
+  }, [onPhaseChange, step, detectIndex, picked.length]);
 
   // Derive the per-item Committing rows from the selections + detect sessions: each chosen
   // detected region contributes a labelled row (its garment name + category, thumbed with
@@ -719,18 +749,7 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
       )}
 
       {step === 'detecting' && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 py-16 text-center">
-          <Thinking size={72} />
-          <div>
-            <p className="m-0 text-[16px] font-semibold text-white">Finding your clothes…</p>
-            <p className="mt-1 text-[13px]" style={{ color: M.faint }}>
-              We&rsquo;ll show what we spot — you choose what to add.
-            </p>
-            <p className="mt-1 text-[12.5px]" style={{ color: M.ghost }}>
-              Usually under 10 seconds · HEIC converts automatically
-            </p>
-          </div>
-        </div>
+        <DetectingScreen photos={picked} index={detectIndex} onCancel={handleCancelDetect} />
       )}
 
       {(step === 'select' || step === 'committing') && sessions && (
