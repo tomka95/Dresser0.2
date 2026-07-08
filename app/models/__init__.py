@@ -40,6 +40,7 @@ from app.models.ingestion import (
     IngestCandidate,
     IngestRun,
     PhotoDetectSession,
+    PhotoUsage,
     ProcessedMessage,
     ProcessedUpload,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "IngestCandidate",
     "ProcessedUpload",
     "PhotoDetectSession",
+    "PhotoUsage",
     "IngestRun",
     "ImageBlob",
     "ProductImageCache",

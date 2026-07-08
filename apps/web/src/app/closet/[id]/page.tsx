@@ -15,8 +15,9 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Heart, MoreVertical, Pencil, Link2, ExternalLink, Undo2, Trash2, Mail } from 'lucide-react';
+import { Heart, MoreVertical, Pencil, Link2, ExternalLink, Undo2, Trash2, Mail, Sparkles } from 'lucide-react';
 import { useClosetStore } from '@/stores/useClosetStore';
+import { regenerateItemImage, getClosetItem } from '@/lib/api/closet';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useToastStore } from '@/stores/useToastStore';
 import { AppShell } from '@/components/layout/AppShell';
@@ -125,6 +126,18 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
 
   const [isSaving, setIsSaving] = useState(false);
 
+  // --- Regenerate image (photo items) --------------------------------------
+  // generationStatus: photo items carry 'ready'|'pending_retry'|'failed'|'generating';
+  // Gmail items are null — the presence of a value is our "this is a regenerable photo
+  // card" gate. `regenerating` drives the hero overlay + the status poll; the current
+  // image is KEPT on screen throughout and only swapped once the new one verifies.
+  const [generationStatus, setGenerationStatus] = useState<string | null | undefined>(undefined);
+  const [regenerating, setRegenerating] = useState(false);
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const preRegenImageRef = React.useRef<string | undefined>(undefined);
+  const canRegenerate = !!imageUrl && generationStatus != null;
+
   // Snapshot of the last-saved server values so Undo can PATCH them back verbatim.
   // Seeded on load; refreshed after every successful save.
   const savedRef = React.useRef<ClosetItemUpdate | null>(null);
@@ -148,6 +161,7 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
         setOrderDate(item.orderDate);
         setCurrency(item.currency);
         setFaved(!!item.isFavorite); // seed from the persisted flag
+        setGenerationStatus(item.generationStatus ?? null);
         setFieldConf(readFieldConfidence(item)); // real per-field scores if any
         // Baseline for Undo — the values as they stand on the server right now.
         savedRef.current = {
@@ -251,6 +265,8 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
       setEditingField('name');
     } else if (action === 'category') {
       setCategoryPickerOpen(true);
+    } else if (action === 'regenerate') {
+      setReasonOpen(true);
     } else if (action === 'share') {
       const url = typeof window !== 'undefined' ? window.location.href : '';
       try {
@@ -309,6 +325,85 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
       await updateItem(id, { isFavorite: next, eventSource: 'closet_detail' });
     } catch {
       setFaved(!next); // revert on failure
+    }
+  };
+
+  // Poll the item's generation status while a regenerate is in flight. The current image
+  // stays on screen the whole time; when the run leaves 'generating' we compare imageUrl
+  // to the pre-regen snapshot — changed => the new card verified (swap it in); unchanged
+  // => a verify miss (keep the existing image, say so gently). Bounded so a stuck run
+  // can't poll forever.
+  useEffect(() => {
+    if (!regenerating) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 40; // ~100s at 2.5s
+    const finish = (changed: boolean, newUrl?: string) => {
+      setRegenerating(false);
+      if (changed && newUrl) {
+        setImageUrl(newUrl);
+        pushToast({ tone: 'success', title: 'Image updated' });
+      } else {
+        pushToast({
+          tone: 'info',
+          title: 'Couldn’t improve it this time',
+          sub: 'Kept your current image — try again with a hint.',
+        });
+      }
+    };
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const item = await getClosetItem(id);
+        if (cancelled) return;
+        setGenerationStatus(item.generationStatus ?? null);
+        if (item.generationStatus === 'generating' && attempts < MAX_ATTEMPTS) {
+          timer = setTimeout(poll, 2500);
+          return;
+        }
+        if (item.generationStatus === 'generating') {
+          // Ran out of patience — leave it working in the background.
+          setRegenerating(false);
+          pushToast({ tone: 'info', title: 'Still tailoring…', sub: 'Check back in a moment.' });
+          return;
+        }
+        finish(!!item.imageUrl && item.imageUrl !== preRegenImageRef.current, item.imageUrl);
+      } catch {
+        if (cancelled) return;
+        if (attempts >= MAX_ATTEMPTS) {
+          setRegenerating(false);
+          return;
+        }
+        timer = setTimeout(poll, 4000); // transient — keep trying, slower
+      }
+    };
+    timer = setTimeout(poll, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [regenerating, id, pushToast]);
+
+  const handleRegenerate = async () => {
+    preRegenImageRef.current = imageUrl;
+    setReasonOpen(false);
+    try {
+      await regenerateItemImage(id, reason.trim() || undefined);
+      setReason('');
+      setGenerationStatus('generating');
+      setRegenerating(true);
+      pushToast({
+        tone: 'info',
+        title: 'Regenerating…',
+        sub: 'We’ll swap in a cleaner shot when it’s ready.',
+      });
+    } catch (err) {
+      pushToast({
+        tone: 'error',
+        title: 'Couldn’t start regeneration',
+        sub: err instanceof Error ? err.message : undefined,
+      });
     }
   };
 
@@ -413,6 +508,16 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
                         { id: 'style', label: 'Style this piece', sub: 'Build outfits around it', icon: <Spark size={16} /> },
                         { id: 'edit', label: 'Edit details', icon: <Pencil size={16} /> },
                         { id: 'category', label: 'Change category', icon: <Icon name="InterfaceSlider03" size={16} /> },
+                        ...(canRegenerate
+                          ? [
+                              {
+                                id: 'regenerate',
+                                label: 'Regenerate image',
+                                sub: 'Press a cleaner product shot',
+                                icon: <Sparkles size={16} />,
+                              },
+                            ]
+                          : []),
                         { id: 'share', label: 'Share', icon: <ExternalLink size={16} /> },
                         {
                           id: 'return',
@@ -459,6 +564,27 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
             style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.72), transparent 55%)' }}
             aria-hidden
           />
+          {/* Regenerating overlay — the CURRENT image stays visible underneath (never
+              blanked); this only signals work-in-flight until the verified swap. */}
+          {(regenerating || generationStatus === 'generating') && (
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+              style={{ background: 'rgba(6,20,19,0.55)', backdropFilter: 'blur(2px)' }}
+              role="status"
+              aria-label="Regenerating image"
+            >
+              <div
+                className="h-9 w-9 rounded-full"
+                style={{
+                  border: '3px solid rgba(255,255,255,0.22)',
+                  borderTopColor: 'var(--mint)',
+                  animation: 'tailor-spin 0.8s linear infinite',
+                }}
+                aria-hidden
+              />
+              <span className="text-[13px] font-semibold text-white">Tailoring a cleaner shot…</span>
+            </div>
+          )}
           <div className="absolute" style={{ left: 18, bottom: 15, right: 60 }}>
             <h1 className="m-0 truncate text-white" style={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.4px' }}>
               {form.name}
@@ -660,6 +786,44 @@ export default function ItemDetailsPage({ params }: ItemDetailsPageProps) {
           </Btn>
         </div>
       </div>
+
+      {/* Regenerate sheet — optional "what was wrong?" reason steers the new shot. */}
+      <Sheet open={reasonOpen} onClose={() => setReasonOpen(false)} title="Regenerate image">
+        <div style={{ padding: '4px 4px 8px' }}>
+          <p style={{ color: M.faint, fontSize: 13, lineHeight: 1.5, margin: '0 0 12px' }}>
+            We&rsquo;ll press a cleaner product shot from your photo. Tell us what was wrong
+            (optional) and we&rsquo;ll try to fix it — your current image stays until the new
+            one passes our quality check.
+          </p>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            maxLength={500}
+            rows={3}
+            placeholder="e.g. the logo should be a red swoosh, not black (optional)"
+            className="w-full resize-none border-none text-white outline-none"
+            style={{
+              padding: '11px 13px',
+              borderRadius: 13,
+              background: 'rgba(255,255,255,0.08)',
+              border: '1px solid rgba(255,255,255,0.14)',
+              fontSize: 14,
+            }}
+            aria-label="What was wrong? (optional)"
+          />
+          <div style={{ marginTop: 14 }}>
+            <Btn
+              variant="mint"
+              size="md"
+              fullWidth
+              icon={<Sparkles size={16} />}
+              onClick={handleRegenerate}
+            >
+              Regenerate image
+            </Btn>
+          </div>
+        </div>
+      </Sheet>
 
       {/* Category picker sheet (Change category — PATCHable, so fully real). */}
       <Sheet open={categoryPickerOpen} onClose={() => setCategoryPickerOpen(false)} title="Category">

@@ -43,6 +43,12 @@ export const closetItemSchema = z.object({
   archivedAt: z.string().optional(),
   wearCount: z.number().int().optional(),
   lastWornAt: z.string().optional(),
+  // Wave 2 product-image generation lifecycle (photo items only; absent for Gmail).
+  // Drives the item-detail Regenerate affordance — the page polls this to swap in the
+  // new card (→ 'ready') or fall back after a verify miss (→ 'pending_retry'/'failed').
+  generationStatus: z
+    .enum(['generating', 'ready', 'failed', 'pending_retry'])
+    .nullish(),
   // TODO: define expected analysis_raw JSON shape (user will provide example)
   analysisRaw: z.unknown().optional(),
   createdAt: z.string().datetime(),

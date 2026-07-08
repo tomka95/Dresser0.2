@@ -374,6 +374,40 @@ class PhotoDetectSession(Base):
     expires_at = Column(_tstz(), nullable=False)
 
 
+class PhotoUsage(Base):
+    """Per-user per-MONTH photo-quota rollup — the free-tier ledger (30 photos/month)
+    that SCRUM-44 enforcement will READ. Incremented via atomic upsert so it stays
+    correct across the web + worker processes. Counts only; never image content.
+
+    ``period_start`` is the FIRST day of the usage month (UTC) — the monthly analogue
+    of chat_usage's per-DAY ``period_start`` (app/models/stylist.py ChatUsage). Every
+    quota-consuming photo action bumps ``photos_used``; ``regenerations`` breaks out the
+    Regenerate subset for reporting. No enforcement lives here yet — this table is the
+    counter SCRUM-44 will check.
+
+    Per-user RLS (auth.uid() = user_id, all four verbs) applied by migration 0028; RLS
+    is not expressible in the ORM. user_id is server-pinned from the JWT, never a body.
+    """
+
+    __tablename__ = "photo_usage"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "period_start",
+                         name="photo_usage_user_id_period_start_key"),
+        Index("idx_photo_usage_user_id", "user_id"),
+    )
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # First day of the usage month (UTC).
+    period_start = Column(Date, nullable=False)
+    # Every quota-consuming photo action this month (ingest commit + regenerate).
+    photos_used = Column(Integer, nullable=False, default=0)
+    # Regenerate subset of photos_used (reporting only).
+    regenerations = Column(Integer, nullable=False, default=0)
+    updated_at = Column(_tstz(), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class IngestRun(Base):
     """Per-sync status/progress. sync_id is the run identifier the UI polls."""
 

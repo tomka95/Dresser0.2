@@ -512,12 +512,18 @@ def _generate_from_crop(
     gen_budget: GenerationBudget,
     verify_budget: VerifyBudget,
     usage: UsageAccumulator,
+    steering: Optional[str] = None,
 ) -> _HealOutcome:
     """Run the provider ladder on a stored crop, gated by the mandatory verify.
 
     Returns a stored URL only when a provider's output PASSES verify against the crop —
     a skipped/disabled verify is never a pass. Makes NO DB writes (the caller persists),
-    so it's reusable for both candidates and confirmed items."""
+    so it's reusable for both candidates and confirmed items.
+
+    ``steering`` is an OPTIONAL untrusted user correction (Regenerate reason). It is
+    fenced inside the prompt (prompt._steering_clause) and NEVER relaxes the verify gate —
+    a steered generation still has to pass verify against the crop, so a reason cannot
+    force a hallucinated result through."""
     if not gen_budget.take():
         return _HealOutcome("budget")
     dl = _download_bytes(crop_url)
@@ -535,6 +541,7 @@ def _generate_from_crop(
                 color=color,
                 pattern=None,
                 brand=brand,
+                steering=steering,
             )
         )
         if result is None:
@@ -685,3 +692,126 @@ def run_generation_self_heal(
         except Exception:
             pass
         return stats
+
+
+# ---------------------------------------------------------------------------
+# Single-item Regenerate (item detail page) — reuses the ladder + verify gate
+# ---------------------------------------------------------------------------
+#
+# The user can ask to REGENERATE one confirmed photo item's product card, optionally
+# with a free-text "what was wrong?" reason that STEERS the generation (fenced as
+# untrusted garment description — prompt._steering_clause). This reuses _generate_from_crop
+# verbatim: same provider ladder, same MANDATORY verify gate. The current image is the
+# source + verify reference and is NEVER blanked — it stays until a NEW image passes
+# verify, so a verify-fail simply keeps the existing card (the UI shows a gentle
+# "couldn't improve it" rather than a blank). SCRUM-44 quota is recorded at the route, not
+# here (this core is reused by the worker + BackgroundTasks paths).
+
+
+@dataclass
+class RegenOutcome:
+    """Result of one Regenerate. ``changed`` = a new verified image replaced the old."""
+    status: str            # ready | held | skipped
+    changed: bool = False
+    cost_usd: float = 0.0
+
+
+def run_item_regeneration(
+    user_id: UUID,
+    db: Session,
+    item_id: UUID,
+    *,
+    reason: Optional[str] = None,
+    storage_client=None,
+    provider_ladder: Optional[Sequence[str]] = None,
+) -> RegenOutcome:
+    """Regenerate ONE confirmed photo clothing_item's card. Never raises.
+
+    Eligible only for a photo item that already has an image to regenerate FROM. Reuses
+    the exact ladder + mandatory verify gate (via _generate_from_crop), optionally steered
+    by the untrusted ``reason`` (fenced in the prompt). On a verified pass image_url is
+    swapped and generation_status -> 'ready'; on ANY miss the existing image is kept and
+    the item is left 'pending_retry' (a later self-heal sweep may re-attempt, without the
+    reason). user_id-scoped: a foreign item_id is a no-op 'skipped'."""
+    item = None
+    try:
+        item = (
+            db.query(ClothingItem)
+            .filter(ClothingItem.id == item_id, ClothingItem.user_id == user_id)
+            .first()
+        )
+        if item is None or item.source_type != "photo" or not item.image_url:
+            return RegenOutcome("skipped")
+
+        ladder = tuple(provider_ladder or _GENERATION_LADDER)
+        if storage_client is None:
+            storage_client = _storage_from_env()
+        gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
+        verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
+        usage = UsageAccumulator()
+
+        r = _generate_from_crop(
+            crop_url=item.image_url,
+            name=item.name,
+            category=item.category,
+            color=item.color_primary,
+            brand=item.brand,
+            storage_client=storage_client,
+            user_id=user_id,
+            ladder=ladder,
+            gen_budget=gen_budget,
+            verify_budget=verify_budget,
+            usage=usage,
+            steering=reason,
+        )
+        if r.url:
+            item.image_url = r.url
+            item.generation_status = "ready"
+            db.commit()
+            logger.info(
+                "item regen user=%s item=%s: ready (steered=%s)",
+                user_id, item_id, bool(reason),
+            )
+            return RegenOutcome("ready", changed=True, cost_usd=r.cost_usd)
+
+        # Miss (verify fail / provider down / budget / download error): keep the current
+        # image; mark pending_retry so a later self-heal can re-attempt.
+        item.generation_status = "pending_retry"
+        db.commit()
+        logger.info("item regen user=%s item=%s: held (%s)", user_id, item_id, r.outcome)
+        return RegenOutcome("held")
+    except Exception as exc:
+        logger.error("run_item_regeneration item=%s: %s", item_id, type(exc).__name__)
+        try:
+            db.rollback()
+            # Don't strand the card stuck 'generating' after a crash.
+            stuck = (
+                db.query(ClothingItem)
+                .filter(ClothingItem.id == item_id, ClothingItem.user_id == user_id)
+                .first()
+            )
+            if stuck is not None and stuck.generation_status == "generating":
+                stuck.generation_status = "pending_retry"
+                db.commit()
+        except Exception:
+            pass
+        return RegenOutcome("held")
+
+
+def regenerate_item_background(
+    user_id_str: str, item_id_str: str, reason: Optional[str] = None
+) -> None:
+    """BackgroundTasks entry point (mirrors generate_background): own DB session, never
+    raises. Used when the durable-jobs flag is OFF; the worker path calls
+    run_item_regeneration directly."""
+    from app.db import SessionLocal  # late import avoids a module-level import cycle
+
+    db = SessionLocal()
+    try:
+        run_item_regeneration(UUID(user_id_str), db, UUID(item_id_str), reason=reason)
+    except Exception as exc:
+        logger.error(
+            "regenerate_item_background: %s: %s", type(exc).__name__, exc
+        )
+    finally:
+        db.close()

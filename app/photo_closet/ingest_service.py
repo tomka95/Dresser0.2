@@ -591,29 +591,30 @@ def run_photo_commit(
                 dedup_check(db, user_id, cand)
                 staged_here += 1
 
-            # (b) User-drawn manual boxes — box crop, then describe the crop (unless the
-            #     user named the box, in which case we honor their name and skip describe).
+            # (b) User-drawn manual boxes — box crop, then describe the crop. A user-typed
+            #     name is fed to the SAME single-crop extraction as a HINT (not used
+            #     verbatim), so a named region yields a clean canonical title + typed
+            #     attributes with confidence — like a detected garment — and the label
+            #     merely steers it. Provenance stays 'extracted' at confirm (the hint is a
+            #     seed, never a user_edited lock). Near-zero marginal cost: the describe
+            #     call already runs for unnamed boxes.
             for raw_box in selection.manual_boxes:
                 box, manual_name = _parse_manual_box(raw_box)
                 cut = build_cutout(original=original, box_2d=box, mask_b64=None)
                 if cut is None:
                     continue
-                if manual_name:
-                    # User named this box: use it verbatim and skip the auto-describe call
-                    # (and its cost). Category/color are unknown here — editable in the deck.
+                described = describe(
+                    cut.data, cut.content_type, hint=manual_name, provider=provider
+                )
+                if described is None:
+                    # Model failed. If the user typed a name, keep it (low confidence) so
+                    # their input is never lost; otherwise a neutral placeholder. Editable
+                    # in the deck either way.
                     described = GarmentDescription(
-                        name=manual_name, category=GarmentCategory.other,
-                        confidence_overall=0.9,
+                        name=manual_name or "Item",
+                        category=GarmentCategory.other,
+                        confidence_overall=0.3 if manual_name else 0.2,
                     )
-                else:
-                    described = describe(cut.data, cut.content_type, provider=provider)
-                    if described is None:
-                        # Model failed: stage a low-confidence placeholder the user can
-                        # edit in the deck rather than dropping their selection.
-                        described = GarmentDescription(
-                            name="Item", category=GarmentCategory.other,
-                            confidence_overall=0.2,
-                        )
                 image_url = store_cutout(storage_client, user_id, cut)
                 slk = _source_line_key(session.image_sha256, box)
                 cand = _stage_candidate(

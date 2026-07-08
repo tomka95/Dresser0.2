@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.dependencies import get_db, get_current_user
 from app.models import User, ClothingItem, ItemImage
 from app.services.events_service import log_event
@@ -28,6 +29,38 @@ router = APIRouter(
 
 # Category enum matching @tailor/contracts
 CATEGORY_ENUM = ['top', 'bottom', 'dress', 'outerwear', 'shoes', 'accessories', 'other']
+
+# PATCH contract field -> attributes_json key. An explicit edit of one of these stamps
+# provenance='user_edited' (authoritative + sacred: the async enricher never overwrites
+# it), so a later manual title/attribute correction sticks. Mirrors the seed written on
+# manual create (closet_service._user_edited_attributes) and the 'extracted' seed at
+# confirm (review_service._extracted_attributes).
+_PATCH_PROVENANCE_KEYS = {
+    "name": "name",
+    "category": "category",
+    "brand": "brand",
+    "color": "color_primary",
+    "size": "size",
+}
+
+
+def _stamp_user_edited(item: ClothingItem, edited: dict) -> None:
+    """Mark explicitly-edited fields provenance='user_edited' in item.attributes_json.
+
+    Only fields present in ``edited`` (the PATCH update_kwargs) are stamped; every other
+    attributes_json key is preserved. Reassigns the dict so SQLAlchemy flags the JSONB
+    column dirty. Blank strings are skipped (an empty edit doesn't assert a value)."""
+    current = dict(item.attributes_json) if isinstance(item.attributes_json, dict) else {}
+    for field, col_key in _PATCH_PROVENANCE_KEYS.items():
+        if field not in edited:
+            continue
+        v = edited[field]
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                continue
+        current[col_key] = {"value": v, "confidence": None, "provenance": "user_edited"}
+    item.attributes_json = current
 
 
 class ClosetItemCreateIn(BaseModel):
@@ -92,6 +125,10 @@ class ClosetItemOut(BaseModel):
     archivedAt: Optional[str] = None
     wearCount: int = 0
     lastWornAt: Optional[str] = None
+    # Wave 2 product-image generation lifecycle (photo items only; null for Gmail).
+    # generating | ready | failed | pending_retry. Drives the item-detail Regenerate
+    # affordance (the page polls it to swap in / fall back after a regenerate).
+    generationStatus: Optional[str] = None
     createdAt: str
     updatedAt: str
 
@@ -187,6 +224,7 @@ def _map_clothing_item_to_out(
         archivedAt=archived_at,
         wearCount=item.wear_count if item.wear_count is not None else 0,
         lastWornAt=last_worn_at,
+        generationStatus=item.generation_status,
         createdAt=item.created_at.isoformat() if item.created_at else "",
         updatedAt=item.updated_at.isoformat() if item.updated_at else "",
     )
@@ -437,6 +475,11 @@ async def update_closet_item_endpoint(
             if 'image_url' in update_kwargs:
                 item.image_url = update_kwargs['image_url']
 
+            # A manual edit is the user asserting these values: stamp provenance=
+            # 'user_edited' so the async enricher never overwrites them, and a hint-seeded
+            # (extracted) title becomes sacred the moment the user actually edits it.
+            _stamp_user_edited(item, update_kwargs)
+
         # --- Interaction telemetry (Wave S0 Branch C) -----------------------
         # Emit in the SAME transaction as the write so an event never survives a
         # rolled-back edit. source is a sanitized UI hint, never trusted for auth.
@@ -493,4 +536,90 @@ async def update_closet_item_endpoint(
             f"Failed to update closet item {item_id} for user {current_user.id}: {e}"
         )
         raise HTTPException(status_code=500, detail="Failed to update closet item")
+
+
+class RegenerateImageIn(BaseModel):
+    """Regenerate request. ``reason`` is OPTIONAL, untrusted free text ("what was wrong?")
+    that STEERS the generation — sanitized here and fenced again at the prompt layer; it
+    can hint about the garment but never bypass the mandatory verify gate."""
+
+    reason: Optional[str] = Field(
+        None, max_length=500, description="Optional 'what was wrong?' correction"
+    )
+
+
+class RegenerateImageOut(BaseModel):
+    status: str            # 'regenerating'
+    generationStatus: str  # 'generating'
+
+
+@router.post("/{item_id}/regenerate", response_model=RegenerateImageOut, status_code=202)
+async def regenerate_item_image_endpoint(
+    item_id: UUID,
+    input_data: RegenerateImageIn,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RegenerateImageOut:
+    """Regenerate a photo item's product-card image in the background (optional reason).
+
+    JWT-pinned + user-scoped: a foreign or unknown item_id is a 404 (cross-user reject).
+    Only PHOTO items with an existing image are eligible (Gmail cards are real product
+    photos, not model-generated). The current image is KEPT until a new image passes the
+    MANDATORY verify gate (reused via generation_service — never bypassed); on verify-fail
+    the existing image stays. A regenerate COUNTS toward the monthly photo quota (SCRUM-44).
+    """
+    # Late imports keep the module's import graph light + mirror the photo_ingest pattern.
+    from app.platform.jobs import enqueue
+    from app.photo_closet.generation_service import regenerate_item_background
+    from app.photo_closet.quota import record_photo_usage
+
+    item = (
+        db.query(ClothingItem)
+        .filter(ClothingItem.id == item_id)
+        .filter(ClothingItem.user_id == current_user.id)  # foreign items look absent
+        .first()
+    )
+    if not item:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Clothing item {item_id} not found or access denied",
+        )
+    if (item.source_type or "gmail") != "photo" or not item.image_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Only photo items with an image can be regenerated.",
+        )
+
+    # Sanitize the reason (defense-in-depth; prompt._steering_clause fences again).
+    reason = " ".join((input_data.reason or "").split())[:500].strip() or None
+
+    # Mark 'generating' so the detail page (which polls generationStatus) shows the
+    # in-flight state immediately WITHOUT blanking the card — image_url is untouched.
+    item.generation_status = "generating"
+    db.commit()
+
+    # QUOTA (SCRUM-44): record the regenerate against the monthly photo-usage counter so
+    # enforcement is wired the moment it lands. Best-effort — never blocks the action.
+    record_photo_usage(db, current_user.id, photos=1, regenerations=1)
+
+    # Dispatch: durable queue when enabled (mirrors the commit path), else BackgroundTasks.
+    payload = {"user_id": str(current_user.id), "item_id": str(item.id)}
+    if reason:
+        payload["reason"] = reason
+    if settings.JOBS_PHOTO_GENERATION_ENABLED:
+        enqueue(
+            db,
+            type="photo_generation",
+            user_id=current_user.id,
+            payload=payload,
+            max_attempts=settings.JOBS_MAX_ATTEMPTS,
+        )
+        db.commit()
+    else:
+        background_tasks.add_task(
+            regenerate_item_background, str(current_user.id), str(item.id), reason,
+        )
+
+    return RegenerateImageOut(status="regenerating", generationStatus="generating")
 

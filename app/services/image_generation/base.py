@@ -53,6 +53,11 @@ class GenerationRequest:
     name/category/color/pattern/brand : optional item attributes. Only
                    category/color/pattern feed the prompt (see prompt.py);
                    name/brand are carried for reporting.
+    steering     : OPTIONAL untrusted free-text correction from the user
+                   (Regenerate "what was wrong?"). Fed to the prompt ONLY as a
+                   fenced garment-description hint (prompt.py) — it may describe the
+                   garment's true appearance but cannot override the ISOLATE/NO-ADD/
+                   NO-SCENE rules or the mandatory verify gate.
     """
     image_bytes: bytes
     content_type: str
@@ -61,6 +66,7 @@ class GenerationRequest:
     color: Optional[str] = None
     pattern: Optional[str] = None
     brand: Optional[str] = None
+    steering: Optional[str] = None
 
 
 @dataclass

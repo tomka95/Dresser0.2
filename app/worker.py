@@ -78,13 +78,23 @@ def _handle_gmail_ingest(payload: dict, should_cancel: ShouldCancel) -> None:
 def _handle_photo_generation(payload: dict, should_cancel: ShouldCancel) -> None:
     from app.photo_closet.generation_service import (
         run_generation_self_heal,
+        run_item_regeneration,
         run_photo_generation,
     )
 
     user_id = UUID(payload["user_id"])
-    sync_id = UUID(payload["sync_id"])
     db = SessionLocal()
     try:
+        # Two shapes share this job type. A Regenerate carries an item_id (single confirmed
+        # item + optional steering reason); a normal photo run carries a sync_id (the whole
+        # staged batch). Both are idempotent to re-run.
+        item_id = payload.get("item_id")
+        if item_id:
+            run_item_regeneration(
+                user_id, db, UUID(item_id), reason=payload.get("reason"),
+            )
+            return
+        sync_id = UUID(payload["sync_id"])
         # NOTE: photo generation is a bounded thread-pool over candidates and is not
         # yet cooperatively cancellable mid-batch (Wave 2). It still shuts down
         # promptly via the second-signal escape hatch, and the reclaim sweep +

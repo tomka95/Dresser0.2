@@ -467,7 +467,7 @@ def test_commit_manual_box_describes_and_stages(db, user):
     out = _detect_one(db, user, img, _two_garment_detection())
 
     describe_calls = []
-    def _describe(data, content_type, *, provider=None, usage=None):
+    def _describe(data, content_type, *, hint=None, provider=None, usage=None):
         describe_calls.append((len(data), content_type))
         return GarmentDescription(
             name="Black Boot", category="shoes", color="black",
@@ -497,7 +497,7 @@ def test_commit_manual_box_describe_failure_stages_placeholder(db, user):
     out = _detect_one(db, user, img, _two_garment_detection())
     res = _commit(db, user, [img], [
         PhotoSelection(session_id=out.session_id, manual_boxes=[[100, 100, 600, 600]]),
-    ], describe=lambda data, ct, *, provider=None, usage=None: None)
+    ], describe=lambda data, ct, *, hint=None, provider=None, usage=None: None)
 
     assert res.staged == 1
     cand = db.query(IngestCandidate).one()
@@ -614,28 +614,54 @@ def test_deck_scoped_to_current_run(db, user):
 
 # --- manual-box name persistence (contract v2) -------------------------------
 
-def test_commit_manual_box_named_uses_name_and_skips_describe(db, user):
+def test_commit_manual_box_named_enriches_via_describe_hint(db, user):
+    """A named box runs the SAME single-crop describe pass, SEEDED by the typed label as a
+    hint — yielding a clean canonical title + typed attributes, not the raw string."""
     img = _sanitized()
     out = _detect_one(db, user, img, _two_garment_detection())
 
-    describe_calls = []
-    def _describe(data, content_type, *, provider=None, usage=None):
-        describe_calls.append(1)
-        return GarmentDescription(name="AUTO", category="top", confidence_overall=0.5)
+    hints_seen = []
+    def _describe(data, content_type, *, hint=None, provider=None, usage=None):
+        hints_seen.append(hint)
+        return GarmentDescription(
+            name="Leather Jacket", category="outerwear", color="brown",
+            confidence_overall=0.8,
+        )
 
     box = [100, 100, 600, 600]
     res = _commit(db, user, [img], [
         PhotoSelection(
             session_id=out.session_id,
-            manual_boxes=[{"box": box, "name": "My Jacket"}],
+            manual_boxes=[{"box": box, "name": "my beat-up brown leather jacket"}],
         ),
     ], describe=_describe)
 
     assert res.staged == 1
-    assert describe_calls == []                 # named box -> no auto-describe call
+    # The typed label is fed to describe as a HINT (not used verbatim).
+    assert hints_seen == ["my beat-up brown leather jacket"]
     cand = db.query(IngestCandidate).one()
-    assert cand.name == "My Jacket"             # user's name wins
+    assert cand.name == "Leather Jacket"        # clean title from the model, not the raw label
+    assert cand.category == "outerwear"         # typed attributes come back too
+    assert cand.color == "brown"
     assert cand.source_line_key == _source_line_key(img.sha256, box)
+
+
+def test_commit_manual_box_named_describe_failure_keeps_typed_name(db, user):
+    """If the describe pass fails for a NAMED box, the user's typed label is preserved
+    (low confidence) rather than dropped to a generic placeholder."""
+    img = _sanitized()
+    out = _detect_one(db, user, img, _two_garment_detection())
+    res = _commit(db, user, [img], [
+        PhotoSelection(
+            session_id=out.session_id,
+            manual_boxes=[{"box": [100, 100, 600, 600], "name": "My Jacket"}],
+        ),
+    ], describe=lambda data, ct, *, hint=None, provider=None, usage=None: None)
+
+    assert res.staged == 1
+    cand = db.query(IngestCandidate).one()
+    assert cand.name == "My Jacket"             # typed label kept as fallback
+    assert float(cand.confidence_overall) <= 0.3
 
 
 def test_commit_manual_box_blank_name_falls_back_to_describe(db, user):
@@ -643,7 +669,7 @@ def test_commit_manual_box_blank_name_falls_back_to_describe(db, user):
     out = _detect_one(db, user, img, _two_garment_detection())
 
     describe_calls = []
-    def _describe(data, content_type, *, provider=None, usage=None):
+    def _describe(data, content_type, *, hint=None, provider=None, usage=None):
         describe_calls.append(1)
         return GarmentDescription(name="Auto Name", category="top", confidence_overall=0.6)
 
@@ -666,7 +692,7 @@ def test_commit_manual_box_legacy_list_still_describes(db, user):
     out = _detect_one(db, user, img, _two_garment_detection())
 
     describe_calls = []
-    def _describe(data, content_type, *, provider=None, usage=None):
+    def _describe(data, content_type, *, hint=None, provider=None, usage=None):
         describe_calls.append(1)
         return GarmentDescription(name="Auto", category="top", confidence_overall=0.6)
 

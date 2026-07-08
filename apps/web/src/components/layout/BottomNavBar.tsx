@@ -132,7 +132,7 @@ export function BottomNavBar({ activeRoute }: BottomNavBarProps) {
         <nav
           aria-label="Main navigation"
           className={cn('flex items-center justify-between')}
-          style={{ ...M.deep(999), height: 64, padding: '0 14px' }}
+          style={{ ...M.deep(999), height: 64, padding: '0 24px' }}
         >
           <div className="flex" style={{ gap: 2 }}>
             <Tab {...TABS[0]} />

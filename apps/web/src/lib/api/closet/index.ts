@@ -152,6 +152,65 @@ export async function patchClosetItem(
   return response.json();
 }
 
+export interface RegenerateImageResult {
+  status: string; // 'regenerating'
+  generationStatus: string; // 'generating'
+}
+
+/**
+ * Kick off a background regeneration of a photo item's product-card image.
+ *
+ * `reason` is an OPTIONAL "what was wrong?" correction that steers generation (fenced +
+ * verify-gated server-side). Returns immediately (202) with generationStatus 'generating';
+ * the caller polls getClosetItem until generationStatus leaves 'generating', then compares
+ * imageUrl (changed → new verified card; unchanged → verify miss, current image kept).
+ */
+export async function regenerateItemImage(
+  id: string,
+  reason?: string
+): Promise<RegenerateImageResult> {
+  const token = await getAccessToken();
+
+  if (!token) {
+    throw new Error('Not authenticated. Please sign in first.');
+  }
+
+  const response = await fetch(`${API_BASE_URL}/closet/${id}/regenerate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(reason && reason.trim() ? { reason: reason.trim() } : {}),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+
+    if (response.status === 404) {
+      throw new Error(`Closet item not found: ${id}`);
+    }
+    if (response.status === 400) {
+      throw new Error(
+        typeof error.detail === 'string'
+          ? error.detail
+          : "This item's image can't be regenerated."
+      );
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Not authenticated. Please sign in first.');
+    }
+    if (Array.isArray(error.detail)) {
+      throw new Error(error.detail.map((err: any) => err.msg).join(', '));
+    }
+    throw new Error(
+      typeof error.detail === 'string' ? error.detail : 'Failed to start regeneration'
+    );
+  }
+
+  return response.json();
+}
+
 export async function addClosetItem(
   input: Omit<ClosetItem, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'analysisRaw'>
 ): Promise<ClosetItem> {
