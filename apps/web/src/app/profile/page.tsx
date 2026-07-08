@@ -253,12 +253,13 @@ export default function ProfilePage() {
                 email={user?.email}
                 lastSyncAt={user?.gmail_sync_completed_at}
                 itemCount={items.length}
+                initialConnected={user?.gmail_connected}
               />
             </div>
 
             {/* Google Calendar connection (REAL status) */}
             <div style={{ marginTop: 12 }}>
-              <CalendarConnectCard />
+              <CalendarConnectCard initialConnected={user?.calendar_connected} />
             </div>
 
             {/* Entry rows — navigation only (toggles live in /settings now). */}
