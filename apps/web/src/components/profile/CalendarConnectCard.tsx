@@ -21,7 +21,16 @@ import {
   type CalendarConnectionStatus,
 } from '@/lib/api/calendar';
 
-export function CalendarConnectCard() {
+interface CalendarConnectCardProps {
+  /**
+   * Connection flag from /auth/me, already loaded before this card mounts.
+   * Seeds the Active badge on first paint so it doesn't flash "Connect" while
+   * the authoritative /calendar/oauth/status refresh is still in flight.
+   */
+  initialConnected?: boolean;
+}
+
+export function CalendarConnectCard({ initialConnected }: CalendarConnectCardProps = {}) {
   const [status, setStatus] = useState<CalendarConnectionStatus | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -37,7 +46,7 @@ export function CalendarConnectCard() {
     void refresh();
   }, [refresh]);
 
-  const connected = status?.connected ?? false;
+  const connected = status?.connected ?? initialConnected ?? false;
 
   const handleConnect = async () => {
     setBusy(true);

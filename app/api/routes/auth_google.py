@@ -16,7 +16,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_current_user
-from app.models import User
+from app.models import CalendarAccount, GoogleAccount, User
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,10 @@ async def get_current_user_info(
     """Get current authenticated user information.
 
     Returns:
-        User info including gmail_sync_completed_at
+        User info including gmail_sync_completed_at and the Gmail/Calendar
+        connection flags. Folding the connection state in here lets the profile
+        cards render their Active badge on first paint, instead of flashing the
+        disconnected state while a separate /oauth/status round-trip lands.
     """
     # Safely access gmail_sync_completed_at - handle missing column gracefully
     gmail_sync_completed_at = None
@@ -49,6 +52,15 @@ async def get_current_user_info(
         else:
             raise
 
+    # Connection flags mirror the /gmail/oauth/status + /calendar/oauth/status
+    # definition of "connected": an account row that carries a refresh token.
+    gmail_account = (
+        db.query(GoogleAccount).filter(GoogleAccount.user_id == current_user.id).first()
+    )
+    calendar_account = (
+        db.query(CalendarAccount).filter(CalendarAccount.user_id == current_user.id).first()
+    )
+
     return {
         "id": str(current_user.id),
         "email": current_user.email,
@@ -56,4 +68,6 @@ async def get_current_user_info(
         "full_name": current_user.full_name,
         "avatar_url": current_user.avatar_url,
         "gmail_sync_completed_at": gmail_sync_completed_at,
+        "gmail_connected": bool(gmail_account and gmail_account.refresh_token),
+        "calendar_connected": bool(calendar_account and calendar_account.refresh_token),
     }

@@ -46,7 +46,7 @@ const QUICK_PROMPTS = ['Outfit for today', 'What goes with this?', 'Pack for a t
 const GREETING_PROMPTS = ['Style my black jeans', 'Outfit for a gallery date', "What am I not wearing?"];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-const GREETING = 'Hey — I know your closet. Ask me what to wear.';
+const GREETING = 'Hey I am Tailor, how can I help?';
 const INCOGNITO_GREETING = "Incognito on — I won't save or remember this chat. Ask away.";
 
 /** Free-tier daily message cap — UI COPY ONLY (no server enforcement). */

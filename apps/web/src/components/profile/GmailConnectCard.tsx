@@ -28,6 +28,12 @@ interface GmailConnectCardProps {
   /** ISO timestamp of the last completed Gmail sync (from /auth/me), if any. */
   lastSyncAt?: string | null;
   itemCount?: number;
+  /**
+   * Connection flag from /auth/me, already loaded before this card mounts.
+   * Seeds the Active badge on first paint so it doesn't flash "Connect" while
+   * the authoritative /gmail/oauth/status refresh is still in flight.
+   */
+  initialConnected?: boolean;
 }
 
 function timeAgoLabel(iso: string): string {
@@ -39,7 +45,7 @@ function timeAgoLabel(iso: string): string {
   return `synced ${Math.round(hours / 24)}d ago`;
 }
 
-export function GmailConnectCard({ email, lastSyncAt, itemCount }: GmailConnectCardProps) {
+export function GmailConnectCard({ email, lastSyncAt, itemCount, initialConnected }: GmailConnectCardProps) {
   const router = useRouter();
   const [status, setStatus] = useState<GmailConnectionStatus | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -83,7 +89,7 @@ export function GmailConnectCard({ email, lastSyncAt, itemCount }: GmailConnectC
     }
   };
 
-  const connected = status?.connected ?? false;
+  const connected = status?.connected ?? initialConnected ?? false;
   const lastSync = lastSyncAt ? timeAgoLabel(lastSyncAt) : null;
 
   const subline = connected

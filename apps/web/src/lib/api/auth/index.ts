@@ -18,6 +18,9 @@ export interface CurrentUserResponse {
   full_name?: string;
   avatar_url?: string;
   gmail_sync_completed_at: string | null;
+  /** Connection flags folded into /auth/me so the profile cards paint Active on first load. */
+  gmail_connected?: boolean;
+  calendar_connected?: boolean;
 }
 
 export async function getCurrentUser(): Promise<CurrentUserResponse> {
