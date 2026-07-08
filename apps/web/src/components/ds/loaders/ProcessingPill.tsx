@@ -42,13 +42,17 @@ export function ProcessingPill({
   const provisional = state === 'provisional';
 
   if (minimized) {
+    // Presentational disc only — NO interactive <button> here. The pill is always
+    // wrapped by an interactive parent (BackgroundTailorNotice's motion.button, which
+    // owns onClick + aria-label); a nested <button> is invalid HTML and triggers a
+    // hydration error ("<button> cannot be a descendant of <button>").
     return (
-      <button
-        type="button"
+      <span
+        role="img"
         aria-label={label}
         onClick={onClick}
-        className="relative flex items-center justify-center border-none"
-        style={{ ...M.deep(999), width: 52, height: 52, cursor: 'pointer', ...style }}
+        className="relative flex items-center justify-center"
+        style={{ ...M.deep(999), width: 52, height: 52, ...style }}
       >
         <Thinking size={30} />
         <span
@@ -63,7 +67,7 @@ export function ProcessingPill({
           }}
           aria-hidden
         />
-      </button>
+      </span>
     );
   }
 
