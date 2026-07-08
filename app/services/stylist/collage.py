@@ -360,3 +360,144 @@ def get_or_create_outfit_collage(
     if url:
         _cache_put(key, url)
     return url
+
+
+# ===========================================================================
+# Today's Look GRID variant (Wave: Today's Look)
+# ---------------------------------------------------------------------------
+# A DIFFERENT card from the editorial lookbook above: every item of the day's
+# outfit knocked out on ONE PURE-WHITE field, equal cells, side by side — no
+# hero/finishing bands, no title band. It reuses the same knockout + placement
+# spine (_normalize_item / _place) and the same content-addressed store, so it
+# inherits the dedup and the "never break compose" failure posture.
+#
+# Two rules the editorial card doesn't have, both from the Today's Look spec:
+#   * every outfit slot gets a cell — an item WITHOUT a usable image renders a
+#     neutral placeholder tile, it is NEVER skipped (so the grid always mirrors
+#     the composed outfit one-to-one);
+#   * the background is literally (255,255,255), not the porcelain field.
+# ===========================================================================
+_GRID_LAYOUT_VERSION = "grid-v1"
+_GRID_W = 1080
+_GRID_PAD = 48
+_GRID_GUTTER = 24
+_GRID_CELL_H = 520
+_GRID_BG = (255, 255, 255)      # pure white, per spec
+_GRID_PLACEHOLDER = (238, 236, 232)  # neutral tile for a missing item image
+_GRID_PLACEHOLDER_FILL = 0.84   # placeholder panel size as fraction of its cell
+
+# Usable image = a real, resolved photo. A generated card that is still a raw
+# crop (pending_retry / failed) or an explicit placeholder / pending status is
+# NOT usable and renders as a neutral tile. resolved / ready / user_uploaded and
+# untagged manual items all pass — this is the inclusive reading of the spec's
+# "generation_status='ready' OR image_status='resolved'" that still keeps a real
+# user-uploaded photo (image_status='user_uploaded') on the card.
+_UNUSABLE_IMAGE_STATUS = frozenset({"placeholder", "pending"})
+_UNUSABLE_GEN_STATUS = frozenset({"failed", "pending_retry"})
+
+
+def usable_image_url(item: ClothingItem) -> Optional[str]:
+    """The item's image_url iff it points at a real, showable photo — else None."""
+    url = item.image_url
+    if not url:
+        return None
+    if (getattr(item, "image_status", None) or "") in _UNUSABLE_IMAGE_STATUS:
+        return None
+    if (getattr(item, "generation_status", None) or "") in _UNUSABLE_GEN_STATUS:
+        return None
+    return url
+
+
+def _grid_key(user_id: UUID, ordered: List[Tuple[str, ClothingItem]]) -> str:
+    """Order-sensitive hash of the ordered (id, usable-url-or-blank) pairs — a
+    missing image is part of the key so a later heal invalidates the card."""
+    pairs = [f"{it.id}:{usable_image_url(it) or ''}" for _, it in ordered]
+    head = [_GRID_LAYOUT_VERSION, str(user_id)]
+    return hashlib.sha256("|".join(head + pairs).encode()).hexdigest()
+
+
+def _place_placeholder(
+    canvas: Image.Image, cx: int, cy: int, cell_w: int, cell_h: int
+) -> None:
+    """A quiet neutral tile where an item has no usable image (never skipped)."""
+    w = int(cell_w * _GRID_PLACEHOLDER_FILL)
+    h = int(cell_h * _GRID_PLACEHOLDER_FILL)
+    x0, y0 = cx - w // 2, cy - h // 2
+    draw = ImageDraw.Draw(canvas)
+    try:
+        draw.rounded_rectangle((x0, y0, x0 + w, y0 + h), radius=28,
+                               fill=_GRID_PLACEHOLDER)
+    except AttributeError:  # Pillow < 8.2: plain rectangle
+        draw.rectangle((x0, y0, x0 + w, y0 + h), fill=_GRID_PLACEHOLDER)
+
+
+def compose_grid(cells: List[Optional[Image.Image]]) -> bytes:
+    """Render N cells side by side on one pure-white field. ``None`` cells are
+    neutral placeholders — a cell is never dropped, so the grid width always
+    equals the outfit's item count."""
+    n = max(1, len(cells))
+    inner = _GRID_W - 2 * _GRID_PAD
+    cell_w = (inner - (n - 1) * _GRID_GUTTER) // n
+    height = _GRID_CELL_H + 2 * _GRID_PAD
+    canvas = Image.new("RGB", (_GRID_W, height), _GRID_BG)
+    cy = _GRID_PAD + _GRID_CELL_H // 2
+    for idx, img in enumerate(cells):
+        cx = _GRID_PAD + idx * (cell_w + _GRID_GUTTER) + cell_w // 2
+        if img is None:
+            _place_placeholder(canvas, cx, cy, cell_w, _GRID_CELL_H)
+        else:
+            # Reuse the editorial knockout + shadowed placement, on white.
+            _place(canvas, _normalize_item(img), cx, cy, cell_w, _GRID_CELL_H)
+    out = io.BytesIO()
+    canvas.save(out, format="JPEG", quality=_JPEG_QUALITY)
+    return out.getvalue()
+
+
+def get_or_create_grid_collage(
+    user_id: UUID,
+    slots: Dict[str, ClothingItem],
+    *,
+    no_persist: bool = False,
+) -> Optional[str]:
+    """Stored URL of the pure-white side-by-side grid for this outfit, rendered
+    only on a cache miss. Every slot becomes a cell (missing image -> placeholder).
+
+    Returns None when there is nothing to render at all (no slots, or not a single
+    item image could be fetched/decoded — the caller then falls back to its own
+    client-side tile grid), or in incognito (``no_persist`` leaves no storage
+    trace). Best-effort throughout: never raises into the composer/route."""
+    ordered = _ordered_slots(slots)
+    if not ordered:
+        return None
+
+    key = _grid_key(user_id, ordered)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    cells: List[Optional[Image.Image]] = []
+    any_real = False
+    for _slot, item in ordered:
+        url = usable_image_url(item)
+        img: Optional[Image.Image] = None
+        if url:
+            fetched = _download(url)
+            if fetched is not None:
+                try:
+                    img = Image.open(io.BytesIO(fetched[0])).convert("RGB")
+                    any_real = True
+                except Exception:
+                    logger.info("grid collage: undecodable image (item=%s)", item.id)
+                    img = None
+        cells.append(img)
+
+    # A grid of only placeholders adds nothing over the client fallback.
+    if not any_real:
+        return None
+    if no_persist:
+        return None
+
+    url = _store(user_id, compose_grid(cells))
+    if url:
+        _cache_put(key, url)
+    return url

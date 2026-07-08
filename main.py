@@ -34,6 +34,7 @@ from app.api.routes import (
     outfit_image,
     photo_ingest,
     shop,
+    todays_look,
     weather,
 )
 from app.monetization import routes as monetization_routes
@@ -99,6 +100,10 @@ app.include_router(outfit_feedback.router)
 
 # Shopping feed (Wave F2: closet-aware Stage-1 ranker -> GET /shop mixed cards)
 app.include_router(shop.router)
+
+# Today's Look (weather + calendar + profile -> one composed outfit + white grid
+# collage on Home open; GET + remix + wear)
+app.include_router(todays_look.router)
 
 # Weather context (Open-Meteo -> read-through weather_cache -> GET /weather)
 app.include_router(weather.router)
