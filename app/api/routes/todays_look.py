@@ -48,6 +48,7 @@ from app.services.stylist.rls import RlsSetupError, rls_scoped_session
 from app.services.stylist.todays_look import (
     Factors,
     TodaysLook,
+    compose_remix,
     compose_todays_look,
     derive_factors,
 )
@@ -269,13 +270,15 @@ def remix_todays_look(
     finally:
         limiter_db.close()
 
-    exclude = [_uuid(i, field="itemIds[]") for i in body.itemIds]
+    current_ids = [_uuid(i, field="itemIds[]") for i in body.itemIds]
     try:
         with rls_scoped_session(user_id) as db:
             profile = assemble_profile(db, user_id)
             factors = derive_factors(db, user_id, profile)
-            look = compose_todays_look(
-                db, user_id, factors=factors, exclude_item_ids=exclude
+            # Minimal-swap variety through the SAME complete-first pipeline as GET —
+            # never drops to a starter when a complete look exists.
+            look = compose_remix(
+                db, user_id, current_item_ids=current_ids, factors=factors
             )
             payload = look.to_payload()
 

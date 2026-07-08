@@ -51,7 +51,7 @@ from sqlalchemy.orm import Session
 from app.models import ClothingItem
 from app.services.stylist.calendar import CalendarBlock, assemble_calendar
 from app.services.stylist.collage import get_or_create_grid_collage, usable_image_url
-from app.services.stylist.composer import ComposedOutfit, compose_outfit
+from app.services.stylist.composer import ComposedOutfit, _slot_of, compose_outfit
 from app.services.stylist.profile import ProfileBlock, assemble_profile
 from app.services.stylist.retrieval import serialize_item
 
@@ -325,36 +325,17 @@ def _item_payload(item) -> Dict[str, Any]:
     return payload
 
 
-def compose_todays_look(
-    db: Session,
+def _finalize(
     user_id: UUID,
+    composed: _Composed,
+    factors: Factors,
+    no_persist: bool,
     *,
-    factors: Optional[Factors] = None,
-    exclude_item_ids: Optional[List[UUID]] = None,
-    no_persist: bool = False,
+    extra_note: Optional[str] = None,
 ) -> TodaysLook:
-    """Compose the day's look (deterministic). See module docstring for the spine.
-
-    ``factors`` may be passed by the route (it derives them for the cache signature)
-    to avoid a second weather/calendar read; otherwise they're derived here.
-    ``exclude_item_ids`` drives Remix (exclude the current outfit). ``no_persist``
-    skips the collage upload (no per-user storage trace).
-    """
-    profile = assemble_profile(db, user_id)
-    if factors is None:
-        factors = derive_factors(db, user_id, profile, no_persist=no_persist)
-
-    owned = _load_owned(db, user_id)
-    composed = _compose_best(
-        db, user_id, profile,
-        warmth=factors.warmth,
-        occasion=factors.occasion,
-        derived_formality=factors.formality_target,
-        request_exclude=set(exclude_item_ids or []),
-        owned=owned,
-    )
+    """Build the response object from a composed result — kind, collage, title,
+    caption. Shared by GET and Remix so their kind/collage rules match exactly."""
     outfit = composed.outfit
-
     ordered = _ordered_items(outfit)
     items = [_item_payload(it) for _slot, it in ordered]
     item_ids = [str(it.id) for _slot, it in ordered]
@@ -376,6 +357,12 @@ def compose_todays_look(
                 type(exc).__name__, user_id,
             )
 
+    caption = _caption(
+        factors.occasion, factors.warmth, factors.wet, composed.below_ideal
+    )
+    if extra_note and not starter:
+        caption = f"{caption}  {extra_note}".strip()
+
     return TodaysLook(
         kind=kind,
         outfit=outfit,
@@ -383,11 +370,99 @@ def compose_todays_look(
         item_ids=item_ids,
         collage_url=collage_url,
         title=_title(items),
-        caption=_caption(
-            factors.occasion, factors.warmth, factors.wet, composed.below_ideal
-        ),
+        caption=caption,
         occasion=factors.occasion,
         warmth=factors.warmth,
         formality=composed.used_formality,
         note=_STARTER_NOTE if starter else None,
     )
+
+
+def compose_todays_look(
+    db: Session,
+    user_id: UUID,
+    *,
+    factors: Optional[Factors] = None,
+    exclude_item_ids: Optional[List[UUID]] = None,
+    no_persist: bool = False,
+) -> TodaysLook:
+    """Compose the day's look (deterministic). See module docstring for the spine.
+
+    ``factors`` may be passed by the route (it derives them for the cache signature)
+    to avoid a second weather/calendar read; otherwise they're derived here.
+    ``no_persist`` skips the collage upload (no per-user storage trace).
+    """
+    profile = assemble_profile(db, user_id)
+    if factors is None:
+        factors = derive_factors(db, user_id, profile, no_persist=no_persist)
+
+    owned = _load_owned(db, user_id)
+    composed = _compose_best(
+        db, user_id, profile,
+        warmth=factors.warmth,
+        occasion=factors.occasion,
+        derived_formality=factors.formality_target,
+        request_exclude=set(exclude_item_ids or []),
+        owned=owned,
+    )
+    return _finalize(user_id, composed, factors, no_persist)
+
+
+# Slot swap priority for Remix: vary the most-swappable slot first, and keep sole
+# footwear/bottom until last (dropping them would break completeness).
+_SWAP_PRIORITY = {
+    "accessory": 0, "outerwear": 1, "top": 2, "dress": 3, "bottom": 4, "footwear": 5,
+}
+_REMIX_NO_VARIETY_NOTE = "That's the best full look for today."
+
+
+def compose_remix(
+    db: Session,
+    user_id: UUID,
+    *,
+    current_item_ids: List[UUID],
+    factors: Optional[Factors] = None,
+    no_persist: bool = False,
+) -> TodaysLook:
+    """A DIFFERENT COMPLETE look — never a worse one.
+
+    Runs the SAME ``_compose_best`` pipeline GET uses (formality step-down,
+    owned-photo preference, undergarment/non-primary exclusion, completeness-first),
+    but varies via MINIMAL swaps instead of excluding the whole current outfit:
+    try excluding one current item at a time (most-swappable slot first); accept the
+    first result that is COMPLETE and differs from the current set. A sole
+    footwear/bottom is never dropped — excluding it just yields an incomplete
+    candidate that's skipped. If no different complete look exists, return the
+    current complete look unchanged (with a gentle note) — never a starter.
+    """
+    profile = assemble_profile(db, user_id)
+    if factors is None:
+        factors = derive_factors(db, user_id, profile, no_persist=no_persist)
+    owned = _load_owned(db, user_id)
+    by_id = {it.id: it for it in owned}
+    # Ownership filter: only the caller's own current items steer the swap.
+    current = [by_id[i] for i in (current_item_ids or []) if i in by_id]
+    current_set = {str(i.id) for i in current}
+
+    def _best(exclude: Set[UUID]) -> _Composed:
+        return _compose_best(
+            db, user_id, profile,
+            warmth=factors.warmth, occasion=factors.occasion,
+            derived_formality=factors.formality_target,
+            request_exclude=exclude, owned=owned,
+        )
+
+    # Single-slot swaps, most-swappable slot first.
+    for item in sorted(current, key=lambda it: _SWAP_PRIORITY.get(_slot_of(it) or "", 9)):
+        composed = _best({item.id})
+        outfit = composed.outfit
+        if outfit.slots and not outfit.gaps:
+            new_set = {str(x.id) for x in outfit.slots.values()}
+            if new_set != current_set:
+                return _finalize(user_id, composed, factors, no_persist)
+
+    # No different complete look reachable — keep the current complete look.
+    composed = _best(set())
+    complete = bool(composed.outfit.slots) and not composed.outfit.gaps
+    note = _REMIX_NO_VARIETY_NOTE if (complete and current_set) else None
+    return _finalize(user_id, composed, factors, no_persist, extra_note=note)

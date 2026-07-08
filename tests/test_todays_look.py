@@ -328,8 +328,9 @@ def test_remix_overwrites_cache_and_get_returns_it(client, db, user1, tok1):
         "/todays-look/remix", headers=_auth(tok1),
         json={"itemIds": [str(a_top.id), str(a_bot.id), str(a_shoe.id)]},
     ).json()
-    # The excluded items are gone from the remixed look.
-    assert not ({str(a_top.id), str(a_bot.id), str(a_shoe.id)} & set(remix["itemIds"]))
+    # A DIFFERENT complete look (minimal swap), not a starter.
+    assert remix["kind"] == "normal"
+    assert set(remix["itemIds"]) != {str(a_top.id), str(a_bot.id), str(a_shoe.id)}
     # A follow-up GET returns the remixed look verbatim (cache overwritten),
     # without composing again (no extra outfit_shown from the GET hit).
     got = client.get("/todays-look", headers=_auth(tok1)).json()
@@ -339,8 +340,92 @@ def test_remix_overwrites_cache_and_get_returns_it(client, db, user1, tok1):
 
 
 # ---------------------------------------------------------------------------
-# Remix — variety + rate limit + foreign-id isolation
+# Remix — completeness-preserving minimal swap (never a worse starter)
 # ---------------------------------------------------------------------------
+def _casual_swappable(db, user):
+    """Two tops, one sole bottom, one sole footwear — remix must swap the top and
+    KEEP the sole bottom + footwear (the live-confirmed failure shape)."""
+    up = dict(image_status="user_uploaded", generation_status="ready")
+    plaid = _item(db, user, "Plaid shirt", "top", formality=2, **up)
+    tee = _item(db, user, "Nike tee", "top", formality=1, **up)
+    jeans = _item(db, user, "Light wash jeans", "bottom", formality=2, **up)
+    af1 = _item(db, user, "Air Force 1", "footwear", formality=1, **up)
+    return plaid, tee, jeans, af1
+
+
+def test_remix_swaps_top_keeps_sole_footwear_and_bottom(client, db, user1, tok1):
+    plaid, tee, jeans, af1 = _casual_swappable(db, user1)
+    r = client.post(
+        "/todays-look/remix", headers=_auth(tok1),
+        json={"itemIds": [str(plaid.id), str(jeans.id), str(af1.id)]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kind"] == "normal"                    # NEVER starter
+    assert str(af1.id) in body["itemIds"]              # sole footwear kept
+    assert str(jeans.id) in body["itemIds"]            # sole bottom kept
+    assert str(plaid.id) not in body["itemIds"]        # the swappable slot changed
+    tops = [it for it in body["items"] if it["category"] == "top"]
+    assert [t["name"] for t in tops] == ["Nike tee"]   # swapped to the alt top
+    assert body["collageUrl"] == "https://cdn.test/grid.jpg"
+
+
+def test_remix_never_starter_when_get_is_normal(client, db, user1, tok1):
+    plaid, _tee, jeans, af1 = _casual_swappable(db, user1)
+    got = client.get("/todays-look", headers=_auth(tok1)).json()
+    assert got["kind"] == "normal"
+    remix = client.post(
+        "/todays-look/remix", headers=_auth(tok1),
+        json={"itemIds": got["itemIds"]},
+    ).json()
+    assert remix["kind"] == "normal"
+
+
+def test_remix_degrades_to_current_when_no_variety(client, db, user1, tok1):
+    # Exactly one item per slot -> no alternative -> keep the current complete look.
+    up = dict(image_status="user_uploaded", generation_status="ready")
+    plaid = _item(db, user1, "Plaid shirt", "top", formality=2, **up)
+    jeans = _item(db, user1, "Jeans", "bottom", formality=2, **up)
+    af1 = _item(db, user1, "Air Force 1", "footwear", formality=1, **up)
+    current = [str(plaid.id), str(jeans.id), str(af1.id)]
+    body = client.post(
+        "/todays-look/remix", headers=_auth(tok1), json={"itemIds": current},
+    ).json()
+    assert body["kind"] == "normal"                     # not a starter
+    assert set(body["itemIds"]) == set(current)         # unchanged complete look
+    assert "best full look" in body["caption"].lower()  # gentle note
+
+
+def test_remix_prefers_real_photo_on_swap(client, db, user1, tok1):
+    up = dict(image_status="user_uploaded", generation_status="ready")
+    plaid = _item(db, user1, "Plaid shirt", "top", formality=2, **up)
+    real_tee = _item(db, user1, "Real tee", "top", formality=1, **up)
+    _item(db, user1, "Receipt tee", "top", formality=1,
+          image_url=None, image_status="placeholder")
+    jeans = _item(db, user1, "Jeans", "bottom", formality=2, **up)
+    af1 = _item(db, user1, "Air Force 1", "footwear", formality=1, **up)
+    body = client.post(
+        "/todays-look/remix", headers=_auth(tok1),
+        json={"itemIds": [str(plaid.id), str(jeans.id), str(af1.id)]},
+    ).json()
+    tops = [it["name"] for it in body["items"] if it["category"] == "top"]
+    assert tops == ["Real tee"]  # image-less receipt top never wins the swap
+
+
+def test_remix_excludes_undergarment_on_swap(client, db, user1, tok1):
+    up = dict(image_status="user_uploaded", generation_status="ready")
+    plaid = _item(db, user1, "Plaid shirt", "top", formality=2, **up)
+    bra = _item(db, user1, "Strappy Racer Bra Light Support", "top", formality=1)
+    jeans = _item(db, user1, "Jeans", "bottom", formality=2, **up)
+    af1 = _item(db, user1, "Air Force 1", "footwear", formality=1, **up)
+    body = client.post(
+        "/todays-look/remix", headers=_auth(tok1),
+        json={"itemIds": [str(plaid.id), str(jeans.id), str(af1.id)]},
+    ).json()
+    assert body["kind"] == "normal"
+    assert str(bra.id) not in body["itemIds"]  # a bra never becomes the swap
+
+
 def test_remix_excludes_current_items(client, db, user1, tok1):
     top, bottom, shoes = _full_closet(db, user1)
     alt = _item(db, user1, "White sneakers", "footwear", formality=3, warmth=2)
