@@ -149,7 +149,14 @@ def test_prompt_contains_invariants():
     assert "REMOVE the person" in prompt
     assert "Preserve the target garment EXACTLY" in prompt
     assert "Do NOT add any logo, text, brand mark" in prompt
-    assert "No person, no mannequin" in prompt
+    # Photo-seam Phase 2 — the universal image invariant block (one definition):
+    # single item / no person / off-white background / catalog framing.
+    from app.services.image_generation.prompt import INVARIANT_BLOCK
+
+    assert INVARIANT_BLOCK in prompt
+    assert "SINGLE ITEM ONLY" in prompt and "No person, no model, no mannequin" in prompt
+    assert "OFF-WHITE BACKGROUND" in prompt
+    assert "CATALOG FRAMING" in prompt and "NOT tightly cropped" in prompt
 
 
 def test_prompt_appends_attribute_hints():
@@ -184,7 +191,7 @@ def test_nano_prompt_adds_logo_guard_without_weakening_base():
     assert nano.startswith(base)
     assert "Extract ONLY the single target garment" in nano
     assert "REMOVE the person" in nano
-    assert "No person, no mannequin" in nano
+    assert "No person, no model, no mannequin" in nano
     # The added guard forbids adding / duplicating / relocating / inventing marks.
     assert "LOGOS, TEXT AND BRAND MARKS" in nano
     for verb in ("add", "invent", "duplicate", "mirror", "relocate"):

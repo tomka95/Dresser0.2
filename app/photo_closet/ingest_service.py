@@ -132,20 +132,29 @@ def store_cutout(storage_client, user_id: UUID, cut) -> Optional[str]:
 
     Module-level so tests can monkeypatch it without a real bucket. Mirrors
     image_resolver._upload: identical bytes (any run, any user) reuse one stored URL.
+
+    BEST-EFFORT: an upload failure (bucket down, bad credentials) returns None instead
+    of raising — the same degraded outcome as storage_client=None, so a mid-batch
+    storage outage stages the garment image-less rather than 500-ing the whole commit
+    (matching the route's documented stage-without-images fallback).
     """
     if storage_client is None:
         return None
     from app.utils.image_blob_store import get_or_upload
 
-    return get_or_upload(
-        cut.data,
-        lambda: storage_client.upload_bytes(
+    try:
+        return get_or_upload(
             cut.data,
-            folder=f"photo_items/{user_id}",
-            content_type=cut.content_type,
-            suffix=cut.suffix,
-        ),
-    )
+            lambda: storage_client.upload_bytes(
+                cut.data,
+                folder=f"photo_items/{user_id}",
+                content_type=cut.content_type,
+                suffix=cut.suffix,
+            ),
+        )
+    except Exception as exc:
+        logger.warning("store_cutout: upload failed (%s)", type(exc).__name__)
+        return None
 
 
 def _source_line_key(image_sha256: str, box_2d: List[int]) -> str:
