@@ -311,6 +311,14 @@ def _stage_message(
                     "escalated": res.outcome.escalated,
                 },
                 status="pending",
+                # Ready-first Phase 1: Gmail candidates enter the readiness machine at
+                # 'staged' with an UNKNOWN person status (no detector has run — fail-
+                # closed, masked). Phase 2 (email verify+generation) advances them to
+                # 'ready'; until then they never reach the ready-gated deck. Insert-only:
+                # the ON CONFLICT set_ below never touches either, so a re-seen email
+                # can't regress a candidate that later phases advanced.
+                pipeline_state="staged",
+                person_status="unknown",
             ),
         )
         content_keys.append(content_key)

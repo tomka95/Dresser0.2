@@ -102,6 +102,8 @@ def _auth(t):
 def _item(db, user, name, category, **attrs):
     attrs.setdefault("image_url", f"https://cdn.test/{name}.jpg")
     attrs.setdefault("image_status", "resolved")
+    # ready-first Phase 1: display is fail-closed; test items need an affirmative verdict.
+    attrs.setdefault("person_status", "person_free")
     it = ClothingItem(user_id=user.id, name=name, category=category, **attrs)
     db.add(it); db.commit(); db.refresh(it)
     return it

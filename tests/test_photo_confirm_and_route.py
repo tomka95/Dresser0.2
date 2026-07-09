@@ -330,6 +330,24 @@ def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     assert body["held_multi_person"] == 0  # kept for client compat, always 0
     sync_id = body["sync_id"]
 
+    # READY-FIRST Phase 1: a freshly committed candidate is 'staged' — the deck serves
+    # ONLY 'ready', so it is invisible until generation completes. Assert the gate, then
+    # stamp readiness (simulating the generation pass) and assert the scoped deck.
+    assert client.get(
+        f"/gmail/ingest/candidates?sync_id={sync_id}", headers=headers).json() == []
+    photo_cand = (
+        db.query(IngestCandidate)
+        .filter(IngestCandidate.sync_id == sync_id, IngestCandidate.source_type == "photo")
+        .one()
+    )
+    # Server-written state: 'staged' at commit, or 'image_pending' when the background
+    # generation task already started (TestClient runs BackgroundTasks synchronously).
+    # Either way NOT 'ready' — which is exactly why the deck above was empty.
+    assert photo_cand.pipeline_state in ("staged", "image_pending")
+    photo_cand.pipeline_state = "ready"
+    photo_cand.person_status = "person_free"
+    db.commit()
+
     # Scoped to the photo run: ONLY the photo candidate (stale Gmail one excluded).
     scoped = client.get(
         f"/gmail/ingest/candidates?sync_id={sync_id}", headers=headers).json()
@@ -338,9 +356,10 @@ def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     assert scoped[0]["name"] == "Photo Shirt"
     assert scoped[0]["image_status"] == "user_uploaded"
 
-    # Unscoped (Gmail deck behavior) still returns both -> Gmail unchanged.
+    # Unscoped: the stale STAGED Gmail candidate stays hidden (ready-first) — only the
+    # ready photo candidate is served.
     unscoped = client.get("/gmail/ingest/candidates", headers=headers).json()
-    assert len(unscoped) == 2
+    assert len(unscoped) == 1
 
 
 def test_route_commit_second_commit_conflicts_409(db, client, monkeypatch):

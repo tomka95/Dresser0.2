@@ -71,10 +71,14 @@ def _run(db, user, **over):
     return r
 
 
-def _cand(db, user, run, *, status="pending", key=None):
+def _cand(db, user, run, *, status="pending", key=None, state="ready",
+          person="person_free"):
+    # ready-first Phase 1: the banner settles on per-candidate pipeline_state, so the
+    # default test candidate is a READY one; unsettled cases pass state= explicitly.
     c = IngestCandidate(
         user_id=user.id, sync_id=run.sync_id, status=status,
         name="Blue Tee", source_line_key=key or uuid.uuid4().hex,
+        pipeline_state=state, person_status=person,
     )
     db.add(c); db.commit()
     return c
@@ -134,16 +138,22 @@ def test_pending_review_silent_when_empty_inbox(client, db, user):
 
 
 def test_pending_review_silent_when_generation_not_settled(client, db, user):
-    # generation still in flight (ready+failed < total) -> don't surface half-imaged cards.
-    run = _run(db, user, generation_total=3, generation_ready=1, generation_failed=0)
-    _cand(db, user, run)
+    # ready-first Phase 1: "not settled" = a pending candidate whose pipeline_state has
+    # not reached 'ready'/'failed' -> the WHOLE batch waits; never surface half-ready.
+    run = _run(db, user)
+    _cand(db, user, run)                                  # ready
+    _cand(db, user, run, state="image_pending", person="person_present")  # in flight
     assert client.get("/gmail/ingest/pending-review", headers=_auth(user)).json()["pending"] is False
 
 
 def test_pending_review_surfaces_once_generation_settled(client, db, user):
+    # Settled = every pending candidate is 'ready' or terminally 'failed' (excluded).
     run = _run(db, user, generation_total=2, generation_ready=1, generation_failed=1)
-    _cand(db, user, run)
-    assert client.get("/gmail/ingest/pending-review", headers=_auth(user)).json()["pending"] is True
+    _cand(db, user, run)                                  # ready
+    _cand(db, user, run, state="failed", person="person_present")  # excluded, not blocking
+    body = client.get("/gmail/ingest/pending-review", headers=_auth(user)).json()
+    assert body["pending"] is True
+    assert body["ready_count"] == 1                       # counts ONLY the ready one
 
 
 def test_pending_review_silent_for_running_run(client, db, user):

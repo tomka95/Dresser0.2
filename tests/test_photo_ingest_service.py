@@ -594,6 +594,9 @@ def test_deck_scoped_to_current_run(db, user):
             user_id=user.id, sync_id=sync_id, source_line_key=slk, name="x",
             category="top", status=status, source_type="photo",
             image_url="https://blob/x.jpg", image_status="user_uploaded",
+            # ready-first Phase 1: the deck serves ONLY pipeline_state='ready' — this
+            # test exercises sync-scoping, so its candidates are stamped ready.
+            pipeline_state="ready", person_status="person_free",
         ))
 
     # run A: 2 pending. run B (older): 2 pending + 1 already accepted.

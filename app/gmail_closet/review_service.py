@@ -113,13 +113,16 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         "currency": c.currency,
         "order_date": c.order_date.isoformat() if c.order_date else None,
         "is_return": bool(c.is_return),
-        # G6: an ON-MODEL photo crop contains a person — NEVER send it for display. On a
-        # CANDIDATE image_url is ALWAYS the raw crop (the verified card lives separately in
-        # generated_image_url), so mask it whenever on_model: the deck shows the generated
-        # card once ready, and a neutral placeholder until then. The crop stays in the DB as
-        # the generation reference. Flat-lay / Gmail images (on_model=false) are unchanged.
-        "image_url": None if c.on_model else c.image_url,
+        # FAIL-CLOSED person mask (ready-first Phase 1). On a CANDIDATE image_url is ALWAYS
+        # the raw source image (the verified card lives separately in generated_image_url),
+        # so it is sent ONLY on an AFFIRMATIVE person_free verdict. 'unknown' (no detector
+        # ever ran — every legacy Gmail row) and 'person_present' are masked identically:
+        # the deck shows the generated card once ready, a neutral placeholder until then.
+        # "Unchecked" can never again read as "clean".
+        "image_url": c.image_url if c.person_status == "person_free" else None,
         "on_model": bool(c.on_model),
+        "person_status": c.person_status,
+        "pipeline_state": c.pipeline_state,
         # Phase 4 streaming deck: resolved | pending (still resolving — shimmer + poll) |
         # placeholder (slow tiers exhausted — static placeholder, stop polling) | null.
         "image_status": c.image_status,
@@ -174,6 +177,10 @@ def list_pending_candidates(
     q = db.query(IngestCandidate).filter(
         IngestCandidate.user_id == user_id,
         IngestCandidate.status == "pending",
+        # READY-FIRST (Phase 1): the deck serves ONLY candidates the state machine has
+        # advanced to 'ready' — tag-complete with a verified, person-free image. No other
+        # state ever reaches the swipe deck; an in-flight batch surfaces nothing.
+        IngestCandidate.pipeline_state == "ready",
     )
     if sync_id is not None:
         q = q.filter(IngestCandidate.sync_id == sync_id)
@@ -393,6 +400,13 @@ def _upsert_clothing_item(
         # G6: carry the on-model flag. image_url above holds the crop ONLY as the gen/self-
         # heal reference; the closet read masks it until a verified person-free card lands.
         on_model=bool(cand.on_model),
+        # Ready-first Phase 1: carry the fail-closed person tri-state. When confirm stores
+        # the VERIFIED generated card, the stored image is person-free by construction —
+        # regardless of what the source was. Otherwise the candidate's verdict (or lack of
+        # one: 'unknown' stays masked) travels with the item.
+        person_status=(
+            "person_free" if _used_generated_card(cand) else (cand.person_status or "unknown")
+        ),
         # provenance='extracted' seed. INSERT-only: NOT in the on_conflict set_ below, so
         # a re-confirm preserves any 'inferred'/'user_edited' attributes already present.
         attributes_json=extracted_attrs,
@@ -423,6 +437,7 @@ def _upsert_clothing_item(
             "generation_status": ex.generation_status,
             "source_type": ex.source_type,
             "on_model": ex.on_model,
+            "person_status": ex.person_status,
             "updated_at": func.now(),
         },
     ).returning(tbl.c.id, literal_column("(xmax = 0)").label("inserted"))

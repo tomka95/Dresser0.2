@@ -27,6 +27,8 @@ def _cand(**over) -> IngestCandidate:
         image_status="user_uploaded",
         source_type="photo",
         on_model=True,
+        person_status="person_present",  # tri-state (Phase 1): detector-affirmed person
+        pipeline_state="staged",
         generated_image_url=None,
         generation_status="pending_retry",
         confidence_overall=0.8,
@@ -63,7 +65,7 @@ def test_candidate_view_masks_on_model_while_generating():
 
 def test_candidate_view_shows_flatlay_crop():
     # A flat-lay photo (no person) is safe to show as before.
-    view = _candidate_to_view(_cand(on_model=False, generation_status="pending_retry"), None)
+    view = _candidate_to_view(_cand(on_model=False, person_status="person_free", generation_status="pending_retry"), None)
     assert view["image_url"] == "https://cdn/crop-with-person.jpg"  # here: a clean flat-lay crop
     assert view["on_model"] is False
 
@@ -72,7 +74,8 @@ def test_candidate_view_shows_flatlay_crop():
 def _item(**over) -> ClothingItem:
     base = dict(
         id=uuid.uuid4(), user_id=uuid.uuid4(), name="Camel Coat", category="outerwear",
-        source_type="photo", on_model=True, generation_status="pending_retry",
+        source_type="photo", on_model=True, person_status="person_present",
+        generation_status="pending_retry",
         image_url="https://cdn/crop-with-person.jpg",
     )
     base.update(over)
@@ -93,7 +96,7 @@ def test_closet_read_shows_generated_card_when_ready():
 
 
 def test_closet_read_shows_flatlay_crop():
-    it = _item(on_model=False, generation_status="pending_retry", image_url="https://cdn/flatlay.jpg")
+    it = _item(on_model=False, person_status="person_free", generation_status="pending_retry", image_url="https://cdn/flatlay.jpg")
     assert _get_image_url(it) == "https://cdn/flatlay.jpg"
 
 
@@ -131,6 +134,10 @@ def test_stage_sets_on_model_from_person_count():
     off = _stage_candidate(_FakeDB(), uuid.uuid4(), uuid.uuid4(), garment, "u", "slk", on_model=False)
     assert on.on_model is True
     assert off.on_model is False
+    # Ready-first Phase 1: staging derives the fail-closed tri-state from the detector.
+    assert on.person_status == "person_present"
+    assert off.person_status == "person_free"
+    assert on.pipeline_state == off.pipeline_state == "staged"
 
 
 # --------------------------------------------------------------------------- C1: every display surface masks
@@ -140,7 +147,10 @@ def test_shared_display_mask_helper():
     assert display_image_url(_item(on_model=True, generation_status="pending_retry")) is None
     assert display_image_url(_item(on_model=True, generation_status=None)) is None
     assert display_image_url(_item(on_model=True, generation_status="ready", image_url="card")) == "card"
-    assert display_image_url(_item(on_model=False, generation_status="pending_retry", image_url="flat")) == "flat"
+    assert display_image_url(_item(on_model=False, person_status="person_free", generation_status="pending_retry", image_url="flat")) == "flat"
+    # Ready-first Phase 1: FAIL-CLOSED — an item whose person status was never determined
+    # ('unknown') is masked exactly like a person_present one.
+    assert display_image_url(_item(on_model=False, person_status="unknown", generation_status=None, image_url="never-checked")) is None
 
 
 def test_collage_usable_image_url_masks_on_model():
@@ -161,7 +171,7 @@ def test_retrieval_serialize_item_masks_on_model():
     assert masked["imageUrl"] is None
     shown = serialize_item(_item(on_model=True, generation_status="ready", image_url="clean-card"))
     assert shown["imageUrl"] == "clean-card"
-    flat = serialize_item(_item(on_model=False, generation_status="pending_retry", image_url="flatlay"))
+    flat = serialize_item(_item(on_model=False, person_status="person_free", generation_status="pending_retry", image_url="flatlay"))
     assert flat["imageUrl"] == "flatlay"
 
 

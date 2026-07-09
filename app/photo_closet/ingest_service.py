@@ -228,6 +228,11 @@ def _stage_candidate(
         image_status="user_uploaded",
         source_type="photo",
         on_model=on_model,
+        # Ready-first Phase 1: readiness-machine entry state + fail-closed person signal.
+        # The photo detector MEASURED person_count both ways, so this is an AFFIRMATIVE
+        # verdict (unlike Gmail staging, which stays 'unknown' until a verify runs).
+        pipeline_state="staged",
+        person_status="person_present" if on_model else "person_free",
         confidence_overall=garment.confidence_overall,
         confidence_json=confidence_json,
         status="pending",
@@ -244,6 +249,11 @@ def _stage_candidate(
     if existing is not None:
         for k, v in fields.items():
             setattr(existing, k, v)
+        # A re-staged candidate that already carries a VERIFIED generated card stays
+        # 'ready' — resetting it to 'staged' would hide it from the ready-gated deck
+        # forever (generation never re-selects generation_status='ready' rows).
+        if existing.generation_status == "ready" and existing.generated_image_url:
+            existing.pipeline_state = "ready"
         return existing
 
     cand = IngestCandidate(

@@ -151,14 +151,18 @@ def _get_image_url(item: ClothingItem) -> Optional[str]:
     Returns:
         Image URL string or None
     """
-    # G6 — route through the single on-model mask (models.closet.display_image_url): an
-    # on-model crop (a person) is never surfaced until a verified person-free card lands
-    # ('ready'). image_url holds the crop only as the generation/self-heal reference.
+    # Route through the single FAIL-CLOSED person mask (models.closet.display_image_url):
+    # an image is surfaced only on an affirmative signal — a verified 'ready' generated
+    # card or person_status='person_free'. 'unknown' (never checked) stays masked.
     masked = display_image_url(item)
     if masked:
         return masked
-    # A masked on-model item must NOT fall through to a primary ItemImage either.
-    if getattr(item, "on_model", False) and item.generation_status != "ready":
+    # A masked item (person unknown/present without a ready card) must NOT fall through
+    # to a primary ItemImage either — fail-closed applies to every fallback.
+    if (
+        getattr(item, "generation_status", None) != "ready"
+        and getattr(item, "person_status", None) != "person_free"
+    ):
         return None
 
     # Fallback to primary ItemImage from images relationship

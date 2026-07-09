@@ -49,7 +49,9 @@ def _png_bytes(img):
 
 
 def _fake_item(url="http://cdn.example/item.jpg"):
-    return SimpleNamespace(id=uuid.uuid4(), image_url=url)
+    # person_free: usable_image_url is fail-closed (ready-first Phase 1) — a test item
+    # must carry an affirmative person verdict to be composited.
+    return SimpleNamespace(id=uuid.uuid4(), image_url=url, person_status="person_free")
 
 
 def _close(pixel, target, tol=14):
@@ -288,13 +290,13 @@ def user(db: Session):
 def _closet(db, user, with_footwear=True):
     items = [
         ClothingItem(user_id=user.id, name="Tee", category="top",
-                     image_url="http://cdn/tee.jpg"),
+                     image_url="http://cdn/tee.jpg", person_status="person_free"),
         ClothingItem(user_id=user.id, name="Jeans", category="bottom",
-                     image_url="http://cdn/jeans.jpg"),
+                     image_url="http://cdn/jeans.jpg", person_status="person_free"),
     ]
     if with_footwear:
         items.append(ClothingItem(user_id=user.id, name="Sneakers", category="footwear",
-                                  image_url="http://cdn/sneakers.jpg"))
+                                  image_url="http://cdn/sneakers.jpg", person_status="person_free"))
     db.add_all(items); db.commit()
     return items
 
