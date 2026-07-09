@@ -44,6 +44,10 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/sign-in`);
   }
 
+  // The exchange response tells us whether this was an onboarding-purpose connect
+  // (state minted via ?onboarding=1). Onboarding returns to /onboarding so the
+  // persisted draft resumes the flow; every other connect returns to /profile.
+  let onboarding = false;
   try {
     const response = await fetch(`${API_BASE_URL}/gmail/oauth/exchange`, {
       method: 'POST',
@@ -58,9 +62,14 @@ export async function GET(request: Request) {
     if (!response.ok) {
       return fail();
     }
+
+    const body = (await response.json().catch(() => ({}))) as { onboarding?: boolean };
+    onboarding = body.onboarding === true;
   } catch {
     return fail();
   }
 
-  return NextResponse.redirect(`${origin}/profile?gmail=connected`);
+  return NextResponse.redirect(
+    onboarding ? `${origin}/onboarding?gmail=connected` : `${origin}/profile?gmail=connected`,
+  );
 }

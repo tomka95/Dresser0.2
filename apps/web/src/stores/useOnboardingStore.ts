@@ -29,7 +29,14 @@ import type {
  * only the answer draft is written to storage.
  */
 
-export const ONBOARDING_STEPS = 6;
+/**
+ * Screen count for the tap-only onboarding flow (departments, sizes, gmail_scan,
+ * fits, taste, occasions, weather). Kept as a literal rather than derived from
+ * STEPS.length: components/onboarding/steps imports THIS store, so importing STEPS
+ * back here would be a circular import. Bump it in lockstep with the STEPS registry
+ * (a store test asserts ONBOARDING_STEPS === STEPS.length).
+ */
+export const ONBOARDING_STEPS = 7;
 
 /** localStorage key for the mid-flow answer draft (O9 resume). */
 export const ONBOARDING_DRAFT_KEY = 'tailor.onboarding.progress';

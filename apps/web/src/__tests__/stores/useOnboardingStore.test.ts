@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useOnboardingStore, ONBOARDING_STEPS } from '@/stores/useOnboardingStore';
+import { STEPS } from '@/components/onboarding/steps';
 
 function reset() {
   useOnboardingStore.getState().reset();
@@ -8,6 +9,32 @@ function reset() {
 
 describe('useOnboardingStore', () => {
   beforeEach(reset);
+
+  describe('STEPS registry (Fix-1 gmail_scan insertion)', () => {
+    it('inserts gmail_scan immediately after sizes, keeping the rest in order', () => {
+      expect(STEPS.map((s) => s.key)).toEqual([
+        'departments',
+        'sizes',
+        'gmail_scan',
+        'fits',
+        'taste',
+        'occasions',
+        'weather',
+      ]);
+    });
+
+    it('gmail_scan is optional (skippable + always complete) so connect never blocks', () => {
+      const gmail = STEPS[2];
+      expect(gmail.key).toBe('gmail_scan');
+      expect(gmail.skippable).toBe(true);
+      expect(gmail.isComplete(useOnboardingStore.getState())).toBe(true);
+    });
+
+    it('ONBOARDING_STEPS stays in lockstep with the registry length (now 7)', () => {
+      expect(ONBOARDING_STEPS).toBe(7);
+      expect(ONBOARDING_STEPS).toBe(STEPS.length);
+    });
+  });
 
   describe('navigation', () => {
     it('clamps next/back within [1, ONBOARDING_STEPS]', () => {

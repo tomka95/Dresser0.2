@@ -34,12 +34,18 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.gmail_oauth_state import OAuthStateError, issue_state, verify_state
+from app.core.gmail_oauth_state import (
+    _PURPOSE,
+    _PURPOSE_ONBOARDING,
+    OAuthStateError,
+    issue_state,
+    read_state_purpose,
+)
 from app.core.token_crypto import TokenCryptoError, encrypt_token
 from app.dependencies import get_current_user, get_db
 from app.models import GoogleAccount, User
@@ -68,16 +74,22 @@ class StartResponse(BaseModel):
 
 @router.get("/start", response_model=StartResponse)
 def start_gmail_oauth(
+    onboarding: bool = False,
     current_user: User = Depends(get_current_user),
 ) -> StartResponse:
     """Build the Google consent URL for gmail.readonly, bound to this user.
 
     Uses the GMAIL_OAUTH_* client only, with access_type=offline + prompt=consent
     so Google returns a refresh token even on re-consent.
+
+    ``onboarding=1`` mints a DISTINCT-purpose state so the exchange auto-starts a background
+    receipt scan and the callback returns the user into onboarding (not /profile). The
+    signed purpose is what gates the auto-scan — a plain-connect state can never trigger it.
     """
     _require_client_config()
+    purpose = _PURPOSE_ONBOARDING if onboarding else _PURPOSE
     try:
-        state = issue_state(str(current_user.id))
+        state = issue_state(str(current_user.id), purpose=purpose)
     except OAuthStateError as exc:
         logger.error("Cannot issue OAuth state: %s", exc)
         raise HTTPException(status_code=500, detail="Gmail connection is not configured.")
@@ -108,20 +120,29 @@ class ConnectionStatus(BaseModel):
     connected: bool
     scope: Optional[str] = None
     connected_at: Optional[str] = None
+    # Set by /exchange when the connect used the onboarding purpose: the callback branches
+    # its redirect on `onboarding`, and `sync_id` is the auto-started scan (None if a run
+    # was already live / the inbox couldn't be scanned). /status leaves these at defaults.
+    onboarding: bool = False
+    sync_id: Optional[str] = None
 
 
 @router.post("/exchange", response_model=ConnectionStatus)
 def exchange_gmail_code(
     body: ExchangeRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ConnectionStatus:
-    """Validate state, exchange the auth code, and store ENCRYPTED tokens."""
+    """Validate state, exchange the auth code, store ENCRYPTED tokens, and — for an
+    onboarding-purpose connect — auto-start the background receipt scan."""
     _require_client_config()
 
-    # 1) CSRF: the state must be ours, fresh, and minted for THIS user.
+    # 1) CSRF + purpose: signature, freshness, and user-binding are verified here; the
+    # returned purpose (plain-connect vs onboarding) is authenticated by the signature, so a
+    # plain-connect state can never yield the onboarding purpose (and never auto-scan).
     try:
-        verify_state(body.state, expected_user_id=str(current_user.id))
+        purpose = read_state_purpose(body.state, expected_user_id=str(current_user.id))
     except OAuthStateError as exc:
         logger.warning("Rejected Gmail OAuth state for user %s: %s", current_user.id, exc)
         raise HTTPException(status_code=400, detail="Invalid or expired authorization state.")
@@ -199,10 +220,31 @@ def exchange_gmail_code(
     db.refresh(account)
 
     logger.info("Stored encrypted Gmail tokens for user %s", current_user.id)
+
+    # 5) ONBOARDING auto-scan (Wave C / Fix 1): only when the signed purpose is onboarding,
+    # kick the full receipt ingest in the BACKGROUND via the existing dual-path. Wrapped
+    # defensively — a scan-start failure must NEVER fail the connect (the user is connected
+    # regardless, and a later manual scan still works). Empty inbox -> the run completes with
+    # zero candidates -> the Home banner never appears.
+    is_onboarding = purpose == _PURPOSE_ONBOARDING
+    scan_sync_id: Optional[str] = None
+    if is_onboarding:
+        try:
+            from app.api.routes.gmail_ingest import maybe_start_onboarding_scan
+
+            scan_sync_id = maybe_start_onboarding_scan(db, current_user.id, background_tasks)
+        except Exception:  # noqa: BLE001 — connect must succeed even if the scan can't start
+            logger.warning(
+                "Onboarding auto-scan failed to start for user %s (connect succeeded)",
+                current_user.id,
+            )
+
     return ConnectionStatus(
         connected=True,
         scope=account.scope,
         connected_at=_iso(account.created_at),
+        onboarding=is_onboarding,
+        sync_id=scan_sync_id,
     )
 
 

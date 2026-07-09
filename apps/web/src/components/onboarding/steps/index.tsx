@@ -26,12 +26,14 @@ import { FitSlider } from './_FitSlider';
 import { TasteDeck } from './_TasteDeck';
 
 /**
- * Step registry for the onboarding flow — the six real screen bodies, restyled to
+ * Step registry for the onboarding flow — the seven real screen bodies, restyled to
  * the redesign material system (§2). Every screen is tap/slider/chip only (zero
  * free text), one question per screen, and writes staged answers to
  * useOnboardingStore. Nothing hits the server until the shell's single
- * seedOnboarding() at Finish (screen 6 can commit early when the user hands off to
- * a closet-seed flow — see WeatherScreen).
+ * seedOnboarding() at Finish (the final screen can commit early when the user hands
+ * off to a closet-seed flow — see WeatherScreen). The gmail_scan screen is the lone
+ * exception that talks to the network mid-flow: connecting kicks off a background
+ * receipt scan and full-page redirects to Google (see GmailScanScreen).
  *
  * `isComplete(state)` gates the Continue button; `skippable` lets a user advance
  * without answering. Only screens 1 (departments) and 2 (sizes) are required, so
@@ -223,7 +225,61 @@ const SizesScreen: React.FC = () => {
   );
 };
 
-// ── Screen 3: fit sliders ────────────────────────────────────────────────────
+// ── Screen 3: Gmail background scan (optional, skippable) ────────────────────
+// Connecting Gmail here mints an ONBOARDING-purpose OAuth state (startGmailConnect(true)):
+// the backend auto-starts a background receipt scan on exchange and the callback
+// bounces back to /onboarding. This is a full-page redirect to Google — the
+// localStorage onboarding draft (useOnboardingStore persist) survives it, so the flow
+// resumes on return. It never marks onboarding complete and never blocks: the step is
+// skippable and always "complete", so Continue/Skip work with or without a connect.
+const GmailScanScreen: React.FC = () => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const connect = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      // Onboarding purpose → full-page redirect to Google's consent screen. On
+      // success the browser navigates away; nothing after this line runs.
+      await startGmailConnect(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start the scan. Try again.');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <OnboardingStep
+      title="Scan your inbox"
+      subtitle="Connect Gmail and we'll import your receipts into your closet in the background while you finish."
+    >
+      <div className="flex flex-col gap-2.5">
+        <ClosetCta
+          icon={<GmailGlyph size={22} />}
+          title="Connect Gmail"
+          hint="Order receipts, read-only"
+          busy={busy}
+          disabled={busy}
+          onClick={() => void connect()}
+        />
+        {error ? (
+          <p className="text-[12.5px]" style={{ color: 'var(--danger)' }}>
+            {error}
+          </p>
+        ) : null}
+        <div className="mt-1 flex items-center gap-2">
+          <Spark size={12} />
+          <span className="text-[12px] leading-relaxed" style={{ color: M.ghost }}>
+            We&rsquo;ll scan in the background — keep going. You can also connect later in Settings.
+          </span>
+        </div>
+      </div>
+    </OnboardingStep>
+  );
+};
+
+// ── Screen 4: fit sliders ────────────────────────────────────────────────────
 const FitScreen: React.FC = () => {
   const fits = useOnboardingStore((s) => s.fits);
   const setFit = useOnboardingStore((s) => s.setFit);
@@ -254,7 +310,7 @@ const FitScreen: React.FC = () => {
   );
 };
 
-// ── Screen 4: taste deck ─────────────────────────────────────────────────────
+// ── Screen 5: taste deck ─────────────────────────────────────────────────────
 const TasteScreen: React.FC = () => {
   const department = useOnboardingStore((s) => s.department) ?? 'womens';
   const addSwipe = useOnboardingStore((s) => s.addSwipe);
@@ -269,7 +325,7 @@ const TasteScreen: React.FC = () => {
   );
 };
 
-// ── Screen 5: occasions ──────────────────────────────────────────────────────
+// ── Screen 6: occasions ──────────────────────────────────────────────────────
 const OCCASIONS: { key: string; label: string }[] = [
   { key: 'office', label: 'Office' },
   { key: 'casual_work', label: 'Casual work' },
@@ -314,7 +370,7 @@ const OccasionsScreen: React.FC = () => {
   );
 };
 
-// ── Screen 6: weather permission + closet seed ───────────────────────────────
+// ── Screen 7: weather permission + closet seed ───────────────────────────────
 type GeoStatus = 'idle' | 'requesting' | 'granted' | 'denied' | 'unsupported';
 
 const WeatherScreen: React.FC = () => {
@@ -324,7 +380,7 @@ const WeatherScreen: React.FC = () => {
   const setCompleted = useOnboardingStore((s) => s.setCompleted);
 
   const [geo, setGeo] = useState<GeoStatus>(location ? 'granted' : 'idle');
-  const [busy, setBusy] = useState<null | 'gmail' | 'photo'>(null);
+  const [busy, setBusy] = useState<null | 'photo'>(null);
   const [error, setError] = useState<string | null>(null);
   const committedRef = useRef(false);
 
@@ -353,12 +409,11 @@ const WeatherScreen: React.FC = () => {
     );
   };
 
-  // Closet-seed handoff. The shared Gmail/photo flows are fired UNCHANGED; we just
-  // commit the staged answers first (Gmail does a full-page redirect that would
-  // wipe the in-memory store, and either way we want onboarding marked done so the
-  // gate lets the user back in). seedOnboarding is idempotent, so this never
-  // conflicts with the shell's Finish commit.
-  const commitThen = async (kind: 'gmail' | 'photo', go: () => void | Promise<void>) => {
+  // Closet-seed handoff (photos only now — Gmail connect lives in its own earlier
+  // step). We commit the staged answers first: /add-photo is a real navigation and
+  // we want onboarding marked done so the gate lets the user back in. seedOnboarding
+  // is idempotent, so this never conflicts with the shell's Finish commit.
+  const commitThen = async (kind: 'photo', go: () => void | Promise<void>) => {
     setError(null);
     setBusy(kind);
     try {
@@ -431,7 +486,7 @@ const WeatherScreen: React.FC = () => {
           </div>
         )}
 
-        {/* Closet seed */}
+        {/* Closet seed — photos. Gmail connect now lives in its own earlier step. */}
         <section>
           <div
             className="mb-2 flex items-center gap-2 rounded-[20px]"
@@ -445,19 +500,11 @@ const WeatherScreen: React.FC = () => {
             <div className="flex-1">
               <div className="text-[13.5px] font-semibold text-white">Next: seed your closet</div>
               <div className="mt-0.5 text-[12px]" style={{ color: M.faint }}>
-                Gmail receipts or a few photos — Tailor does the rest.
+                Snap or upload a few photos — Tailor does the rest.
               </div>
             </div>
           </div>
           <div className="flex flex-col gap-2.5">
-            <ClosetCta
-              icon={<GmailGlyph size={22} />}
-              title="Connect Gmail"
-              hint="Import receipts into your closet"
-              busy={busy === 'gmail'}
-              disabled={busy !== null}
-              onClick={() => commitThen('gmail', () => startGmailConnect())}
-            />
             <ClosetCta
               icon={<Camera size={20} color="var(--mint)" />}
               title="Upload photos"
@@ -549,6 +596,14 @@ export const STEPS: StepDef[] = [
     Component: SizesScreen,
     // Top + bottom are the fit-critical anchors; shoe/dress stay optional.
     isComplete: (s) => !!s.sizes.top && !!s.sizes.bottom,
+  },
+  {
+    key: 'gmail_scan',
+    title: 'Gmail',
+    skippable: true,
+    Component: GmailScanScreen,
+    // Connecting is optional — Continue/Skip both work with or without it.
+    isComplete: () => true,
   },
   {
     key: 'fits',
