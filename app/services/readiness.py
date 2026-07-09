@@ -96,6 +96,24 @@ def has_verified_card(cand) -> bool:
     return bool(cand.image_url) and (cand.image_status or "") in STORED_IMAGE_STATUSES
 
 
+def needs_size(cand) -> bool:
+    """True when a candidate is held at 'verified_clean' ONLY by a missing size.
+
+    Photo-seam Phase 3: these candidates have a verified, person-free, invariant-
+    compliant card and complete name/category — the one thing the pipeline cannot
+    supply is a size (no onboarding default for the category). They SURFACE in the
+    review deck with a needs-size affordance and count as settled-but-actionable in
+    the whole-batch settle — never silently stuck, never blocking the batch forever."""
+    return (
+        cand.pipeline_state == "verified_clean"
+        and cand.person_status == "person_free"
+        and has_verified_card(cand)
+        and bool((cand.name or "").strip())
+        and bool((cand.category or "").strip())
+        and not size_ok(cand.category, cand.size)
+    )
+
+
 def mark_candidate_ready(cand) -> None:
     """THE single writer of pipeline_state='ready' — for BOTH pipelines.
 

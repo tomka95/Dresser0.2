@@ -282,7 +282,11 @@ def test_budget_cap_leaves_residue(db, user, monkeypatch):
     db.refresh(c)
     assert stats.budget_stopped is True
     assert flux2.calls == 0
-    assert c.generation_status is None          # untouched -> a later sweep retries it
+    # Phase 3 strand-kill: budget-denied residue is HEAL-ELIGIBLE ('pending_retry' +
+    # 'image_pending'), never a bare staged/NULL row nothing re-selects.
+    assert c.generation_status == "pending_retry"
+    assert c.pipeline_state == "image_pending"
+    assert (c.generation_attempts or 0) == 0    # nothing generated -> no ceiling burn
     run = _run(db, sync)
     assert run.status == "completed" and run.generation_total == 1 and run.generation_ready == 0
 
@@ -352,8 +356,10 @@ def test_concurrent_budget_is_shared_across_workers(db, user, monkeypatch):
     for c in cands:
         db.refresh(c)
     ready = [c for c in cands if c.generation_status == "ready"]
-    residue = [c for c in cands if c.generation_status is None]
-    assert len(ready) == 2 and len(residue) == 2       # budget-denied left for a later run
+    # Phase 3 strand-kill: budget-denied residue is heal-eligible 'pending_retry'.
+    residue = [c for c in cands if c.generation_status == "pending_retry"]
+    assert len(ready) == 2 and len(residue) == 2       # budget-denied left for the sweep
+    assert all((c.generation_attempts or 0) == 0 for c in residue)
     run = _run(db, sync)
     assert run.generation_ready == 2 and run.generation_total == 4
 

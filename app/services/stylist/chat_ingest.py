@@ -123,6 +123,7 @@ def add_chat_photo_to_closet(user_id: UUID, image: ImageAttachment) -> IngestHan
             {sanitized.sha256: sanitized},
             [selection],
             defer_completion=will_generate,
+            generation_available=will_generate,
         )
 
         if result.staged == 0:

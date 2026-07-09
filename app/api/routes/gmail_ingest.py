@@ -31,6 +31,7 @@ from app.gmail_closet.review_service import (
     ConfirmError,
     confirm_candidates,
     list_pending_candidates,
+    settle_counts,
 )
 from app.platform.jobs import enqueue
 from app.platform.usage import get_user_cost_summary
@@ -179,6 +180,12 @@ class IngestProgress(BaseModel):
     generation_total: int = 0
     generation_ready: int = 0
     generation_failed: int = 0
+    # Photo-seam Phase 3 — THE whole-batch settle, straight from the shared
+    # review_service.settle_counts. `settled` is the authoritative "review may
+    # surface" signal (all pending candidates terminal or needs-size);
+    # needs_size counts verified cards held only by a missing size.
+    settled: bool = False
+    needs_size: int = 0
 
 
 class IngestStatusResponse(BaseModel):
@@ -311,12 +318,19 @@ def start_ingest(
 @router.get("/status", response_model=IngestStatusResponse)
 def get_ingest_status(
     sync_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> IngestStatusResponse:
     """Return current status and progress for a sync run.
 
     Only the authenticated user can query their own runs (user_id filter).
+
+    Photo-seam Phase 3: the response carries the WHOLE-BATCH settle (the same shared
+    condition the Home banner uses), and polling a COMPLETED-but-unsettled photo run
+    strand-kills: stale 'generating' residue (a crashed background pass) is demoted to
+    'pending_retry', and a debounced self-heal is dispatched so the settle condition
+    is always reachable without waiting for the user's next upload.
     """
     run = (
         db.query(IngestRun)
@@ -329,6 +343,10 @@ def get_ingest_status(
     if not run:
         raise HTTPException(status_code=404, detail="Sync run not found.")
 
+    counts = settle_counts(db, current_user.id, str(run.sync_id))
+    if run.source_type == "photo" and run.status != "running" and not counts.settled:
+        _kick_photo_strand_heal(db, current_user.id, str(run.sync_id), background_tasks)
+
     return IngestStatusResponse(
         sync_id=str(run.sync_id),
         status=run.status,
@@ -340,10 +358,74 @@ def get_ingest_status(
             generation_total=run.generation_total or 0,
             generation_ready=run.generation_ready or 0,
             generation_failed=run.generation_failed or 0,
+            settled=counts.settled,
+            needs_size=counts.needs_size,
         ),
         started_at=run.started_at.isoformat() if run.started_at else None,
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
     )
+
+
+# Poll-kick debounce: at most one strand-heal dispatch per user per window, per
+# process. In-memory on purpose (BackgroundTasks mode is single-process; the durable
+# worker path has its own stale-reclaim) — a lost debounce merely re-dispatches an
+# idempotent, budget-capped sweep.
+_HEAL_KICK_WINDOW_S = 60.0
+_heal_kick_last: Dict[str, float] = {}
+
+
+def _kick_photo_strand_heal(
+    db: Session, user_id, sync_id: str, background_tasks: BackgroundTasks
+) -> None:
+    """Strand-killer for a completed-but-unsettled photo batch (Phase 3).
+
+    (1) Stale 'generating' residue — a background pass that died mid-candidate (the
+        run is no longer running, so nothing owns these rows) — is demoted to
+        'pending_retry' so the sweep can re-select it.
+    (2) A debounced background self-heal re-attempts this user's 'pending_retry'
+        residue (INCLUDING this sync — exclude_sync_id=None) through the shared seam.
+    No-ops when generation isn't armed (the sweep couldn't succeed and would burn
+    attempt ledgers on no-op rungs). ids+counts only in logs."""
+    from app.photo_closet.generation_service import generation_armed
+
+    if not generation_armed():
+        return
+
+    stale = (
+        db.query(IngestCandidate)
+        .filter(
+            IngestCandidate.user_id == user_id,
+            IngestCandidate.sync_id == sync_id,
+            IngestCandidate.status == "pending",
+            IngestCandidate.source_type == "photo",
+            IngestCandidate.generation_status == "generating",
+        )
+        .all()
+    )
+    if stale:
+        for c in stale:
+            c.generation_status = "pending_retry"
+        db.commit()
+        logger.info(
+            "status-poll strand-kill user=%s sync=%s: %d stale 'generating' -> pending_retry",
+            user_id, sync_id, len(stale),
+        )
+
+    import time as _time
+
+    key = str(user_id)
+    now = _time.monotonic()
+    # None-sentinel, NOT 0.0: time.monotonic() is process-relative on some platforms
+    # (macOS: ~0 at process start), so a 0.0 default would swallow every dispatch in
+    # the process's first window.
+    last = _heal_kick_last.get(key)
+    if last is not None and now - last < _HEAL_KICK_WINDOW_S:
+        return
+    _heal_kick_last[key] = now
+    from app.photo_closet.generation_service import self_heal_background
+
+    background_tasks.add_task(self_heal_background, str(user_id))
+    logger.info("status-poll strand-heal dispatched user=%s sync=%s", user_id, sync_id)
 
 
 @router.get("/pending-review", response_model=PendingReviewOut)
@@ -382,33 +464,18 @@ def get_pending_review(
         .all()
     )
     for r in runs:
-        # Whole-batch settle gate: ANY pending candidate not yet 'ready' and not
-        # terminally 'failed' means the batch is still in flight — do not surface.
-        unsettled = (
-            db.query(func.count(IngestCandidate.id))
-            .filter(
-                IngestCandidate.user_id == current_user.id,
-                IngestCandidate.sync_id == str(r.sync_id),
-                IngestCandidate.status == "pending",
-                IngestCandidate.pipeline_state.notin_(("ready", "failed")),
-            )
-            .scalar()
-        ) or 0
-        if unsettled > 0:
+        # THE whole-batch settle gate (Photo-seam Phase 3: shared with the photo
+        # status poll via review_service.settle_counts). ANY pending candidate still
+        # mid-pipeline withholds the banner; needs-size cards (verified card held only
+        # by a missing size) count as settled-but-reviewable so they can never block a
+        # batch forever nor vanish. ready_count reports what the deck will serve
+        # (ready + needs_size).
+        counts = settle_counts(db, current_user.id, str(r.sync_id))
+        if not counts.settled:
             continue
-        ready_count = (
-            db.query(func.count(IngestCandidate.id))
-            .filter(
-                IngestCandidate.user_id == current_user.id,
-                IngestCandidate.sync_id == str(r.sync_id),
-                IngestCandidate.status == "pending",
-                IngestCandidate.pipeline_state == "ready",
-            )
-            .scalar()
-        ) or 0
-        if ready_count > 0:
+        if counts.reviewable > 0:
             return PendingReviewOut(
-                pending=True, sync_id=str(r.sync_id), ready_count=int(ready_count)
+                pending=True, sync_id=str(r.sync_id), ready_count=int(counts.reviewable)
             )
     return PendingReviewOut(pending=False)
 

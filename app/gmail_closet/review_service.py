@@ -35,6 +35,13 @@ from sqlalchemy.orm import Session
 from app.gmail_closet.extraction_schema import normalize_currency, normalize_order_date
 from app.gmail_closet.product_image_cache import make_cache_key
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
+from app.services.readiness import (
+    TERMINAL_STATES,
+    has_verified_card,
+    mark_candidate_ready,
+    needs_size,
+    tags_ready,
+)
 from app.services.closet_canonicalize import (
     CanonFields,
     canonicalize_fields,
@@ -131,6 +138,10 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         # it keeps polling. image_url stays the raw crop (verify reference + fallback).
         "generated_image_url": c.generated_image_url,
         "generation_status": c.generation_status,
+        # Photo-seam Phase 3: the card is verified + person-free but held from 'ready'
+        # ONLY by a missing size (no onboarding default). The deck shows an "add size"
+        # affordance; supplying a size at confirm completes it.
+        "needs_size": needs_size(c),
         "confidence_overall": _to_float(c.confidence_overall),
         "low_confidence_fields": _low_confidence_fields(c),
         "seen_count": c.seen_count or 1,
@@ -178,9 +189,13 @@ def list_pending_candidates(
         IngestCandidate.user_id == user_id,
         IngestCandidate.status == "pending",
         # READY-FIRST (Phase 1): the deck serves ONLY candidates the state machine has
-        # advanced to 'ready' — tag-complete with a verified, person-free image. No other
-        # state ever reaches the swipe deck; an in-flight batch surfaces nothing.
-        IngestCandidate.pipeline_state == "ready",
+        # advanced to 'ready' — tag-complete with a verified, person-free image.
+        # Photo-seam Phase 3 adds ONE more admissible state: 'verified_clean' rows held
+        # ONLY by a missing size (needs_size — verified card, person-free, name+category
+        # complete). They surface WITH their card and a needs-size affordance so a user
+        # without an onboarding size default is never silently stuck. The python-side
+        # readiness.needs_size filter below drops every other verified_clean row.
+        IngestCandidate.pipeline_state.in_(("ready", "verified_clean")),
     )
     if sync_id is not None:
         q = q.filter(IngestCandidate.sync_id == sync_id)
@@ -214,7 +229,66 @@ def list_pending_candidates(
         )
         .all()
     )
+    # 'ready' passes verbatim; 'verified_clean' passes ONLY as a needs-size card.
+    rows = [c for c in rows if c.pipeline_state == "ready" or needs_size(c)]
     return [_candidate_to_view(c, ga_id) for c in rows]
+
+
+# ---------------------------------------------------------------------------
+# THE whole-batch settle (Photo-seam Phase 3) — shared by the Home banner and
+# the photo status poll. ONE authoritative condition, per batch (sync_id).
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SettleCounts:
+    """Per-batch readiness accounting (ids+counts only, redaction-safe).
+
+    settled ⟺ zero pending candidates are still mid-pipeline. A batch member counts as
+    settled when it is TERMINAL ('ready' — verified invariant-compliant card, or
+    'failed' — logged, excluded from the deck) OR when it is a needs_size card
+    (verified card held ONLY by a missing size — surfaced in the deck with an
+    affordance; it must not block the batch forever and must not vanish).
+    reviewable = what the deck will actually serve (ready + needs_size)."""
+    ready: int = 0
+    failed: int = 0
+    needs_size: int = 0
+    unsettled: int = 0
+
+    @property
+    def settled(self) -> bool:
+        return self.unsettled == 0
+
+    @property
+    def reviewable(self) -> int:
+        return self.ready + self.needs_size
+
+
+def settle_counts(db: Session, user_id: UUID, sync_id: str) -> SettleCounts:
+    """Classify a batch's pending candidates into the settle buckets.
+
+    Loaded + classified in python via the SAME readiness predicates the deck and the
+    ready-writer use (needs_size / terminal states) — one truth, no SQL/py drift.
+    Batches are small (photo: zones of one upload; gmail: one scan's staging)."""
+    rows = (
+        db.query(IngestCandidate)
+        .filter(
+            IngestCandidate.user_id == user_id,
+            IngestCandidate.sync_id == str(sync_id),
+            IngestCandidate.status == "pending",
+        )
+        .all()
+    )
+    out = SettleCounts()
+    for c in rows:
+        if c.pipeline_state == "ready":
+            out.ready += 1
+        elif c.pipeline_state == "failed":
+            out.failed += 1
+        elif needs_size(c):
+            out.needs_size += 1
+        else:
+            out.unsettled += 1
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +623,17 @@ def confirm_candidates(
         if not cand.name or not str(cand.name).strip():
             # clothing_items.name is NOT NULL; refuse rather than write a blank item.
             raise ConfirmError(f"candidate {cid}: name is required to accept")
+
+        # Photo-seam Phase 3: a needs-size card whose edit just supplied the size is
+        # now tag-complete — complete the state machine through THE shared ready
+        # writer (best-effort: the accept itself proceeds either way).
+        if (
+            cand.pipeline_state not in TERMINAL_STATES
+            and cand.person_status == "person_free"
+            and has_verified_card(cand)
+            and tags_ready(cand)
+        ):
+            mark_candidate_ready(cand)
 
         written = _upsert_clothing_item(db, user_id, cand, ga_id, user_facts)
         result.written.append(written)

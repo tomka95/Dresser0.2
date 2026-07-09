@@ -120,7 +120,10 @@ class PhotoIngestStartResponse(BaseModel):
 
     sync_id: str
     images_processed: int   # photos whose selection was staged
-    staged: int             # garment candidates staged for review
+    selected: int = 0       # zones requested (G2 accounting: selected == staged +
+                            # failed + zones inside duplicate photos)
+    staged: int             # viable garment candidates staged for review
+    failed: int = 0         # zones staged terminal-'failed' (visible, never dropped)
     duplicates: int         # photos skipped as already-committed duplicates
     held_multi_person: int  # always 0 (kept for client compat)
     message: Optional[str] = None
@@ -253,8 +256,10 @@ def commit_photo_selection(
         logger.warning("photo commit: storage unavailable, staging without images: %s", exc)
 
     # Only run background generation when it CAN complete: storage to persist the card
-    # AND a provider + verify key configured. Otherwise finalize the run at commit and
-    # leave candidates as raw cutouts (unchanged behavior when generation isn't set up).
+    # AND a provider + verify key configured. When it can't, run_photo_commit stages the
+    # zones as TERMINAL 'failed' (Photo-seam Phase 3): a compliant card can never be
+    # produced, so the batch settles honestly instead of stranding forever — the
+    # response reports the failure and the photos stay re-committable.
     from app.photo_closet.generation_service import generate_background, generation_armed
 
     will_generate = storage_client is not None and generation_armed()
@@ -263,6 +268,7 @@ def commit_photo_selection(
         result = run_photo_commit(
             db, current_user.id, storage_client, sanitized_by_sha, parsed_selections,
             defer_completion=will_generate,
+            generation_available=will_generate,
         )
     except PhotoSessionNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -325,15 +331,24 @@ def commit_photo_selection(
         logger.warning("photo commit telemetry failed for user %s", current_user.id, exc_info=True)
 
     message = None
-    if result.staged == 0 and result.duplicates:
+    if result.staged == 0 and result.failed:
+        message = (
+            "We couldn't prepare these items right now — nothing was imported. "
+            "Please try again later."
+        )
+    elif result.staged == 0 and result.duplicates:
         message = "Already imported — nothing new to review."
     elif result.staged == 0:
         message = "No regions were selected — nothing was imported."
+    elif result.failed:
+        message = f"{result.failed} item(s) couldn't be prepared and were skipped."
 
     return PhotoIngestStartResponse(
         sync_id=result.sync_id,
         images_processed=result.images_processed,
+        selected=result.selected,
         staged=result.staged,
+        failed=result.failed,
         duplicates=result.duplicates,
         held_multi_person=0,
         message=message,

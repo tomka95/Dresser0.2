@@ -14,6 +14,11 @@ export interface IngestProgress {
   generation_total: number;
   generation_ready: number;
   generation_failed: number;
+  // Photo-seam Phase 3 — THE whole-batch settle. `settled` is the authoritative
+  // "review may surface" signal (every candidate terminal or needs-size);
+  // needs_size counts verified cards held only by a missing size.
+  settled?: boolean;
+  needs_size?: number;
 }
 
 export interface IngestStatus {
@@ -57,6 +62,9 @@ export interface IngestCandidate {
   // the raw crop), and keeps polling until it settles. image_url stays the raw crop.
   generated_image_url: string | null;
   generation_status: 'generating' | 'ready' | 'failed' | 'pending_retry' | null;
+  // Photo-seam Phase 3: the card is verified + person-free but held from 'ready' only
+  // by a missing size — the deck shows an "add size" affordance (inline editor).
+  needs_size?: boolean;
   confidence_overall: number | null;
   low_confidence_fields: string[];
   seen_count: number;
@@ -395,7 +403,11 @@ export interface PhotoCommitSelection {
 export interface PhotoIngestResponse {
   sync_id: string;
   images_processed: number;
+  /** G2 accounting: selected == staged + failed + zones inside duplicate photos. */
+  selected?: number;
   staged: number;
+  /** Zones staged as terminal 'failed' (visible accounting, never silently dropped). */
+  failed?: number;
   duplicates: number;
   held_multi_person: number;
   message: string | null;

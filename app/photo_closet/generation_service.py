@@ -426,7 +426,13 @@ def _generate_candidate(
         # Fast-path skip when the SHARED budget is already spent (cost cut #3): don't
         # churn a 'generating' write + cutout download we can't act on. The authoritative
         # per-CALL take() lives inside the shared core's rung loop.
+        # Phase 3 strand-kill: leave HEAL-ELIGIBLE residue ('pending_retry' +
+        # 'image_pending'), never a bare staged/NULL row nothing re-selects — the
+        # settle condition must stay reachable via the self-heal sweep.
         if gen_budget.remaining <= 0:
+            cand.generation_status = "pending_retry"
+            advance(cand, "image_pending")
+            db.commit()
             return _CandidateOutcome("budget")
 
         # Mark 'generating' and stream it immediately (the deck renders the loading state).
@@ -474,11 +480,13 @@ def _generate_candidate(
             return _CandidateOutcome("ready", g.cost_usd)
 
         if g.outcome == "budget":
-            # Budget ran out before any generation call (race with concurrent workers):
-            # revert to clean NULL residue for a later run, report 'budget'. NOT counted
-            # as a failed attempt (nothing was generated/verified).
-            cand.generation_status = None
-            cand.pipeline_state = "staged"  # ready-first: back to the machine's entry state
+            # Budget ran out before any generation call (race with concurrent workers).
+            # Phase 3 strand-kill: 'pending_retry' + 'image_pending' — heal-eligible
+            # residue the self-heal sweep re-selects (the old staged/NULL revert was
+            # re-selected by NOTHING and stranded the batch forever). NOT counted as a
+            # failed attempt (nothing was generated/verified).
+            cand.generation_status = "pending_retry"
+            # pipeline_state is already 'image_pending' (set at the 'generating' mark).
             db.commit()
             return _CandidateOutcome("budget")
 
@@ -983,6 +991,23 @@ def run_item_regeneration(
         except Exception:
             pass
         return RegenOutcome("held")
+
+
+def self_heal_background(user_id_str: str) -> None:
+    """BackgroundTasks entry point for the poll-kicked strand heal (Phase 3).
+
+    Own DB session, never raises. Re-attempts the user's 'pending_retry' residue
+    across ALL syncs (exclude_sync_id=None — the poll kicks precisely because THIS
+    sync has stragglers). Idempotent + budget-capped like every sweep."""
+    from app.db import SessionLocal  # late import avoids a module-level import cycle
+
+    db = SessionLocal()
+    try:
+        run_generation_self_heal(UUID(user_id_str), db, exclude_sync_id=None)
+    except Exception as exc:
+        logger.error("self_heal_background: %s: %s", type(exc).__name__, exc)
+    finally:
+        db.close()
 
 
 def regenerate_item_background(

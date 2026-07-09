@@ -686,6 +686,10 @@ export default function ReviewPage() {
   if (category) chips.push({ label: 'Category', value: category.charAt(0).toUpperCase() + category.slice(1) });
   if (color) chips.push({ label: 'Color', value: color });
   if (size) chips.push({ label: 'Size', value: size });
+  // Photo-seam Phase 3 needs-size affordance: the card is verified + person-free but
+  // has no size (no onboarding default). Surface it explicitly — the inline editor
+  // (pencil) has a Size field; supplying one completes the item at confirm.
+  else if (current.needs_size) chips.push({ label: 'Size', value: 'Add size ✎' });
   if (price != null && Number.isFinite(Number(price))) {
     chips.push({ label: 'Price', value: `${currencySymbol}${Number(price).toFixed(2)}` });
   }

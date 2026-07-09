@@ -42,7 +42,17 @@ export function useGenerationRunStatus(syncId: string | null, initialTotal = 0) 
         const gf = st.progress.generation_failed || 0;
         setReady(gr);
         if (gt > 0) setTotal(gt);
-        if (st.status !== 'running' || (gt > 0 && gr + gf >= gt)) {
+        // Photo-seam Phase 3: `settled` is THE whole-batch review gate (every candidate
+        // terminal or needs-size) — done ONLY once it flips, so the deck never opens on
+        // a half-tailored batch. Polling a completed-but-unsettled run also lets the
+        // server strand-heal stragglers. Older servers without the field fall back to
+        // the legacy counter condition.
+        const settled = st.progress.settled;
+        if (
+          settled === true ||
+          (settled === undefined &&
+            (st.status !== 'running' || (gt > 0 && gr + gf >= gt)))
+        ) {
           setDone(true);
           return; // stop polling
         }

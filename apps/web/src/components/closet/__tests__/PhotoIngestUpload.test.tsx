@@ -138,8 +138,29 @@ beforeEach(() => {
   });
 });
 
+function statusPayload(syncId: string, over: Record<string, unknown> = {}) {
+  return {
+    sync_id: syncId,
+    status: 'completed',
+    progress: {
+      fetched: 0,
+      filtered: 0,
+      extracted: 0,
+      total_estimate: null,
+      generation_total: 2,
+      generation_ready: 2,
+      generation_failed: 0,
+      settled: true,
+      needs_size: 0,
+      ...over,
+    },
+    started_at: null,
+    finished_at: null,
+  };
+}
+
 describe('PhotoIngestUpload', () => {
-  it('detect reaches select; Add stages then routes STRAIGHT to the run-scoped /review deck', async () => {
+  it('detect reaches select; Add stages, holds on the pill, auto-advances when the batch SETTLES', async () => {
     const file = jpeg('a.jpg');
     detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
     commitPhotoIngest.mockResolvedValue({
@@ -150,6 +171,8 @@ describe('PhotoIngestUpload', () => {
       held_multi_person: 0,
       message: null,
     });
+    // The run settles on the first poll — the pill auto-advances to the deck.
+    getIngestStatus.mockResolvedValue(statusPayload('run-9'));
 
     render(<PhotoIngestUpload />);
     pickFiles([file]);
@@ -167,32 +190,43 @@ describe('PhotoIngestUpload', () => {
       [file],
       [{ session_id: 'sess-1', selected_region_ids: [1, 2], manual_boxes: [] }],
     );
-    // Add no longer blocks on generation: the moment commit stages, we route to the
-    // run-scoped deck (which streams the product cards in). No pill tap needed.
+    // READY-FIRST (Photo-seam Phase 3): the deck opens ONLY once the whole batch
+    // settles — the pill polled the run, saw settled=true, and auto-advanced.
     await waitFor(() => expect(push).toHaveBeenCalledWith('/review?sync_id=run-9'));
     expect(invalidate).toHaveBeenCalled();
-    // The run is stashed so the global "review in background" notice can recover it if the
-    // user leaves the deck before confirming.
-    expect(useGenerationStore.getState().pending).toEqual({ syncId: 'run-9', staged: 2 });
+    expect(getIngestStatus).toHaveBeenCalled();
+    // onDone cleared the stashed run (the deck was reached; nothing to recover).
+    expect(useGenerationStore.getState().pending).toBeNull();
   });
 
-  it('does not block on generation — routes without polling the run status', async () => {
+  it('holds the review until the batch settles — never routes on an unsettled run', async () => {
     const file = jpeg('a.jpg');
     detectPhotoIngest.mockResolvedValue({ sessions: [session()] });
     commitPhotoIngest.mockResolvedValue({
       sync_id: 'run-7', images_processed: 1, staged: 2, duplicates: 0,
       held_multi_person: 0, message: null,
     });
-    // beforeEach reports the run still 'running' — routing must happen anyway.
+    // First poll: run completed but batch NOT settled (a straggler is mid-heal) —
+    // must NOT route. Next poll: settled — routes.
+    getIngestStatus
+      .mockResolvedValueOnce(
+        statusPayload('run-7', { settled: false, generation_ready: 1 }),
+      )
+      .mockResolvedValue(statusPayload('run-7'));
 
     render(<PhotoIngestUpload />);
     pickFiles([file]);
     fireEvent.click(await screen.findByRole('button', { name: 'Find clothes in 1 photo' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Add 2 items' }));
 
-    await waitFor(() => expect(push).toHaveBeenCalledWith('/review?sync_id=run-7'));
-    // The commit flow never waits on generation, so it never polls /ingest/status.
-    expect(getIngestStatus).not.toHaveBeenCalled();
+    await waitFor(() => expect(getIngestStatus).toHaveBeenCalled());
+    // Unsettled -> the user stays on the progress screen; the deck never opens early.
+    expect(push).not.toHaveBeenCalled();
+    // The next poll (1.5s cadence) reports settled -> auto-advance.
+    await waitFor(
+      () => expect(push).toHaveBeenCalledWith('/review?sync_id=run-7'),
+      { timeout: 5000 },
+    );
   });
 
   it('"Tailor in the background" mid-commit leaves for home; a late commit only patches the run', async () => {
