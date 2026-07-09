@@ -45,7 +45,11 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 from app.core.config import settings
 from app.db import SessionLocal
 from app.models import PreferenceSignal, StylePreference, User
-from app.services.stylist.distill import RedistillStats, run_redistill
+from app.services.stylist.distill import (
+    RedistillStats,
+    run_distill_sweep,
+    run_redistill,
+)
 
 
 def _print_stats(email: str, s: RedistillStats) -> None:
@@ -100,6 +104,15 @@ def main() -> None:
         narrative_budget = settings.DISTILL_MAX_NARRATIVE_CALLS_PER_RUN
         totals = {"upserted": 0, "deactivated": 0, "narrative": 0, "cost": 0.0}
         for email, uid in user_ids:
+            # Backstop for cost cut #4: chat distillation fires once per SESSION off the
+            # chat response path, but a user's LAST idle session (with no later turn to
+            # trigger the tail sweep) would otherwise stay un-mined. Sweep every ended-but-
+            # un-mined conversation here (active_conversation_id=None) BEFORE recompute, so
+            # the fresh signals are aggregated this same night. No-op without a Gemini key.
+            sweep = run_distill_sweep(db, uid)
+            if sweep.sessions_distilled:
+                print(f"  {email}: swept {sweep.sessions_distilled} un-mined session(s)"
+                      f" (+{sweep.signals_written} signals, ${sweep.cost_usd:.5f})")
             do_narrative = (not args.no_narrative) and narrative_budget > 0
             s = run_redistill(db, uid, regenerate_narrative_blob=do_narrative)
             # Commit per user so one user's failure never rolls back the batch.

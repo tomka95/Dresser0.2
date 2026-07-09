@@ -139,6 +139,44 @@ def test_generate_from_reference_held_when_verify_fails(monkeypatch):
     assert out.outcome == "held" and out.url is None
 
 
+def test_generate_from_reference_budget_counts_calls(monkeypatch):
+    """Cost cut #3: budget is consumed per ACTUAL generation call. With budget=1 and a
+    verify that fails, the single unit is spent on the first rung's call and the second
+    rung is budget-blocked — one call total, outcome 'held' (a real attempt was made)."""
+    calls = {"n": 0}
+
+    def _provider(name=None):
+        def _gen(req):
+            calls["n"] += 1
+            return _gen_result()
+        return SimpleNamespace(generate=_gen)
+
+    monkeypatch.setattr(gc, "get_generation_provider", _provider)
+    monkeypatch.setattr(gc, "verify_generated_image",
+                        lambda **k: VerifyVerdict(False, True, True, 0.1, "no", "m"))
+    out = gc.generate_from_reference_bytes(
+        reference_bytes=b"ref", reference_content_type="image/png",
+        name="Tee", category="top", color="black", brand=None,
+        storage_client=object(), user_id="u",
+        gen_budget=GenerationBudget(1), verify_budget=VerifyBudget(5), usage=UsageAccumulator(),
+    )
+    assert calls["n"] == 1          # ladder is 2 rungs, but budget bounded it to ONE call
+    assert out.outcome == "held"    # a real attempt happened, it just missed verify
+
+
+def test_generate_from_reference_zero_budget_is_budget(monkeypatch):
+    monkeypatch.setattr(gc, "get_generation_provider",
+                        lambda name=None: SimpleNamespace(
+                            generate=lambda req: pytest.fail("must not generate with no budget")))
+    out = gc.generate_from_reference_bytes(
+        reference_bytes=b"ref", reference_content_type="image/png",
+        name="Tee", category="top", color="black", brand=None,
+        storage_client=object(), user_id="u",
+        gen_budget=GenerationBudget(0), verify_budget=VerifyBudget(5), usage=UsageAccumulator(),
+    )
+    assert out.outcome == "budget"
+
+
 def test_generate_from_text_requires_person_free(monkeypatch):
     import app.services.image_generation.nano_banana as nb
 

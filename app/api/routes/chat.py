@@ -212,19 +212,20 @@ async def post_chat(
             finally:
                 usage_db.close()
 
-            # Post-session distillation (Wave S3): mine this turn's transcript into
-            # preference_signals on its OWN thread + RLS-scoped session. Fire-and-
-            # forget — it runs after 'done' is already on the wire, never blocks
-            # stream close, and never raises (distill_background swallows all).
-            # Incognito wrote no transcript, so there is nothing to mine — skip it
-            # outright (never even spawn the thread).
+            # Post-session distillation (Wave S3, cost cut #4): distillation fires ONCE
+            # PER SESSION, not per turn. We do NOT distill THIS conversation now (it is
+            # still active); instead we sweep the user's OTHER conversations that have
+            # gone idle and mine each ended session exactly once. Runs on its OWN thread +
+            # RLS-scoped session after 'done' is already on the wire — never blocks stream
+            # close, never raises. Incognito wrote no transcript, so nothing to sweep FROM
+            # it, and it is excluded as the active id anyway; skip spawning entirely.
             if settings.DISTILL_ENABLED and not turn.no_persist:
                 import threading
 
-                from app.services.stylist.distill import distill_background
+                from app.services.stylist.distill import distill_sweep_background
 
                 threading.Thread(
-                    target=distill_background,
+                    target=distill_sweep_background,
                     args=(str(user_id), str(result.conversation_id)),
                     daemon=True,
                 ).start()

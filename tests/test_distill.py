@@ -185,6 +185,104 @@ def test_chat_distill_caps_signal_volume(db, user1, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Pass 1b: dirty-session sweep — distill each ENDED conversation ONCE (cost cut #4)
+# ---------------------------------------------------------------------------
+def _age_conversation(db, conv, *, minutes):
+    """Force conv.updated_at into the past WITHOUT tripping the onupdate default."""
+    past = datetime.utcnow() - timedelta(minutes=minutes)
+    db.query(Conversation).filter(Conversation.id == conv.id).update(
+        {Conversation.updated_at: past}, synchronize_session=False
+    )
+    db.commit()
+
+
+def _patch_sweep_provider(monkeypatch, provider):
+    import app.platform.ai_provider as ai
+    monkeypatch.setattr(ai, "get_ai_provider", lambda: provider)
+
+
+def _distill_output():
+    return DistillOutput(
+        signals=[MinedSignal(dimension="color", polarity="like", strength=0.8, note="navy")],
+        session_summary="Talked about a navy palette.",
+    )
+
+
+def test_sweep_distills_idle_dirty_session_exactly_once(db, user1, monkeypatch):
+    conv = _conversation(db, user1, user_msgs=["I love navy."],
+                         assistant_msgs=["Noted — navy it is."])
+    _age_conversation(db, conv, minutes=60)  # idle (> DISTILL_SESSION_IDLE_MINUTES)
+    provider = FakeProvider({DistillOutput: _distill_output()})
+    _patch_sweep_provider(monkeypatch, provider)
+
+    from app.services.stylist.distill import run_distill_sweep
+
+    stats = run_distill_sweep(db, user1.id)
+    assert stats.sessions_idle == 1 and stats.sessions_distilled == 1
+    assert stats.signals_written == 1
+    assert provider.calls == 1  # ONE miner call for the whole session, not per turn
+
+    # A second sweep sees the advanced marker -> nothing dirty -> no re-mine, no re-cost.
+    stats2 = run_distill_sweep(db, user1.id)
+    assert stats2.sessions_distilled == 0
+    assert provider.calls == 1  # unchanged — distillation fired exactly once
+
+
+def test_sweep_skips_the_active_conversation(db, user1, monkeypatch):
+    conv = _conversation(db, user1, user_msgs=["still chatting"])
+    _age_conversation(db, conv, minutes=60)
+    provider = FakeProvider({DistillOutput: _distill_output()})
+    _patch_sweep_provider(monkeypatch, provider)
+
+    from app.services.stylist.distill import run_distill_sweep
+
+    # The conversation the user is still in is excluded (session not over yet).
+    stats = run_distill_sweep(db, user1.id, active_conversation_id=conv.id)
+    assert stats.sessions_distilled == 0
+    assert provider.calls == 0
+
+
+def test_sweep_skips_recent_non_idle_conversation(db, user1, monkeypatch):
+    _conversation(db, user1, user_msgs=["just now"])  # updated_at = now (not idle)
+    provider = FakeProvider({DistillOutput: _distill_output()})
+    _patch_sweep_provider(monkeypatch, provider)
+
+    from app.services.stylist.distill import run_distill_sweep
+
+    stats = run_distill_sweep(db, user1.id)
+    assert stats.sessions_idle == 0 and stats.sessions_distilled == 0
+    assert provider.calls == 0
+
+
+def test_sweep_redistills_after_new_message_arrives(db, user1, monkeypatch):
+    """A session reactivated by a new message becomes dirty again and is mined once more
+    (no signals dropped): distillation is once-per-session, not once-forever."""
+    conv = _conversation(db, user1, user_msgs=["first topic"])
+    _age_conversation(db, conv, minutes=60)
+    provider = FakeProvider({DistillOutput: _distill_output()})
+    _patch_sweep_provider(monkeypatch, provider)
+
+    from app.services.stylist.distill import run_distill_sweep
+
+    assert run_distill_sweep(db, user1.id).sessions_distilled == 1
+    assert provider.calls == 1
+
+    # A new message lands AFTER the distillation (updated_at now > the distill marker),
+    # so the session is dirty again. Use a future reference `now` so it still reads as
+    # idle for the second sweep.
+    reactivated = datetime.utcnow() + timedelta(seconds=5)
+    db.add(ChatMessage(conversation_id=conv.id, user_id=user1.id,
+                       role="user", content="second topic"))
+    db.query(Conversation).filter(Conversation.id == conv.id).update(
+        {Conversation.updated_at: reactivated}, synchronize_session=False)
+    db.commit()
+
+    later = datetime.utcnow() + timedelta(minutes=45)  # session has re-idled by `later`
+    assert run_distill_sweep(db, user1.id, now=later).sessions_distilled == 1
+    assert provider.calls == 2  # mined again for the new content
+
+
+# ---------------------------------------------------------------------------
 # Pass 2a: confidence decay
 # ---------------------------------------------------------------------------
 def test_decay_halves_confidence_over_one_halflife(db, user1, monkeypatch):

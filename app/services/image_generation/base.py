@@ -174,6 +174,7 @@ def sniff_generated_image(data: Optional[bytes]) -> Optional[str]:
 # Provider name -> the settings attribute holding its API key. Also the registry
 # of KNOWN provider names for dispatch + the bake-off listing.
 _PROVIDER_KEY_SETTING = {
+    "flux2_pro": "BFL_API_KEY",
     "flux_kontext": "BFL_API_KEY",
     "seedream": "FAL_API_KEY",
     "nano_banana": "GEMINI_API_KEY",
@@ -215,6 +216,9 @@ def get_generation_provider(name: Optional[str] = None) -> GenerationProvider:
 
     # Imports are local so importing the seam never drags in provider deps
     # (e.g. google-genai) unless that provider is actually selected.
+    if resolved == "flux2_pro":
+        from app.services.image_generation.flux2_pro import Flux2ProProvider
+        return Flux2ProProvider()
     if resolved == "flux_kontext":
         from app.services.image_generation.flux_kontext import FluxKontextProvider
         return FluxKontextProvider()
