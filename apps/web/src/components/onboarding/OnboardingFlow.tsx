@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Check, ChevronLeft, RotateCw } from 'lucide-react';
 
@@ -38,9 +38,30 @@ export function OnboardingFlow() {
   const resumable = useOnboardingStore((s) => s.resumable);
   const hydrateDraft = useOnboardingStore((s) => s.hydrateDraft);
   const clearResumable = useOnboardingStore((s) => s.clearResumable);
+  const setStep = useOnboardingStore((s) => s.setStep);
   useEffect(() => {
     hydrateDraft();
   }, [hydrateDraft]);
+
+  // G2a — returning from the onboarding Gmail OAuth (?gmail=connected). The connect ran
+  // the background scan; the Gmail step is DONE. Skip the "Welcome back" resume interstitial
+  // (that's for genuine cold returns only) and advance PAST the Gmail step to the next one,
+  // so the user isn't looped back onto step 3 (the Gmail step). Read once, before paint.
+  const returningFromGmail = useRef(
+    typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('gmail') === 'connected',
+  );
+  useEffect(() => {
+    if (!hydrated || !returningFromGmail.current) return;
+    const gmailIdx = STEPS.findIndex((s) => s.key === 'gmail_scan');
+    const nextStep = gmailIdx >= 0 ? Math.min(gmailIdx + 2, ONBOARDING_STEPS) : step;
+    clearResumable();
+    setStep(nextStep); // 1-based: the step AFTER gmail_scan
+    returningFromGmail.current = false;
+    // Strip the query so a refresh doesn't re-trigger the advance.
+    router.replace('/onboarding');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +115,10 @@ export function OnboardingFlow() {
   }
 
   // ── O9 · Resume mid-flow — a saved draft exists; offer continue / start over ─
-  if (resumable && phase === 'flow') {
+  // Suppressed on an in-flow Gmail-OAuth return (?gmail=connected): that's not a cold
+  // return, and the effect above advances past the Gmail step (G2a). The interstitial is
+  // for genuine cold returns only — gated on the absence of the ?gmail=connected signal.
+  if (resumable && phase === 'flow' && !returningFromGmail.current) {
     return (
       <Backdrop>
         <ResumeCard

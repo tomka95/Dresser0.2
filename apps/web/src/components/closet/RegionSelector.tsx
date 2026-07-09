@@ -550,30 +550,57 @@ export function RegionSelector({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      {/* Stepper */}
-      <div className="flex items-center justify-between">
-        <RoundBtn
-          size={38}
-          onClick={() => goTo(index - 1)}
-          disabled={index === 0}
-          aria-label="Previous photo"
-          className="disabled:opacity-30"
-          icon={<ChevronLeft size={18} />}
-        />
-        <span
-          className="font-accent text-[12px] font-semibold uppercase"
-          style={{ color: M.faint, letterSpacing: '1px', fontVariantNumeric: 'tabular-nums' }}
-        >
-          Photo {index + 1} of {photos.length}
-        </span>
-        <RoundBtn
-          size={38}
-          onClick={() => goTo(index + 1)}
-          disabled={index === photos.length - 1}
-          aria-label="Next photo"
-          className="disabled:opacity-30"
-          icon={<ChevronRight size={18} />}
-        />
+      {/* Stepper — multi-photo navigation, made obvious (G4): high-contrast arrows, a
+          dot position indicator, and a one-time hint so it's clear you can review + edit
+          EVERY uploaded photo before adding. */}
+      <div className="flex flex-col items-stretch gap-2">
+        <div className="flex items-center justify-between">
+          <RoundBtn
+            size={40}
+            onClick={() => goTo(index - 1)}
+            disabled={index === 0}
+            aria-label="Previous photo"
+            className="disabled:opacity-25"
+            icon={<ChevronLeft size={20} strokeWidth={2.5} />}
+          />
+          <div className="flex flex-col items-center gap-1.5">
+            <span
+              className="font-accent text-[12.5px] font-bold uppercase text-white"
+              style={{ letterSpacing: '1px', fontVariantNumeric: 'tabular-nums' }}
+            >
+              Photo {index + 1} of {photos.length}
+            </span>
+            {photos.length > 1 && (
+              <div className="flex items-center gap-1.5" aria-hidden>
+                {photos.map((_, i) => (
+                  <span
+                    key={i}
+                    style={{
+                      width: i === index ? 18 : 6,
+                      height: 6,
+                      borderRadius: 4,
+                      background: i === index ? 'var(--mint)' : 'rgba(255,255,255,0.28)',
+                      transition: 'all 220ms var(--ease-out)',
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+          <RoundBtn
+            size={40}
+            onClick={() => goTo(index + 1)}
+            disabled={index === photos.length - 1}
+            aria-label="Next photo"
+            className="disabled:opacity-25"
+            icon={<ChevronRight size={20} strokeWidth={2.5} />}
+          />
+        </div>
+        {photos.length > 1 && index === 0 && (
+          <p className="text-center text-[11.5px] font-medium" style={{ color: M.faint }}>
+            Review all {photos.length} photos — tap the arrows to switch and edit each before adding.
+          </p>
+        )}
       </div>
 
       {/* Photo card — the outer wrapper is the available space (measured); the inner card

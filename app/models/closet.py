@@ -173,6 +173,12 @@ class ClothingItem(Base):
     # candidate's source_type forward so the closet records how each item arrived.
     source_type = Column(Text, nullable=False, default="gmail")
 
+    # G6: carried from the confirmed candidate — this item's photo cutout is ON-MODEL (has a
+    # person). image_url keeps the crop ONLY as the generation/self-heal reference; the read
+    # layer NEVER returns it until a verified person-free card lands (generation_status=
+    # 'ready'). false for Gmail + flat-lay photo items. Owned by migration 0032.
+    on_model = Column(Boolean, nullable=False, default=False)
+
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 
     # --- AI Stylist universal garment schema (Wave S0, migration 0018) -----------

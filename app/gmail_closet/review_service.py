@@ -113,7 +113,13 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         "currency": c.currency,
         "order_date": c.order_date.isoformat() if c.order_date else None,
         "is_return": bool(c.is_return),
-        "image_url": c.image_url,
+        # G6: an ON-MODEL photo crop contains a person — NEVER send it for display. On a
+        # CANDIDATE image_url is ALWAYS the raw crop (the verified card lives separately in
+        # generated_image_url), so mask it whenever on_model: the deck shows the generated
+        # card once ready, and a neutral placeholder until then. The crop stays in the DB as
+        # the generation reference. Flat-lay / Gmail images (on_model=false) are unchanged.
+        "image_url": None if c.on_model else c.image_url,
+        "on_model": bool(c.on_model),
         # Phase 4 streaming deck: resolved | pending (still resolving — shimmer + poll) |
         # placeholder (slow tiers exhausted — static placeholder, stop polling) | null.
         "image_status": c.image_status,
@@ -363,6 +369,9 @@ def _upsert_clothing_item(
         # Carry the ingestion source forward ('gmail' | 'photo') so the closet records
         # how each item arrived. The candidate's value is server-set at stage time.
         source_type=cand.source_type,
+        # G6: carry the on-model flag. image_url above holds the crop ONLY as the gen/self-
+        # heal reference; the closet read masks it until a verified person-free card lands.
+        on_model=bool(cand.on_model),
         # provenance='extracted' seed. INSERT-only: NOT in the on_conflict set_ below, so
         # a re-confirm preserves any 'inferred'/'user_edited' attributes already present.
         attributes_json=extracted_attrs,
@@ -392,6 +401,7 @@ def _upsert_clothing_item(
             "image_cache_key": ex.image_cache_key,
             "generation_status": ex.generation_status,
             "source_type": ex.source_type,
+            "on_model": ex.on_model,
             "updated_at": func.now(),
         },
     ).returning(tbl.c.id, literal_column("(xmax = 0)").label("inserted"))

@@ -260,6 +260,13 @@ class IngestCandidate(Base):
     # pipeline needs no change; the photo pipeline sets 'photo' at stage time.
     source_type = Column(Text, nullable=False, default="gmail")
 
+    # G6: this photo cutout came from an ON-MODEL source photo (person_count>=1 at detect).
+    # An on-model crop CONTAINS A PERSON, so it must NEVER be displayed — it is kept only as
+    # the generation reference. Display code masks image_url until a verified, person-free
+    # generated card lands (generation_status='ready'). false for Gmail + flat-lay photos.
+    # Owned by migration 0032.
+    on_model = Column(Boolean, nullable=False, default=False)
+
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 

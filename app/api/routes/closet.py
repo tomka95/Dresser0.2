@@ -150,6 +150,13 @@ def _get_image_url(item: ClothingItem) -> Optional[str]:
     Returns:
         Image URL string or None
     """
+    # G6 — never surface an on-model crop (a person) on a closet card. For an on-model photo
+    # item, image_url holds the crop ONLY as the generation/self-heal reference; it is safe
+    # to display ONLY once generation replaced it with a verified person-free card
+    # ('ready'). Until then return None so the client shows a neutral placeholder.
+    if getattr(item, "on_model", False) and item.generation_status != "ready":
+        return None
+
     # Prefer direct image_url field on ClothingItem
     if item.image_url:
         return item.image_url

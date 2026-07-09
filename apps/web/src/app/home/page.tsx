@@ -349,11 +349,11 @@ export default function HomePage() {
         )}
 
         {/* Bento: weather + calendar tiles — both REAL now (GET /weather, GET
-            /calendar/today), each degrading quietly when unavailable. The ranked
-            feed below is the REAL /shop surface. */}
-        {online && !starter && (
-          <HomeBentoTiles />
-        )}
+            /calendar/today), each degrading quietly when unavailable. Rendered
+            INDEPENDENT of closet emptiness: context tiles are always useful, so an
+            empty/cold-start closet only swaps the looks + feed region below, not the
+            whole surface. (G3) */}
+        {online && <HomeBentoTiles />}
 
         {/* Today's Look — one auto-composed outfit for today (weather + calendar
             + style profile) as a pure-white grid collage, with Wear this + Remix.
