@@ -46,7 +46,10 @@ _BATCH_SIZE = 100       # messages per ThreadPoolExecutor batch
 _BACKOFF_CAP = 64       # max backoff sleep (seconds)
 
 _FIELDS_LIST = "nextPageToken,resultSizeEstimate,messages(id)"
-_FIELDS_GET = "id,internalDate,payload"
+# labelIds -> Gmail's own category (CATEGORY_PROMOTIONS / CATEGORY_PURCHASES) so the Tier-1
+# filter can gate on email TYPE, not just content. snippet -> the short preview the cheap
+# email-TYPE classifier (Layer C) reads for the ambiguous residue (never the full body).
+_FIELDS_GET = "id,internalDate,labelIds,snippet,payload"
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +113,15 @@ def _build_query(since: datetime) -> str:
         'purchase OR "your order" OR "thank you for your order" OR payment OR transaction OR '
         "חשבונית OR קבלה OR הזמנה OR רכישה OR תשלום"
     )
+    # Layer A (email-TYPE gate): -category:promotions EXCLUDES Gmail's Promotions tab at
+    # the SOURCE, so promotional / price-drop / abandoned-cart mail is never fetched,
+    # filtered, or sent to the LLM — the cheapest possible cut (~95% of the ad junk).
+    # We EXCLUDE promotions rather than RESTRICT to category:purchases on purpose: Gmail
+    # under-labels Purchases (genuine receipts routinely land in Updates/Primary), so a
+    # purchases-only query would DROP real receipts. Exclusion is the low-false-negative
+    # lever; the purchases / retailer / subject OR-branches still gather everything else.
     return (
-        f"after:{since_date} ("
+        f"after:{since_date} -category:promotions ("
         "category:purchases "
         f"OR from:({top_domains}) "
         f"OR subject:({subject_terms})"
@@ -253,9 +263,12 @@ def _process_message(
     sender = headers.get("from", "")
     subject = headers.get("subject", "")
     body_text = _extract_body(payload)
+    # Gmail category labels (labelIds is a TOP-LEVEL message field, not inside payload) —
+    # the Tier-1 filter uses them as a hard email-TYPE signal (Layer B).
+    labels = raw.get("labelIds", [])
 
     content_hash = hashlib.sha256(body_text.encode()).hexdigest()[:32]
-    kept, _reason = passes_tier1_filter(sender, subject, body_text)
+    kept, _reason = passes_tier1_filter(sender, subject, body_text, labels)
     # Clothing-likeliness is cheap here (headers already parsed) — recorded so the
     # extraction queue can put probable-clothing emails first.
     priority = clothing_priority(sender, subject)

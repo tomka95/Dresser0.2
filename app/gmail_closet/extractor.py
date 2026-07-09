@@ -83,6 +83,14 @@ ABSOLUTE RULES:
 - Extract only what the email actually states. Do not invent merchants, prices,
   brands, sizes, or items. If a field is unknown, use null.
 
+PURCHASE-TYPE GATE (set is_purchase): set is_purchase = true ONLY for a genuine order
+confirmation or receipt for a purchase that was actually placed (ordered, paid, shipped,
+delivered, or returned). Set is_purchase = false for any marketing, promotional, price-drop,
+sale, new-arrivals, back-in-stock, recommendation, or ABANDONED-CART / cart-reminder email
+("Your order is waiting", "You left something behind", "items in your cart") — EVEN IF it
+names real products and shows real prices. A price and a product name do not make it a
+purchase; a placed order does. When is_purchase = false, return items = [] (extract nothing).
+
 CLOTHING GATE (most important field): set is_clothing = true ONLY if this is a
 purchase that includes WEARABLE clothing or footwear (tops, bottoms, dresses,
 outerwear, shoes/sneakers/boots, and clothing accessories like scarves/hats/belts).
