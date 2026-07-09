@@ -50,17 +50,22 @@ import httpx
 from app.core.config import settings
 from app.gmail_closet.fetch_service import _fetch_one
 from app.gmail_closet.gmail_oauth_service import ensure_fresh_token
-from app.gmail_closet.image_guard import FetchBudget
+from app.gmail_closet.image_guard import FetchBudget, GuardRejection, guarded_fetch, is_allowlisted_host
 from app.gmail_closet.image_resolver import (
     ALL_TIERS,
     ResolvedImageCache,
     ResolverItem,
     resolve_item_images,
 )
-from app.gmail_closet.image_verify import VerifyBudget
-from app.gmail_closet.product_image_cache import lookup_verified, make_cache_key
+from app.gmail_closet.image_verify import VerifyBudget, verify_image
+from app.gmail_closet.product_image_cache import lookup_verified, make_cache_key, promote_verified
 from app.gmail_closet.shopping_search import SearchBudget
 from app.platform.usage import UsageAccumulator, record_fill_usage
+from app.services.closet_canonicalize import (
+    _CATEGORY_SIZE_KEY,
+    default_size_for_category,
+    load_user_facts,
+)
 from app.services.image_generation.base import GenerationBudget
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
 
@@ -87,6 +92,11 @@ class ImageFillStats:
     exhausted: int = 0             # slow tiers ran + generation missed -> 'placeholder'
     fetch_errors: int = 0          # source email could not be re-fetched (left pending)
     budget_stopped: bool = False   # a per-run budget capped the pass (rest left pending)
+    # Ready-first Phase 2 counters (all redaction-safe counts):
+    person_checked: int = 0        # affirmative person verdicts written (free OR present)
+    person_routed: int = 0         # person_present images routed through generation
+    ready: int = 0                 # candidates driven to pipeline_state='ready'
+    failed: int = 0                # candidates driven to terminal pipeline_state='failed'
     tier_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     elapsed: float = 0.0
 
@@ -144,6 +154,223 @@ def _resolver_item(t: _Target) -> ResolverItem:
 
 
 # ---------------------------------------------------------------------------
+# Ready-first Phase 2: the candidate state machine driver
+# ---------------------------------------------------------------------------
+# Forward-only ordering of the non-terminal pipeline states. _advance never regresses
+# a candidate and never touches the terminal states ('ready'/'failed' are written only
+# by mark_candidate_ready / _stamp_final).
+_STATE_ORDER = {
+    "staged": 0, "canonicalized": 1, "image_pending": 2,
+    "image_generated": 3, "verified_clean": 4,
+}
+_TERMINAL_STATES = ("ready", "failed")
+# image_status values that count as a stored, displayable image for readiness.
+_STORED_IMAGE_STATUSES = ("resolved", "user_uploaded")
+
+
+def _advance(cand: IngestCandidate, state: str) -> None:
+    """Move the candidate FORWARD to ``state``; never regress, never leave a terminal."""
+    if cand.pipeline_state in _TERMINAL_STATES:
+        return
+    if _STATE_ORDER.get(state, -1) > _STATE_ORDER.get(cand.pipeline_state, -1):
+        cand.pipeline_state = state
+
+
+def _size_ok(category: Optional[str], size: Optional[str]) -> bool:
+    """Size readiness: present, or the category has no size concept (no default key)."""
+    if size:
+        return True
+    return (category or "").strip().lower() not in _CATEGORY_SIZE_KEY
+
+
+def _tags_ready(cand: IngestCandidate) -> bool:
+    """Gate-3 tag completeness: category + name mandatory, size present-or-sizeless."""
+    return bool((cand.name or "").strip()) and bool((cand.category or "").strip()) and _size_ok(
+        cand.category, cand.size
+    )
+
+
+def _apply_canonicalized(cand: IngestCandidate, facts: Optional[dict]) -> None:
+    """Stage-time canonicalize-lite: default a missing size from the user's onboarding
+    sizes (facts.sizes, same lookup confirm uses), then advance to 'canonicalized'."""
+    if cand.pipeline_state in _TERMINAL_STATES:
+        return
+    if not cand.size:
+        default = default_size_for_category((facts or {}).get("sizes"), cand.category)
+        if default:
+            cand.size = default
+    _advance(cand, "canonicalized")
+
+
+def mark_candidate_ready(cand: IngestCandidate) -> None:
+    """THE single writer of pipeline_state='ready' for Gmail candidates.
+
+    Enforces the Phase-2 invariant in code: ready ⟺ an AFFIRMATIVE person_free verdict
+    AND a stored, verified image AND complete tags. Anything else is a bug — raise so
+    the (already fail-safe) caller surfaces it instead of leaking an unready card."""
+    if (
+        cand.person_status != "person_free"
+        or not cand.image_url
+        or (cand.image_status or "") not in _STORED_IMAGE_STATUSES
+        or not _tags_ready(cand)
+    ):
+        raise AssertionError(
+            "ready invariant violated: person=%s image=%s status=%s"
+            % (cand.person_status, bool(cand.image_url), cand.image_status)
+        )
+    cand.pipeline_state = "ready"
+
+
+def _stamp_final(cand: IngestCandidate, stats: ImageFillStats) -> None:
+    """Terminal-state decision for one Gmail candidate at the end of a fill pass.
+
+    ready    <- person_free + stored image + complete tags (via mark_candidate_ready)
+    failed   <- image tiers exhausted ('placeholder'), or a person_present image whose
+                generation burned the attempt ceiling (unrecoverable: the raw image can
+                never be shown, and no clean card could be produced)
+    residue  <- stays at its in-flight state ('image_pending'), masked, retried later
+    """
+    if cand.pipeline_state in _TERMINAL_STATES:
+        return
+    if cand.image_status == "placeholder":
+        cand.pipeline_state = "failed"
+        stats.failed += 1
+        return
+    if (
+        cand.person_status == "person_present"
+        and (cand.generation_attempts or 0) >= settings.GENERATION_MAX_ATTEMPTS
+    ):
+        cand.pipeline_state = "failed"
+        stats.failed += 1
+        return
+    if (
+        cand.image_url
+        and cand.person_status == "person_free"
+        and (cand.image_status or "") in _STORED_IMAGE_STATUSES
+    ):
+        _advance(cand, "verified_clean")
+        if _tags_ready(cand):
+            mark_candidate_ready(cand)
+            stats.ready += 1
+        return
+    _advance(cand, "image_pending")
+
+
+def _reconcile_person(
+    db,
+    cands: List[IngestCandidate],
+    *,
+    user_id: UUID,
+    http: Optional[httpx.Client],
+    storage_client,
+    gen_budget: GenerationBudget,
+    verify_budget: VerifyBudget,
+    fetch_budget: FetchBudget,
+    usage: Optional[UsageAccumulator],
+    stats: ImageFillStats,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Affirmative person check for Gmail candidates that HAVE an image but an
+    'unknown' person_status (the Break-A gap: images stored before any person
+    detection existed, plus fresh cache-tier fills which are not re-verified).
+
+    Per candidate: guarded-fetch the stored image bytes -> verify_image ->
+      * person-free  -> person_status='person_free' (the image may now surface)
+      * person present -> person_status='person_present' (recorded, stays masked) and
+        route through generate_from_reference_bytes; a verified card REPLACES the
+        image; a real miss bumps generation_attempts (terminal at the ceiling)
+      * wrong image (verify ran, matches=False) -> drop it back to 'pending' so the
+        resolver tiers find a correct one on a later pass
+      * verify skipped (budget/disabled/error) -> stays 'unknown' -> stays masked
+    Fail-closed at every branch: an unchecked or person image can never surface."""
+    if not cands or http is None:
+        return
+    from app.services.image_generation.generate_core import (
+        generate_from_reference_bytes,
+        generation_armed,
+    )
+
+    can_generate = storage_client is not None and generation_armed()
+
+    for cand in cands:
+        if should_cancel is not None and should_cancel():
+            stats.budget_stopped = True
+            break
+        if fetch_budget.remaining <= 0:
+            stats.budget_stopped = True
+            break
+        host = httpx.URL(cand.image_url).host or ""
+        profile = "retailer" if is_allowlisted_host(host) else "open"
+        try:
+            fetched = guarded_fetch(
+                http, cand.image_url, kind="image", profile=profile, fetch_budget=fetch_budget
+            )
+        except GuardRejection as exc:
+            logger.info("person-reconcile fetch refused host=%s reason=%s", exc.host, exc.reason)
+            continue  # leave 'unknown' -> masked; a later pass retries
+        except Exception as exc:
+            logger.warning("person-reconcile fetch error (%s)", type(exc).__name__)
+            continue
+
+        verdict = verify_image(
+            image_bytes=fetched.content, content_type=fetched.content_type,
+            category=cand.category, color=cand.color, name=cand.name,
+            budget=verify_budget, usage=usage,
+        )
+        if getattr(verdict, "skipped", False):
+            continue  # no affirmative verdict -> stays 'unknown' -> stays masked
+        if not verdict.matches:
+            # The stored image is WRONG for this item — drop it so the resolver tiers
+            # re-resolve on a later pass; fail-closed in the meantime.
+            cand.image_url = None
+            cand.image_status = "pending"
+            db.commit()
+            continue
+
+        stats.person_checked += 1
+        if not getattr(verdict, "person_present", False):
+            cand.person_status = "person_free"
+            db.commit()
+            continue
+
+        # Person in frame: record the affirmative verdict (never 'unknown' once
+        # checked), keep masked, and route through clean generation.
+        cand.person_status = "person_present"
+        db.commit()
+        stats.person_routed += 1
+        if not can_generate:
+            continue  # masked; generation phase picks it up when armed
+        g = generate_from_reference_bytes(
+            reference_bytes=fetched.content,
+            reference_content_type=fetched.content_type,
+            name=cand.name, category=cand.category, color=cand.color, brand=cand.brand,
+            storage_client=storage_client, user_id=user_id,
+            gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
+        )
+        if g.outcome == "ready" and g.url:
+            _advance(cand, "image_generated")
+            cand.image_url = g.url          # the verified person-free card REPLACES it
+            cand.image_status = "resolved"
+            cand.person_status = "person_free"
+            promote_verified(
+                brand=cand.brand, name=cand.name, color=cand.color,
+                image_url=g.url, content_sha256=g.content_sha256 or "",
+                source_tier="generated", source_domain="generation",
+                verify_score=g.verify_score,
+            )
+            stats.generated += 1
+            stats.tier_counts["generated"] += 1
+            db.commit()
+        elif g.outcome == "held":
+            # A real generate->verify miss burns one attempt (terminal at the ceiling).
+            cand.generation_attempts = (cand.generation_attempts or 0) + 1
+            db.commit()
+        else:  # 'budget' — shared ceiling hit; stop the pass, later run resumes
+            stats.budget_stopped = True
+            break
+
+
+# ---------------------------------------------------------------------------
 # The fill engine (cache-first, then email-based slow resolve)
 # ---------------------------------------------------------------------------
 
@@ -169,7 +396,18 @@ def _maybe_t2i(t, storage_client, user_id, gen_budget, verify_budget, usage) -> 
         storage_client=storage_client, user_id=user_id,
         gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
     )
-    return out.url if out.outcome == "ready" else None
+    if out.outcome != "ready" or not out.url:
+        return None
+    # Promote the verified t2i card into the shared cache (source_tier='generated') so an
+    # identical mass-market item is generated ONCE ever — the cache-first pass serves it
+    # cross-user at ~0 cost and a crash-resumed run never re-bills the same product.
+    promote_verified(
+        brand=t.brand, name=t.name, color=t.color,
+        image_url=out.url, content_sha256=out.content_sha256 or "",
+        source_tier="generated", source_domain="generation",
+        verify_score=out.verify_score,
+    )
+    return out.url
 
 
 def _resolve_targets(
@@ -262,6 +500,13 @@ def _resolve_targets(
             if r.stored_url:
                 t.row.image_url = r.stored_url
                 t.row.image_status = "resolved"
+                # Ready-first Phase 2: persist the resolver's AFFIRMATIVE person verdict
+                # (person_free from a real verify pass / a generated card). None (cache
+                # hit, verify disabled) keeps the fail-closed 'unknown' — the reconcile
+                # pass person-checks those before anything can surface.
+                if r.person and hasattr(t.row, "person_status"):
+                    t.row.person_status = r.person
+                    stats.person_checked += 1
                 if r.tier == "generated":
                     stats.generated += 1
                 else:
@@ -274,6 +519,11 @@ def _resolve_targets(
             if gen_url:
                 t.row.image_url = gen_url
                 t.row.image_status = "resolved"
+                if hasattr(t.row, "person_status"):
+                    # t2i output is person-free by construction (generate_from_text
+                    # hard-requires person_present=false on its verify).
+                    t.row.person_status = "person_free"
+                    stats.person_checked += 1
                 stats.generated += 1
                 stats.tier_counts["generated"] += 1
             else:
@@ -307,6 +557,9 @@ def _resolve_targets(
             if r.stored_url:
                 t.row.image_url = r.stored_url
                 t.row.image_status = "resolved"
+                if r.person and hasattr(t.row, "person_status"):
+                    t.row.person_status = r.person
+                    stats.person_checked += 1
                 if r.tier == "generated":
                     stats.generated += 1
                 else:
@@ -319,6 +572,9 @@ def _resolve_targets(
             if gen_url:
                 t.row.image_url = gen_url
                 t.row.image_status = "resolved"
+                if hasattr(t.row, "person_status"):
+                    t.row.person_status = "person_free"  # t2i is person-free by construction
+                    stats.person_checked += 1
                 stats.generated += 1
                 stats.tier_counts["generated"] += 1
             else:
@@ -366,13 +622,19 @@ def run_image_fill(
     try:
         cand_rows: List[IngestCandidate] = []
         if include_candidates:
+            # Ready-first Phase 2: selection is STATE-driven, not image-driven. Every
+            # pending GMAIL candidate that hasn't reached a terminal state is work:
+            # imageless ones need the resolver/generation ladder; image-bearing ones
+            # with person_status='unknown' need the affirmative person check (the
+            # Break-A backlog). Photo candidates are NEVER selected here — the photo
+            # generation service owns their state machine.
             cand_rows = (
                 db.query(IngestCandidate)
                 .filter(
                     IngestCandidate.user_id == user_id,
                     IngestCandidate.status == "pending",
-                    IngestCandidate.image_url.is_(None),
-                    IngestCandidate.image_status.in_(("pending", None)),
+                    IngestCandidate.source_type == "gmail",
+                    IngestCandidate.pipeline_state.notin_(_TERMINAL_STATES),
                 )
                 .order_by(IngestCandidate.created_at.asc())
                 .limit(candidate_limit or settings.GMAIL_IMAGE_FILL_MAX_CANDIDATES)
@@ -431,15 +693,32 @@ def run_image_fill(
         # per-sync cost attribution (persisted below when a sync_id is given).
         usage = UsageAccumulator()
 
+        # --- Ready-first Phase 2, step 1: canonicalize-lite --------------------------
+        # Default missing sizes from the user's onboarding facts (the same lookup the
+        # confirm path uses) and advance staged -> canonicalized. One facts load per run.
+        facts = load_user_facts(db, user_id)
+        for c in cand_rows:
+            _apply_canonicalized(c, facts)
+        db.commit()
+
+        # Image work targets: only the IMAGELESS candidates go through the resolver
+        # waterfall; image-bearing candidates with an unknown person status go through
+        # the person-reconcile pass below instead. Confirmed-item self-heal unchanged.
+        imageless = [c for c in cand_rows if not c.image_url]
+        for c in imageless:
+            _advance(c, "image_pending")
+        db.commit()
+
         targets = (
-            [_candidate_target(c) for c in cand_rows]
+            [_candidate_target(c) for c in imageless]
             + [_clothing_target(it) for it in confirmed_rows]
         )
 
-        client_cm = (
-            httpx.Client(limits=httpx.Limits(max_connections=10, max_keepalive_connections=10))
-            if (token and storage_client is not None)
-            else None
+        # The client serves BOTH the slow email tiers (needs token) and the person-
+        # reconcile fetches of already-stored images (no token needed) — build it
+        # whenever either kind of work exists.
+        client_cm = httpx.Client(
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=10)
         )
         try:
             http = client_cm
@@ -450,20 +729,48 @@ def run_image_fill(
                 search_budget=search_budget, usage=usage, stats=stats,
                 should_cancel=should_cancel, gen_budget=gen_budget,
             )
+
+            # --- Ready-first Phase 2, step 2: affirmative person check ---------------
+            # Every gmail candidate that now HAS an image but still an 'unknown' person
+            # status (the pre-Phase-2 backlog + fresh cache-tier fills, which are not
+            # re-verified) gets a verify pass; person images route through generation.
+            recon = [
+                c for c in cand_rows
+                if c.image_url and c.person_status == "unknown"
+                and c.pipeline_state not in _TERMINAL_STATES
+            ]
+            for c in recon:
+                _advance(c, "image_pending")
+            _reconcile_person(
+                db, recon,
+                user_id=user_id, http=http, storage_client=storage_client,
+                gen_budget=gen_budget, verify_budget=verify_budget,
+                fetch_budget=fetch_budget, usage=usage, stats=stats,
+                should_cancel=should_cancel,
+            )
         finally:
-            if client_cm is not None:
-                client_cm.close()
+            client_cm.close()
+
+        # --- Ready-first Phase 2, step 3: terminal stamping -----------------------
+        # Drive every selected gmail candidate to ready / failed / masked-residue.
+        # mark_candidate_ready (inside) enforces the invariant: ready ⟺ person_free +
+        # stored verified image + complete tags.
+        for c in cand_rows:
+            _stamp_final(c, stats)
+        db.commit()
 
         # Attribute this pass's verify + search cost to the sync (best-effort).
         record_fill_usage(db, sync_id, usage)
 
         stats.elapsed = time.time() - t0
         logger.info(
-            "image_fill user=%s: candidates=%d confirmed=%d -> cache=%d slow=%d "
-            "exhausted=%d fetch_err=%d budget_stopped=%s elapsed=%.1fs",
+            "image_fill user=%s: candidates=%d confirmed=%d -> cache=%d slow=%d gen=%d "
+            "exhausted=%d fetch_err=%d person_checked=%d person_routed=%d ready=%d "
+            "failed=%d budget_stopped=%s elapsed=%.1fs",
             user_id, stats.candidates_seen, stats.confirmed_seen, stats.cache_filled,
-            stats.slow_filled, stats.exhausted, stats.fetch_errors, stats.budget_stopped,
-            stats.elapsed,
+            stats.slow_filled, stats.generated, stats.exhausted, stats.fetch_errors,
+            stats.person_checked, stats.person_routed, stats.ready, stats.failed,
+            stats.budget_stopped, stats.elapsed,
         )
         return stats
 

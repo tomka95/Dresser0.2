@@ -72,6 +72,13 @@ class ResolvedImage:
     tier: str
     stored_url: Optional[str] = None   # Supabase URL when uploaded; None if no storage
     detail: str = ""                   # short, redaction-safe (host / cid), for reports
+    # Ready-first Phase 2: the AFFIRMATIVE person verdict for the committed image.
+    # 'person_free' when a verify pass affirmed no person (or the image IS a generated
+    # card, person-free by construction). None = no affirmative check ran (verify
+    # disabled, or a cache hit — cache rows are not re-verified) → caller keeps the
+    # fail-closed 'unknown'. 'person_present' is never emitted: a person image is
+    # either replaced by a generated card or REJECTED, never committed.
+    person: Optional[str] = None
 
 
 @dataclass
@@ -204,22 +211,27 @@ def resolve_item_images(
             if not verdict.matches:
                 return False  # rejected (or skipped) -> try the next source / tier
 
-        # Wave B (Fix 4): ON-MODEL routing. A verified image that shows a person/model
-        # (person_present) is NOT stored as-is — the closet must be product-only. Generate
-        # a clean, person-free product image from THESE bytes and store that instead;
-        # promote it into the shared cache as source_tier='generated' so an identical
-        # mass-market item is generated once ever and served cross-user. Generation runs
-        # ONLY in the background (a gen_budget is supplied by the slow image-fill pass, not
-        # by blocking extraction), so it never delays the deck. On any generation miss we
-        # REJECT this source and fall through — the on-model original is never the fallback.
-        if verdict is not None and getattr(verdict, "person_present", False) and gen_budget is not None:
+        # Wave B (Fix 4) + ready-first Phase 2: ON-MODEL routing, FAIL-CLOSED. A verified
+        # image that shows a person/model (person_present) is NEVER committed as-is — the
+        # closet must be product-only. When a gen_budget is available (the background fill
+        # pass), generate a clean, person-free product image from THESE bytes and store
+        # that instead; promote it into the shared cache as source_tier='generated' so an
+        # identical mass-market item is generated once ever and served cross-user. On a
+        # generation miss — OR when no gen_budget exists at all (a blocking/foreground
+        # caller) — the source is REJECTED and falls through. Phase 2 closed the leak
+        # where a person image with no gen_budget was stored raw.
+        if verdict is not None and getattr(verdict, "person_present", False):
+            if gen_budget is None:
+                return False  # fail-closed: person image can never be committed raw
             g = _route_on_model(
                 item, fetch, storage_client, user_id, gen_budget, verify_budget, usage,
             )
             if g is None:
                 return False
             results[idx] = ResolvedImage(
-                tier="generated", stored_url=g.url, detail=f"on-model->gen:{domain}"
+                tier="generated", stored_url=g.url, detail=f"on-model->gen:{domain}",
+                # verify_generated_image hard-fails person_present -> affirmative verdict.
+                person="person_free",
             )
             if ck and g.url:
                 promote_verified(
@@ -238,7 +250,11 @@ def resolve_item_images(
             return False
         stored = value if isinstance(value, _Stored) else None
         results[idx] = ResolvedImage(
-            tier=tier, stored_url=(stored.url if stored else None), detail=domain
+            tier=tier, stored_url=(stored.url if stored else None), detail=domain,
+            # A real (non-skipped) verify pass reached here with person_present False —
+            # an AFFIRMATIVE person-free verdict. Verify-disabled (verdict None) stays
+            # None so the caller keeps the fail-closed 'unknown'.
+            person=("person_free" if verdict is not None else None),
         )
         if stored and ck:
             if verdict is not None:   # verified -> may serve cross-user
