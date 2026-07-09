@@ -92,17 +92,20 @@ describe('useClosetStore', () => {
   });
 
   describe('addItem', () => {
-    it('should add item successfully', async () => {
-      const newItem: ClosetItem = {
-        id: '2',
-        userId: 'user-1',
-        name: 'New Item',
-        category: 'bottom',
-        createdAt: '2024-01-02T00:00:00Z',
-        updatedAt: '2024-01-02T00:00:00Z',
-      };
+    // Photo-seam Phase 4: manual add is asynchronous — the server stages a candidate,
+    // tailors the product card through the shared seam, and the item is born via the
+    // confirm chokepoint. The store gets a 202 'tailoring' ack (no item to append)
+    // and invalidates the cache so the next closet read picks up the newborn.
+    const tailoring = {
+      status: 'tailoring' as const,
+      syncId: 'run-1',
+      candidateId: 'cand-1',
+      message: 'Tailoring your item — it will appear in your closet shortly.',
+    };
 
-      vi.mocked(api.addClosetItem).mockResolvedValue(newItem);
+    it('should accept the tailoring ack and invalidate the cache', async () => {
+      vi.mocked(api.addClosetItem).mockResolvedValue(tailoring);
+      useClosetStore.setState({ hasFetchedItems: true });
 
       const store = useClosetStore.getState();
       await store.addItem({
@@ -110,9 +113,11 @@ describe('useClosetStore', () => {
         category: 'bottom',
       });
 
-      expect(useClosetStore.getState().items).toContainEqual(newItem);
-      expect(useClosetStore.getState().isLoading).toBe(false);
-      expect(useClosetStore.getState().error).toBeUndefined();
+      const state = useClosetStore.getState();
+      expect(state.items).toEqual([]);            // nothing appended — not born yet
+      expect(state.hasFetchedItems).toBe(false);  // cache dropped for the next read
+      expect(state.isLoading).toBe(false);
+      expect(state.error).toBeUndefined();
     });
 
     it('should handle errors when adding item', async () => {
@@ -130,7 +135,7 @@ describe('useClosetStore', () => {
       expect(useClosetStore.getState().error).toBe(errorMessage);
     });
 
-    it('should append to existing items', async () => {
+    it('should keep existing items untouched while tailoring', async () => {
       const existingItem: ClosetItem = {
         id: '1',
         userId: 'user-1',
@@ -141,17 +146,7 @@ describe('useClosetStore', () => {
       };
 
       useClosetStore.setState({ items: [existingItem] });
-
-      const newItem: ClosetItem = {
-        id: '2',
-        userId: 'user-1',
-        name: 'New',
-        category: 'bottom',
-        createdAt: '2024-01-02T00:00:00Z',
-        updatedAt: '2024-01-02T00:00:00Z',
-      };
-
-      vi.mocked(api.addClosetItem).mockResolvedValue(newItem);
+      vi.mocked(api.addClosetItem).mockResolvedValue(tailoring);
 
       const store = useClosetStore.getState();
       await store.addItem({
@@ -160,9 +155,8 @@ describe('useClosetStore', () => {
       });
 
       const state = useClosetStore.getState();
-      expect(state.items).toHaveLength(2);
-      expect(state.items).toContainEqual(existingItem);
-      expect(state.items).toContainEqual(newItem);
+      expect(state.items).toEqual([existingItem]);  // untouched until the item is born
+      expect(state.hasFetchedItems).toBe(false);
     });
   });
 

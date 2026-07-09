@@ -16,7 +16,7 @@ from app.models.closet import display_image_url
 from app.services.events_service import log_event
 from app.services.closet_service import (
     list_closet_items,
-    create_closet_item,
+    create_manual_candidate,
     get_closet_item_by_id,
     update_closet_item,
 )
@@ -285,64 +285,85 @@ async def list_closet_items_endpoint(
     return result
 
 
-@router.post("", response_model=ClosetItemOut, status_code=201)
+class ManualAddOut(BaseModel):
+    """202 response for a manual add (Photo-seam Phase 4): the item is NOT created
+    inline anymore — it is staged as a candidate, tailored through the shared
+    generation + verify seam, and born through the confirm chokepoint when ready.
+    Poll GET /gmail/ingest/status?sync_id= for the batch settle."""
+    status: str = "tailoring"
+    syncId: str
+    candidateId: str
+    message: str
+
+
+@router.post("", response_model=ManualAddOut, status_code=202)
 async def create_closet_item_endpoint(
     input_data: ClosetItemCreateIn,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> ClosetItemOut:
-    """Create a new clothing item for the authenticated user.
-    
-    Args:
-        input_data: ClosetItemCreateIn with item details
-        current_user: Authenticated user from JWT
-        db: Database session
-        
-    Returns:
-        ClosetItemOut object matching the @tailor/contracts ClosetItem type
-        
-    Raises:
-        HTTPException: If validation fails
+) -> ManualAddOut:
+    """Manually add a clothing item — through the SAME seam as every other entry point.
+
+    Photo-seam Phase 4 (the confirm chokepoint): a manual add stages a
+    source_type='manual' ingest candidate + its own 1-candidate run, generates an
+    invariant-compliant product card in the background (reference-conditioned when an
+    image is attached, t2i from the typed attributes otherwise; verify v2 mandatory),
+    and auto-confirms into the closet once 'ready'. A manual item can never land
+    imageless or with a non-compliant image. Missing size defaults from onboarding
+    facts; when no default exists the card surfaces in the review deck as needs-size.
     """
+    if not input_data.name or not input_data.name.strip():
+        raise HTTPException(status_code=400, detail="Item name is required and cannot be empty")
+
+    from app.photo_closet.generation_service import (
+        _storage_from_env,
+        generation_armed,
+        manual_generate_background,
+    )
+
+    if not generation_armed() or _storage_from_env() is None:
+        # Without the seam a compliant card can never be produced — refuse honestly
+        # rather than create an item that violates the image invariant.
+        raise HTTPException(
+            status_code=503,
+            detail="Item creation needs image generation, which is currently unavailable.",
+        )
+
+    # SSRF guard: an attached image becomes the GENERATION REFERENCE (the server
+    # fetches it), so only images already in OUR storage (uploaded/validated through
+    # the app) are accepted; anything else falls back to t2i from the attributes.
+    ref_url = None
+    base = settings.SUPABASE_PUBLIC_BASE_URL or ""
+    if input_data.imageUrl and base and input_data.imageUrl.startswith(base):
+        ref_url = input_data.imageUrl
+    elif input_data.imageUrl:
+        logger.info(
+            "manual add: non-storage imageUrl ignored as reference (user=%s)",
+            current_user.id,
+        )
+
     try:
-        # Validate name is non-empty (Pydantic handles this, but double-check)
-        if not input_data.name or not input_data.name.strip():
-            raise HTTPException(status_code=400, detail="Item name is required and cannot be empty")
-        
-        # Create item via service layer
-        item = create_closet_item(
+        run, cand = create_manual_candidate(
             db=db,
             user_id=current_user.id,
             name=input_data.name.strip(),
             category=input_data.category,
             brand=input_data.brand,
             color=input_data.color,
-            image_url=input_data.imageUrl,  # Map camelCase input to snake_case parameter
+            image_url=ref_url,
         )
-
-        # Wave S0 Branch B: enrich (full Tier-1/2) + embed the new item in the background.
-        # Async so manual create stays instant; ⚠️ in-process (Starlette threadpool).
-        from app.services.enrichment import enrich_items_background
-
-        background_tasks.add_task(
-            enrich_items_background, str(current_user.id), [str(item.id)],
-        )
-
-        # Map to contract format
-        # For POST, we need to ensure images are loaded if item.image_url is not set
-        # Since this is a single item, trigger lazy load if needed (usually image_url is set)
-        if not item.image_url:
-            # Load images relationship for this single item (lazy load - one query)
-            _ = item.images
-        return _map_clothing_item_to_out(item)
-        
     except ValueError as e:
-        # Pydantic validation errors (e.g., invalid category)
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to create closet item for user {current_user.id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create closet item")
+
+    background_tasks.add_task(
+        manual_generate_background, str(current_user.id), str(run.sync_id),
+    )
+    return ManualAddOut(
+        syncId=str(run.sync_id),
+        candidateId=str(cand.id),
+        message="Tailoring your item — it will appear in your closet shortly.",
+    )
 
 
 class ClosetItemUpdateIn(BaseModel):

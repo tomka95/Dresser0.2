@@ -220,9 +220,20 @@ export async function regenerateItemImage(
   return response.json();
 }
 
+/** 202 response for a manual add (Photo-seam Phase 4): the item is staged as a
+ *  candidate, tailored through the shared generation seam, and born through the
+ *  confirm chokepoint when ready — it appears in the closet shortly after.
+ *  Poll GET /gmail/ingest/status?sync_id= (settled) if progress UI is needed. */
+export interface ManualAddResponse {
+  status: 'tailoring';
+  syncId: string;
+  candidateId: string;
+  message: string;
+}
+
 export async function addClosetItem(
   input: Omit<ClosetItem, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'analysisRaw'>
-): Promise<ClosetItem> {
+): Promise<ManualAddResponse> {
   const token = await getAccessToken();
   
   if (!token) {

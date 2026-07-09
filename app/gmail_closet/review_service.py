@@ -626,7 +626,7 @@ def confirm_candidates(
 
         # Photo-seam Phase 3: a needs-size card whose edit just supplied the size is
         # now tag-complete — complete the state machine through THE shared ready
-        # writer (best-effort: the accept itself proceeds either way).
+        # writer.
         if (
             cand.pipeline_state not in TERMINAL_STATES
             and cand.person_status == "person_free"
@@ -634,6 +634,18 @@ def confirm_candidates(
             and tags_ready(cand)
         ):
             mark_candidate_ready(cand)
+
+        # THE CONFIRM CHOKEPOINT (Photo-seam Phase 4): a closet item may ONLY be born
+        # from a 'ready' candidate — verified, person-free, invariant-compliant image
+        # + complete tags, asserted by the single ready-writer above. Every entry
+        # point (photo deck, gmail deck, manual add, chat add) funnels through here;
+        # there is no other clothing_items insert path (tests enumerate this).
+        if cand.pipeline_state != "ready":
+            hint = " — add a size to finish it" if needs_size(cand) else ""
+            raise ConfirmError(
+                f"candidate {cid}: not ready for the closet "
+                f"(state={cand.pipeline_state}){hint}"
+            )
 
         written = _upsert_clothing_item(db, user_id, cand, ga_id, user_facts)
         result.written.append(written)

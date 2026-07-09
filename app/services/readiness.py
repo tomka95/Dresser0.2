@@ -88,10 +88,13 @@ def apply_canonicalized(cand, facts: Optional[dict]) -> None:
 def has_verified_card(cand) -> bool:
     """True when the candidate holds a stored, VERIFIED, displayable product image.
 
-    Source-aware (see module docstring): the photo card lives in generated_image_url;
-    the gmail verified image IS image_url. A photo candidate's raw cutout never counts.
+    Source-aware (see module docstring): the photo/manual card lives in
+    generated_image_url (written ONLY after the mandatory verify); the gmail verified
+    image IS image_url. A photo candidate's raw cutout — and a manual candidate's
+    uploaded reference — never counts: for those sources ONLY a generated card
+    satisfies the invariant.
     """
-    if (getattr(cand, "source_type", None) or "") == "photo":
+    if (getattr(cand, "source_type", None) or "") in ("photo", "manual"):
         return bool(cand.generated_image_url) and cand.generation_status == "ready"
     return bool(cand.image_url) and (cand.image_status or "") in STORED_IMAGE_STATUSES
 

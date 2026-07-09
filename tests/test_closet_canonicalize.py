@@ -18,7 +18,7 @@ from app.services.closet_canonicalize import (
     canonicalize_fields,
     default_size_for_category,
 )
-from app.services.closet_service import create_closet_item
+from app.services.closet_service import create_manual_candidate
 
 
 # ---------------------------------------------------------------------------
@@ -269,20 +269,21 @@ def user1(db: Session):
 
 
 def test_manual_create_defaults_category_and_size_from_profile(db, user1):
+    """Photo-seam Phase 4: manual add stages a CANDIDATE (the confirm chokepoint is
+    the only item-birth path); canonicalization still runs at staging."""
     db.add(StyleProfile(user_id=user1.id, facts={"sizes": {"bottom": "M", "top": "S"}}))
     db.commit()
 
-    # Category omitted, size never provided (create_closet_item has no size param).
-    item = create_closet_item(db=db, user_id=user1.id, name="Slim Fit Jeans")
+    run, cand = create_manual_candidate(db=db, user_id=user1.id, name="Slim Fit Jeans")
 
-    assert item.category == "bottom"                # inferred from the name, never null
-    assert item.size == "M"                          # defaulted from facts.sizes[bottom]
-    assert item.attributes_json["category"]["provenance"] == "inferred"
-    assert item.attributes_json["size"]["provenance"] == "default"
-    assert item.attributes_json["name"]["provenance"] == "user_edited"
+    assert cand.category == "bottom"                # inferred from the name, never null
+    assert cand.size == "M"                          # defaulted from facts.sizes[bottom]
+    assert cand.source_type == "manual"
+    assert cand.pipeline_state == "staged"           # NOT an item — the seam runs next
+    assert run.source_type == "manual" and run.status == "running"
 
 
 def test_manual_create_never_null_category_without_profile(db, user1):
-    item = create_closet_item(db=db, user_id=user1.id, name="mystery zzz thing")
-    assert item.category == "other"                  # true last resort, still non-null
-    assert item.size is None                          # no profile -> honest empty
+    _, cand = create_manual_candidate(db=db, user_id=user1.id, name="mystery zzz thing")
+    assert cand.category == "other"                  # true last resort, still non-null
+    assert cand.size is None                          # no profile -> honest empty

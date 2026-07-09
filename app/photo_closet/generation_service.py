@@ -993,6 +993,241 @@ def run_item_regeneration(
         return RegenOutcome("held")
 
 
+# ---------------------------------------------------------------------------
+# Manual-add generation (Photo-seam Phase 4) — the typed manual entry point runs
+# the SAME seam: candidate -> generate (ref or t2i) -> verify v2 -> card ->
+# shared readiness -> THE confirm chokepoint (auto-confirm; the user already
+# typed/approved the fields, so no deck stop unless something needs attention).
+# ---------------------------------------------------------------------------
+
+def run_manual_generation(
+    user_id: UUID,
+    db: Session,
+    sync_id: UUID,
+    *,
+    storage_client=None,
+    gen_budget: Optional[GenerationBudget] = None,
+) -> GenerationStats:
+    """Produce the invariant-compliant card for a manual add's candidate(s), then
+    auto-confirm each 'ready' one through the confirm chokepoint. Never raises.
+
+    Reference-conditioned (generate_from_reference_bytes) when the user attached an
+    image, t2i (generate_from_text) from the typed attributes otherwise — both via
+    the ONE shared core with the mandatory verify-v2 gate. Retries INLINE up to the
+    attempt ceiling so a manual batch always leaves terminal (ready|failed) or
+    heal-eligible residue — the settle condition stays reachable. A 'ready' candidate
+    whose tags are incomplete (needs-size) is NOT auto-confirmed: it surfaces in the
+    review deck via the shared needs-size rule."""
+    stats = GenerationStats(user_id=user_id, sync_id=sync_id)
+    run = (
+        db.query(IngestRun)
+        .filter(IngestRun.sync_id == sync_id, IngestRun.user_id == user_id)
+        .first()
+    )
+    try:
+        targets = (
+            db.query(IngestCandidate)
+            .filter(
+                IngestCandidate.user_id == user_id,
+                IngestCandidate.sync_id == sync_id,
+                IngestCandidate.source_type == "manual",
+                IngestCandidate.status == "pending",
+                IngestCandidate.generation_attempts < settings.GENERATION_MAX_ATTEMPTS,
+                or_(
+                    IngestCandidate.generation_status.is_(None),
+                    IngestCandidate.generation_status.in_(_RETRYABLE_STATUSES),
+                ),
+            )
+            .order_by(IngestCandidate.created_at.asc())
+            .all()
+        )
+        stats.targets = len(targets)
+        if run is not None:
+            run.generation_total = len(targets)
+            run.generation_ready = 0
+            run.generation_failed = 0
+            db.commit()
+
+        if storage_client is None:
+            storage_client = _storage_from_env()
+        if gen_budget is None:
+            gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
+        verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
+        usage = UsageAccumulator()
+
+        for cand in targets:
+            outcome = _generate_manual_candidate(
+                db, cand, sync_id, storage_client, gen_budget, verify_budget, usage,
+            )
+            if outcome == "ready":
+                stats.ready += 1
+                if cand.pipeline_state == "ready":
+                    _auto_confirm_manual(db, user_id, cand)
+            elif outcome == "budget":
+                stats.budget_stopped = True
+            else:
+                stats.held += 1
+
+        record_fill_usage(db, sync_id, usage)
+    except Exception as exc:
+        logger.error("run_manual_generation sync=%s: %s", sync_id, type(exc).__name__)
+    finally:
+        _finalize_run(db, run)
+
+    logger.info(
+        "manual generation done sync=%s user=%s: targets=%d ready=%d held=%d "
+        "budget_stopped=%s",
+        sync_id, user_id, stats.targets, stats.ready, stats.held, stats.budget_stopped,
+    )
+    return stats
+
+
+def _generate_manual_candidate(
+    db: Session,
+    cand: IngestCandidate,
+    sync_id: UUID,
+    storage_client,
+    gen_budget: GenerationBudget,
+    verify_budget: VerifyBudget,
+    usage: UsageAccumulator,
+) -> str:
+    """One manual candidate through the shared seam, retried inline to the ceiling.
+
+    Returns 'ready' | 'held' (terminal or residue) | 'budget' | 'download_error'.
+    Counters: generation_ready/_failed are bumped ONCE per candidate outcome (not per
+    inline retry) so the status pill's denominators stay honest."""
+    from app.services.image_generation.generate_core import generate_from_text
+
+    # Shared cache-first (branded products only — see _cache_key_for).
+    cached = lookup_verified(_cache_key_for(cand.brand, cand.name, cand.color))
+    if cached:
+        _stamp_candidate_card_ready(db, cand, cached)
+        db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
+            {IngestRun.generation_ready: IngestRun.generation_ready + 1},
+            synchronize_session=False,
+        )
+        db.commit()
+        return "ready"
+
+    while (cand.generation_attempts or 0) < settings.GENERATION_MAX_ATTEMPTS:
+        if gen_budget.remaining <= 0:
+            # Heal-eligible residue (Phase 3 strand-kill shape); the status-poll
+            # kick re-runs this pass.
+            cand.generation_status = "pending_retry"
+            advance(cand, "image_pending")
+            db.commit()
+            return "budget"
+
+        cand.generation_status = "generating"
+        cand.pipeline_state = "image_pending"
+        db.commit()
+
+        if cand.image_url:
+            # User-attached reference: conditions IDENTITY only, verified pairwise.
+            dl = _download_bytes(cand.image_url)
+            if dl is None:
+                cand.generation_status = "pending_retry"  # transient: no ceiling burn
+                db.commit()
+                db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
+                    {IngestRun.generation_failed: IngestRun.generation_failed + 1},
+                    synchronize_session=False,
+                )
+                db.commit()
+                return "download_error"
+            ref_bytes, ref_ct = dl
+            g = generate_from_reference_bytes(
+                reference_bytes=ref_bytes, reference_content_type=ref_ct,
+                name=cand.name, category=cand.category, color=cand.color,
+                brand=cand.brand, pattern=None,
+                storage_client=storage_client, user_id=cand.user_id,
+                gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
+            )
+        else:
+            # No reference at all: t2i from the typed attributes (verify v2 gates
+            # single-item/off-white/framing/person at the caller inside the core).
+            g = generate_from_text(
+                name=cand.name, category=cand.category, color=cand.color,
+                brand=cand.brand,
+                storage_client=storage_client, user_id=cand.user_id,
+                gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
+            )
+
+        if g.outcome == "ready" and g.url:
+            _stamp_candidate_card_ready(db, cand, g.url)
+            db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
+                {IngestRun.generation_ready: IngestRun.generation_ready + 1},
+                synchronize_session=False,
+            )
+            db.commit()
+            _maybe_promote_card(
+                brand=cand.brand, name=cand.name, color=cand.color,
+                url=g.url, content_sha256=g.content_sha256, verify_score=g.verify_score,
+            )
+            return "ready"
+        if g.outcome == "budget":
+            cand.generation_status = "pending_retry"
+            db.commit()
+            return "budget"
+        # Real generate->verify miss: burn one attempt and retry inline.
+        cand.generation_attempts = (cand.generation_attempts or 0) + 1
+        cand.generation_status = _next_failure_status(cand.generation_attempts)
+        cand.pipeline_state = (
+            "failed" if cand.generation_status == "failed" else "image_pending"
+        )
+        db.commit()
+
+    db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
+        {IngestRun.generation_failed: IngestRun.generation_failed + 1},
+        synchronize_session=False,
+    )
+    db.commit()
+    return "held"
+
+
+def _auto_confirm_manual(db: Session, user_id: UUID, cand: IngestCandidate) -> None:
+    """Bear the manual item through THE confirm chokepoint (no parallel insert).
+
+    The user already typed/approved every field, so a fully-'ready' manual candidate
+    skips the deck stop. Best-effort: a refusal (should not happen for 'ready') just
+    leaves the candidate reviewable in the deck. Enrichment parity with the old
+    direct insert: the enricher runs for the newborn item."""
+    from app.gmail_closet.review_service import ConfirmError, confirm_candidates
+
+    try:
+        result = confirm_candidates(db, user_id, accepted=[str(cand.id)])
+    except ConfirmError as exc:
+        logger.info(
+            "manual auto-confirm deferred user=%s cand=%s (%s)", user_id, cand.id, exc
+        )
+        return
+    item_ids = [w.clothing_item_id for w in result.written]
+    if item_ids:
+        try:
+            from app.services.enrichment import enrich_items_background
+
+            enrich_items_background(str(user_id), item_ids)
+        except Exception as exc:  # enrichment is best-effort, never blocks the birth
+            logger.warning("manual enrich failed (%s)", type(exc).__name__)
+    logger.info("manual item born user=%s cand=%s items=%d", user_id, cand.id, len(item_ids))
+
+
+def manual_generate_background(user_id_str: str, sync_id_str: str) -> None:
+    """BackgroundTasks entry point for a manual add (mirrors generate_background):
+    own DB session, shared per-run budget, never raises."""
+    from app.db import SessionLocal  # late import avoids a module-level import cycle
+
+    db = SessionLocal()
+    try:
+        run_manual_generation(
+            UUID(user_id_str), db, UUID(sync_id_str),
+            gen_budget=GenerationBudget(settings.GENERATION_MAX_PER_RUN),
+        )
+    except Exception as exc:
+        logger.error("manual_generate_background: %s: %s", type(exc).__name__, exc)
+    finally:
+        db.close()
+
+
 def self_heal_background(user_id_str: str) -> None:
     """BackgroundTasks entry point for the poll-kicked strand heal (Phase 3).
 

@@ -344,8 +344,15 @@ def get_ingest_status(
         raise HTTPException(status_code=404, detail="Sync run not found.")
 
     counts = settle_counts(db, current_user.id, str(run.sync_id))
-    if run.source_type == "photo" and run.status != "running" and not counts.settled:
-        _kick_photo_strand_heal(db, current_user.id, str(run.sync_id), background_tasks)
+    if (
+        run.source_type in ("photo", "manual")
+        and run.status != "running"
+        and not counts.settled
+    ):
+        _kick_photo_strand_heal(
+            db, current_user.id, str(run.sync_id), background_tasks,
+            source_type=run.source_type,
+        )
 
     return IngestStatusResponse(
         sync_id=str(run.sync_id),
@@ -375,15 +382,17 @@ _heal_kick_last: Dict[str, float] = {}
 
 
 def _kick_photo_strand_heal(
-    db: Session, user_id, sync_id: str, background_tasks: BackgroundTasks
+    db: Session, user_id, sync_id: str, background_tasks: BackgroundTasks,
+    *, source_type: str = "photo",
 ) -> None:
-    """Strand-killer for a completed-but-unsettled photo batch (Phase 3).
+    """Strand-killer for a completed-but-unsettled photo/manual batch (Phase 3/4).
 
     (1) Stale 'generating' residue — a background pass that died mid-candidate (the
         run is no longer running, so nothing owns these rows) — is demoted to
         'pending_retry' so the sweep can re-select it.
-    (2) A debounced background self-heal re-attempts this user's 'pending_retry'
-        residue (INCLUDING this sync — exclude_sync_id=None) through the shared seam.
+    (2) A debounced background re-attempt: photo runs get the self-heal sweep
+        (this user's 'pending_retry' residue including this sync); manual runs get
+        their idempotent per-sync generation pass re-run.
     No-ops when generation isn't armed (the sweep couldn't succeed and would burn
     attempt ledgers on no-op rungs). ids+counts only in logs."""
     from app.photo_closet.generation_service import generation_armed
@@ -397,7 +406,7 @@ def _kick_photo_strand_heal(
             IngestCandidate.user_id == user_id,
             IngestCandidate.sync_id == sync_id,
             IngestCandidate.status == "pending",
-            IngestCandidate.source_type == "photo",
+            IngestCandidate.source_type == source_type,
             IngestCandidate.generation_status == "generating",
         )
         .all()
@@ -422,9 +431,14 @@ def _kick_photo_strand_heal(
     if last is not None and now - last < _HEAL_KICK_WINDOW_S:
         return
     _heal_kick_last[key] = now
-    from app.photo_closet.generation_service import self_heal_background
+    if source_type == "manual":
+        from app.photo_closet.generation_service import manual_generate_background
 
-    background_tasks.add_task(self_heal_background, str(user_id))
+        background_tasks.add_task(manual_generate_background, str(user_id), sync_id)
+    else:
+        from app.photo_closet.generation_service import self_heal_background
+
+        background_tasks.add_task(self_heal_background, str(user_id))
     logger.info("status-poll strand-heal dispatched user=%s sync=%s", user_id, sync_id)
 
 

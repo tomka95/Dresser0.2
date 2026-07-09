@@ -77,10 +77,11 @@ class ClothingItem(Base):
             "('generating','ready','failed','pending_retry')",
             name='generation_status'),
         # Ingestion source provenance (Wave 1 photo ingest). 'gmail' (default, the
-        # receipt pipeline) or 'photo' (a garment detected from a user-uploaded
-        # photo). Named CHECK (not diffed by autogenerate); server default 'gmail'
-        # owned by migration 0014 backfills every legacy row.
-        CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
+        # receipt pipeline), 'photo' (a garment detected from a user-uploaded photo),
+        # or 'manual' (Photo-seam Phase 4, migration 0036 — a typed manual add routed
+        # through the candidate -> generation -> confirm chokepoint). Named CHECK (not
+        # diffed by autogenerate); server default 'gmail' owned by migration 0014.
+        CheckConstraint("source_type IN ('gmail','photo','manual')", name='source_type'),
         # Fail-closed person tri-state (ready-first Phase 1, migration 0035). Named CHECK
         # (not diffed by autogenerate); mirrors ingest_candidates.person_status.
         CheckConstraint(

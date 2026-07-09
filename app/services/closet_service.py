@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
-from uuid import UUID
+from typing import List, Optional, Tuple
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import ClothingItem
+from app.models import ClothingItem, IngestCandidate, IngestRun
 from app.services.closet_canonicalize import (
     CanonFields,
     canonicalize_fields,
@@ -47,7 +47,7 @@ def list_closet_items(
     return items
 
 
-def create_closet_item(
+def create_manual_candidate(
     db: Session,
     user_id: UUID,
     name: str,
@@ -55,54 +55,64 @@ def create_closet_item(
     brand: str | None = None,
     color: str | None = None,
     image_url: str | None = None,
-) -> ClothingItem:
-    """Create a new clothing item for a user.
-    
-    Args:
-        db: Database session
-        user_id: UUID of the user
-        name: Item name (required)
-        category: Item category (optional)
-        brand: Item brand (optional)
-        color: Item color (optional, stored in color_primary)
-        image_url: Image URL (optional)
-        
-    Returns:
-        Created ClothingItem SQLAlchemy model
+) -> Tuple[IngestRun, IngestCandidate]:
+    """Stage a typed MANUAL add as an ingest candidate (Photo-seam Phase 4).
+
+    A manual add no longer inserts a clothing_item directly — the confirm chokepoint
+    is the ONLY birth path. This stages a source_type='manual' candidate inside its
+    own 1-candidate ingest_run so the shared settle/status/strand-heal machinery
+    covers it; the manual generation pass then produces the invariant-compliant card
+    through the ONE shared seam (reference-conditioned when the user supplied an
+    image, t2i from attributes otherwise), and auto-confirms on 'ready'.
+
+    Canonicalization is the same chokepoint the confirm path uses: category inferred
+    when blank, descriptive name, size defaulted from onboarding facts.sizes (missing
+    size -> the shared needs-size rule at review, never blocked-forever).
+
+    ``image_url`` (optional, already validated/stored by the route) is kept ONLY as
+    the generation REFERENCE — it is never the display image (person_status stays
+    fail-closed 'unknown' until the verified card stamps person_free).
     """
-    # THE canonicalization chokepoint (same one the ingest confirm path uses). Guarantees
-    # a non-null category (inferred from the name when the user left it blank), a
-    # descriptive name, and a size defaulted from the user's onboarding sizes (facts.sizes)
-    # when empty. Typed fields the user asserted are stamped provenance='user_edited' (the
-    # async enricher fills the rest as 'inferred' and never overwrites these). Embedding +
-    # full Tier-1/2 enrichment run in the background task the route schedules after this.
     canon = canonicalize_fields(
         CanonFields(name=name, category=category, brand=brand, color=color),
         load_user_facts(db, user_id),
         source_provenance="user_edited",
     )
-    item = ClothingItem(
+    sync_id = uuid4()
+    run = IngestRun(
+        sync_id=sync_id, user_id=user_id, status="running", source_type="manual",
+    )
+    db.add(run)
+    cand = IngestCandidate(
         user_id=user_id,
+        sync_id=sync_id,
+        # Random per-add key: a manual add is deliberate — never dedup-merged away.
+        source_line_key=f"manual:{uuid4().hex}",
+        message_id=None,
+        source_message_ids=[],
+        seen_count=1,
         name=canon.name,
-        category=canon.category,
         brand=canon.brand,
-        color_primary=canon.color,  # Map color input to color_primary field
+        category=canon.category,
+        color=canon.color,
         size=canon.size,
         image_url=image_url,
-        # Fail-closed person-mask exception: a MANUALLY added item's image is the user's
-        # own deliberate choice, not a pipeline auto-ingest — mark it displayable. The
-        # 'unknown'-masked default exists to stop unchecked PIPELINE images leaking.
-        person_status="person_free" if image_url else "unknown",
-        attributes_json=canon.attributes,
+        image_status="user_uploaded" if image_url else "pending",
+        source_type="manual",
+        pipeline_state="staged",
+        person_status="unknown",  # fail-closed until the verified card lands
+        status="pending",
+        confidence_overall=1.0,   # the user typed it
     )
-
-    db.add(item)
+    db.add(cand)
     db.commit()
-    db.refresh(item)
-    
-    logger.info(f"Created clothing item {item.id} for user {user_id}")
-    
-    return item
+    db.refresh(run)
+    db.refresh(cand)
+    logger.info(
+        "manual add staged user=%s sync=%s candidate=%s (ref_image=%s)",
+        user_id, sync_id, cand.id, bool(image_url),
+    )
+    return run, cand
 
 
 def get_closet_item_by_id(
