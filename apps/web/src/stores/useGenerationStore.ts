@@ -28,16 +28,36 @@ export interface PendingGeneration {
 
 type GenerationState = {
   pending: PendingGeneration | null;
+  /**
+   * Whether the floating notice is minimized. Lives HERE (a module singleton) rather than
+   * in the notice component's local state so it STAYS minimized across route changes —
+   * the notice is re-mounted per navigation (AppShell is per-page), and a local useState
+   * would reset to expanded every time. Reset to false when a new run starts.
+   */
+  minimized: boolean;
+  /** The one-shot "finished → pop open" reveal has fired for this run (once ever, not per mount). */
+  revealed: boolean;
   setPending: (pending: PendingGeneration) => void;
+  setMinimized: (minimized: boolean) => void;
+  setRevealed: (revealed: boolean) => void;
   clear: () => void;
 };
 
 export const useGenerationStore = create<GenerationState>((set) => ({
   pending: null,
+  minimized: false,
+  revealed: false,
   setPending(pending) {
-    set({ pending });
+    // A new run starts expanded + not-yet-revealed.
+    set({ pending, minimized: false, revealed: false });
+  },
+  setMinimized(minimized) {
+    set({ minimized });
+  },
+  setRevealed(revealed) {
+    set({ revealed });
   },
   clear() {
-    set({ pending: null });
+    set({ pending: null, minimized: false, revealed: false });
   },
 }));

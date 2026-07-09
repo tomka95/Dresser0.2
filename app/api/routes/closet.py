@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.dependencies import get_db, get_current_user
 from app.models import User, ClothingItem, ItemImage
+from app.models.closet import display_image_url
 from app.services.events_service import log_event
 from app.services.closet_service import (
     list_closet_items,
@@ -150,10 +151,16 @@ def _get_image_url(item: ClothingItem) -> Optional[str]:
     Returns:
         Image URL string or None
     """
-    # Prefer direct image_url field on ClothingItem
-    if item.image_url:
-        return item.image_url
-    
+    # G6 — route through the single on-model mask (models.closet.display_image_url): an
+    # on-model crop (a person) is never surfaced until a verified person-free card lands
+    # ('ready'). image_url holds the crop only as the generation/self-heal reference.
+    masked = display_image_url(item)
+    if masked:
+        return masked
+    # A masked on-model item must NOT fall through to a primary ItemImage either.
+    if getattr(item, "on_model", False) and item.generation_status != "ready":
+        return None
+
     # Fallback to primary ItemImage from images relationship
     # Accessing item.images will trigger lazy load if not already loaded
     if hasattr(item, 'images') and item.images:
@@ -163,7 +170,7 @@ def _get_image_url(item: ClothingItem) -> Optional[str]:
         )
         if primary_image:
             return primary_image.image_url
-    
+
     return None
 
 

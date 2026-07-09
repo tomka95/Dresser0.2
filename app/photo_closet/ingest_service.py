@@ -193,13 +193,17 @@ def _is_duplicate_upload(db: Session, user_id: UUID, sanitized: SanitizedImage) 
 
 def _stage_candidate(
     db: Session, user_id: UUID, sync_id: UUID, garment, image_url: Optional[str],
-    source_line_key: str,
+    source_line_key: str, *, on_model: bool = False,
 ) -> IngestCandidate:
     """Upsert one garment as a pending photo candidate on UNIQUE(user_id, source_line_key).
 
     ``garment`` is any GarmentRegion-shaped object (GarmentRegion or
     GarmentDescription). Dialect-agnostic (select-then-insert/update) so it runs on
     SQLite + Postgres alike.
+
+    ``on_model`` (G6): the source photo had a person (person_count>=1), so this cutout
+    contains a person. It's kept only as the generation reference; the display layer masks
+    it until a verified person-free card lands.
     """
     conf = garment.confidence
     confidence_json = {
@@ -223,6 +227,7 @@ def _stage_candidate(
         image_url=image_url,
         image_status="user_uploaded",
         source_type="photo",
+        on_model=on_model,
         confidence_overall=garment.confidence_overall,
         confidence_json=confidence_json,
         status="pending",
@@ -584,7 +589,12 @@ def run_photo_commit(
                     continue  # unusable box -> skip this garment
                 image_url = store_cutout(storage_client, user_id, cut)
                 slk = _source_line_key(session.image_sha256, garment.box_2d)
-                cand = _stage_candidate(db, user_id, sync_id, garment, image_url, slk)
+                # G6: an on-model source photo (person visible) yields cutouts that contain a
+                # person — flag them so the crop is never displayed, only used as the gen ref.
+                cand = _stage_candidate(
+                    db, user_id, sync_id, garment, image_url, slk,
+                    on_model=session.person_count >= 1,
+                )
                 db.flush()  # assign cand.id before the dedup seam inspects it
                 # Wired dedup seam (currently a no-op 'unique' stub). The real matcher
                 # and any generation gating hang off this without a pipeline change.
@@ -618,7 +628,9 @@ def run_photo_commit(
                 image_url = store_cutout(storage_client, user_id, cut)
                 slk = _source_line_key(session.image_sha256, box)
                 cand = _stage_candidate(
-                    db, user_id, sync_id, described, image_url, slk)
+                    db, user_id, sync_id, described, image_url, slk,
+                    on_model=session.person_count >= 1,
+                )
                 db.flush()
                 dedup_check(db, user_id, cand)
                 staged_here += 1

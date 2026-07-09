@@ -446,12 +446,15 @@ export default function ReviewPage() {
   }
 
   if (loading) {
+    // Neutral load copy — this is just fetching already-staged candidates, NOT a live scan.
+    // Opening a COMPLETE run from the Home banner must not read as "scanning" (G5); the real
+    // live-scan UI is the scanning=true state below, only reached via an explicit Scan tap.
     return (
       <AppShell scroll={false}>
         <div className="flex h-full flex-col px-5 pt-[62px]">
           <TopBar title="Review finds" onBack={() => router.back()} />
           <div className="flex flex-1 items-center justify-center">
-            <DeckLoading label="Scanning your receipts…" />
+            <DeckLoading label="Loading your review…" />
           </div>
         </div>
       </AppShell>
@@ -697,8 +700,17 @@ export default function ReviewPage() {
   const isPhotoCard = current.source_type === 'photo';
   const generatedReady = genStatus === 'ready' && !!current.generated_image_url;
   const showGenerating =
-    isPhotoCard && (genStatus === 'generating' || (genStatus == null && runGenerating));
-  const showPreviewTag = isPhotoCard && (genStatus === 'pending_retry' || genStatus === 'failed');
+    isPhotoCard &&
+    (genStatus === 'generating' ||
+      (genStatus == null && runGenerating) ||
+      // G6: the server masks an ON-MODEL crop (image_url null — it contains a person) until
+      // a verified person-free card lands. Show the neutral "preparing" panel, NEVER a
+      // person and never a broken/no-image gap. Covers on-model pending_retry/failed too.
+      (!generatedReady && !current.image_url));
+  // Preview-the-crop fallback is ONLY for a real (flat-lay) crop the server still sends —
+  // an on-model crop is masked to null above, so it can never reach this path.
+  const showPreviewTag =
+    isPhotoCard && !!current.image_url && (genStatus === 'pending_retry' || genStatus === 'failed');
   const cardSrc = generatedReady ? current.generated_image_url : current.image_url;
 
   // Alternating stack tilt: even cards lean left (−2°), odd cards lean right (+2°), so a

@@ -6,6 +6,7 @@ app/models/__init__.py.
 """
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import (
     Column, String, DateTime, Date, Boolean, ForeignKey, Text, Integer, BigInteger,
@@ -15,6 +16,20 @@ from sqlalchemy.orm import relationship
 
 from app.db import Base, GUID
 from app.models._shared import _jsonb, _text_array, _tstz
+
+
+def display_image_url(item) -> Optional[str]:
+    """The clothing item's image_url that is SAFE TO DISPLAY, or None (G6).
+
+    THE single on-model mask every display surface must go through — closet list/detail,
+    the stylist retrieval serialization, and the Today's-Look / lookbook collages. An
+    on-model photo item keeps its person-containing crop in image_url ONLY as the
+    generation/self-heal reference; it is NEVER shown until generation has replaced it with
+    a verified, person-free card (generation_status='ready'). Gmail + flat-lay items
+    (on_model=false) pass through unchanged."""
+    if getattr(item, "on_model", False) and getattr(item, "generation_status", None) != "ready":
+        return None
+    return item.image_url
 
 
 class ClothingItem(Base):
@@ -172,6 +187,12 @@ class ClothingItem(Base):
     # server default 'gmail' (migration 0014) backfills legacy rows. Confirm copies the
     # candidate's source_type forward so the closet records how each item arrived.
     source_type = Column(Text, nullable=False, default="gmail")
+
+    # G6: carried from the confirmed candidate — this item's photo cutout is ON-MODEL (has a
+    # person). image_url keeps the crop ONLY as the generation/self-heal reference; the read
+    # layer NEVER returns it until a verified person-free card lands (generation_status=
+    # 'ready'). false for Gmail + flat-lay photo items. Owned by migration 0032.
+    on_model = Column(Boolean, nullable=False, default=False)
 
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 

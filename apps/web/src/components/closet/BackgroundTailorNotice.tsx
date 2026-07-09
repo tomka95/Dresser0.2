@@ -15,7 +15,7 @@
  * preserved throughout. Hidden on /review (already there) and /add-photo (the preparing
  * screen owns the pill), so only one poller is ever live.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { AnimatePresence, motion, useMotionValue } from 'framer-motion';
 import { Minus, X } from 'lucide-react';
@@ -61,11 +61,17 @@ function NoticeInner({ pending }: { pending: PendingGeneration }) {
   const router = useRouter();
   const clear = useGenerationStore((s) => s.clear);
   const { ready, total, done } = useGenerationRunStatus(pending.syncId, pending.staged);
-  const [expanded, setExpanded] = useState(true);
-  // The ready reveal must fire EXACTLY ONCE. `revealed` latches on the first `done` so the
-  // one-shot pop keyframe isn't re-applied by later re-renders (the prior bug used an
-  // `repeat: Infinity` pulse that looked like the control opening and closing forever).
-  const [revealed, setRevealed] = useState(false);
+  // Minimized state lives in the store (module singleton) so it STAYS minimized across
+  // navigation — this notice re-mounts per route (AppShell is per-page), and a local
+  // useState would reset to expanded on every screen switch (the bug).
+  const minimized = useGenerationStore((s) => s.minimized);
+  const setMinimized = useGenerationStore((s) => s.setMinimized);
+  const expanded = !minimized;
+  const setExpanded = (v: boolean) => setMinimized(!v);
+  // The ready reveal must fire EXACTLY ONCE per run (store-backed so it isn't re-applied on
+  // every remount — otherwise a finished review would re-pop-open on each navigation).
+  const revealed = useGenerationStore((s) => s.revealed);
+  const setRevealed = useGenerationStore((s) => s.setRevealed);
 
   // Drag: a session-persisted offset from the bottom-right anchor so the user can move the
   // control off any content it covers, and it stays put across navigations/reloads.
