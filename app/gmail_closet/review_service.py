@@ -274,6 +274,24 @@ def _apply_edits(cand: IngestCandidate, edits: Dict[str, Any]) -> None:
             setattr(cand, fname, str(value).strip() if value is not None else None)
 
 
+def _used_generated_card(cand: IngestCandidate) -> bool:
+    """True iff this candidate has a VERIFIED generated card to store (ready + a card URL)."""
+    return cand.generation_status == "ready" and bool(cand.generated_image_url)
+
+
+def _item_generation_status(cand: IngestCandidate) -> Optional[str]:
+    """The generation_status to write onto the clothing_item (G6).
+
+    An ON-MODEL item is 'ready' — which the closet read UNMASKS — ONLY when it carries the
+    verified generated card. If confirm falls back to the raw crop (a 'ready' candidate with
+    no generated_image_url, or any non-ready state), force 'pending_retry' for on-model so
+    the read keeps it MASKED: a crop that may contain a person can never be unmasked. Non-
+    on-model items keep the candidate's status verbatim (unchanged behavior)."""
+    if cand.on_model and not _used_generated_card(cand):
+        return "pending_retry"
+    return cand.generation_status
+
+
 def _upsert_clothing_item(
     db: Session,
     user_id: UUID,
@@ -318,10 +336,13 @@ def _upsert_clothing_item(
     # candidate's generation_status is carried forward so a later generation self-heal
     # can find the 'pending_retry' closet rows and re-attempt (image_url is the crop it
     # regenerates from).
-    if cand.generation_status == "ready" and cand.generated_image_url:
+    if _used_generated_card(cand):
         closet_image_url = cand.generated_image_url
     else:
         closet_image_url = cand.image_url
+    # G6: an on-model item is 'ready' (which the closet read UNMASKS) ONLY when it carries
+    # the VERIFIED generated card — see _item_generation_status.
+    item_generation_status = _item_generation_status(cand)
     # THE canonicalization chokepoint. Folds legacy category aliases + guarantees a
     # non-null category, a descriptive name, and a profile-defaulted size, and builds the
     # provenance seed (source values -> 'extracted'; derived -> 'inferred'; size default /
@@ -365,7 +386,7 @@ def _upsert_clothing_item(
         merchant=cand.merchant,
         image_status=image_status,
         image_cache_key=image_cache_key,
-        generation_status=cand.generation_status,
+        generation_status=item_generation_status,
         # Carry the ingestion source forward ('gmail' | 'photo') so the closet records
         # how each item arrived. The candidate's value is server-set at stage time.
         source_type=cand.source_type,

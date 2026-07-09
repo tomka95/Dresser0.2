@@ -6,6 +6,7 @@ app/models/__init__.py.
 """
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import (
     Column, String, DateTime, Date, Boolean, ForeignKey, Text, Integer, BigInteger,
@@ -15,6 +16,20 @@ from sqlalchemy.orm import relationship
 
 from app.db import Base, GUID
 from app.models._shared import _jsonb, _text_array, _tstz
+
+
+def display_image_url(item) -> Optional[str]:
+    """The clothing item's image_url that is SAFE TO DISPLAY, or None (G6).
+
+    THE single on-model mask every display surface must go through — closet list/detail,
+    the stylist retrieval serialization, and the Today's-Look / lookbook collages. An
+    on-model photo item keeps its person-containing crop in image_url ONLY as the
+    generation/self-heal reference; it is NEVER shown until generation has replaced it with
+    a verified, person-free card (generation_status='ready'). Gmail + flat-lay items
+    (on_model=false) pass through unchanged."""
+    if getattr(item, "on_model", False) and getattr(item, "generation_status", None) != "ready":
+        return None
+    return item.image_url
 
 
 class ClothingItem(Base):

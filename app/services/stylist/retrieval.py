@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import ClothingItem, ItemEmbedding
+from app.models.closet import display_image_url
 from app.services.enrichment import normalize_category
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,9 @@ def serialize_item(item: ClothingItem) -> Dict[str, Any]:
         "occasions": item.occasions,
         "brand": item.brand,
         "isFavorite": bool(item.is_favorite),
-        "imageUrl": item.image_url,
+        # G6: on-model mask — never serialize a person crop to the client/LLM (outfit cards,
+        # chat). Shows only a verified person-free card once generation is 'ready'.
+        "imageUrl": display_image_url(item),
     }
 
 

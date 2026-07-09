@@ -131,3 +131,57 @@ def test_stage_sets_on_model_from_person_count():
     off = _stage_candidate(_FakeDB(), uuid.uuid4(), uuid.uuid4(), garment, "u", "slk", on_model=False)
     assert on.on_model is True
     assert off.on_model is False
+
+
+# --------------------------------------------------------------------------- C1: every display surface masks
+def test_shared_display_mask_helper():
+    from app.models.closet import display_image_url
+
+    assert display_image_url(_item(on_model=True, generation_status="pending_retry")) is None
+    assert display_image_url(_item(on_model=True, generation_status=None)) is None
+    assert display_image_url(_item(on_model=True, generation_status="ready", image_url="card")) == "card"
+    assert display_image_url(_item(on_model=False, generation_status="pending_retry", image_url="flat")) == "flat"
+
+
+def test_collage_usable_image_url_masks_on_model():
+    from app.services.stylist.collage import usable_image_url
+
+    # on-model, not ready -> excluded from any collage (never composited)
+    assert usable_image_url(_item(on_model=True, generation_status="pending_retry", image_status="user_uploaded")) is None
+    # on-model, ready -> image_url IS the verified card -> usable
+    assert usable_image_url(_item(on_model=True, generation_status="ready", image_url="card", image_status="user_uploaded")) == "card"
+    # flat-lay ready -> usable
+    assert usable_image_url(_item(on_model=False, generation_status="ready", image_url="flat", image_status="user_uploaded")) == "flat"
+
+
+def test_retrieval_serialize_item_masks_on_model():
+    from app.services.stylist.retrieval import serialize_item
+
+    masked = serialize_item(_item(on_model=True, generation_status="pending_retry", image_url="crop-person"))
+    assert masked["imageUrl"] is None
+    shown = serialize_item(_item(on_model=True, generation_status="ready", image_url="clean-card"))
+    assert shown["imageUrl"] == "clean-card"
+    flat = serialize_item(_item(on_model=False, generation_status="pending_retry", image_url="flatlay"))
+    assert flat["imageUrl"] == "flatlay"
+
+
+# --------------------------------------------------------------------------- C2: confirm never stores a 'ready' crop
+def test_item_generation_status_never_ready_with_a_crop_for_on_model():
+    from types import SimpleNamespace
+
+    from app.gmail_closet.review_service import _item_generation_status
+
+    def cand(**kw):
+        base = dict(on_model=True, generation_status="ready", generated_image_url=None)
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    # on-model 'ready' but NO verified card -> forced pending_retry (stays masked)
+    assert _item_generation_status(cand()) == "pending_retry"
+    # on-model 'ready' WITH a verified card -> ready (the card, not a crop, is shown)
+    assert _item_generation_status(cand(generated_image_url="card")) == "ready"
+    # on-model pending_retry -> pending_retry
+    assert _item_generation_status(cand(generation_status="pending_retry")) == "pending_retry"
+    # NON-on-model keeps the candidate's status verbatim (unchanged behavior)
+    assert _item_generation_status(cand(on_model=False)) == "ready"
+    assert _item_generation_status(cand(on_model=False, generation_status="pending_retry")) == "pending_retry"

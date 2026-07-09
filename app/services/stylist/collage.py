@@ -42,6 +42,7 @@ from uuid import UUID
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from app.models import ClothingItem
+from app.models.closet import display_image_url
 
 # Reused download seam (module attr so tests monkeypatch collage._download).
 from app.photo_closet.generation_service import _download_bytes as _download
@@ -400,7 +401,8 @@ def get_or_create_outfit_collage(
 ) -> Optional[str]:
     """Return the stored lookbook URL for this outfit, rendering it only on a
     cache miss. None whenever a decent card can't be made (best-effort)."""
-    with_image = [(s, it) for s, it in _ordered_slots(slots) if it.image_url]
+    # G6: usable_image_url masks an on-model crop, so a person is never composited here.
+    with_image = [(s, it) for s, it in _ordered_slots(slots) if usable_image_url(it)]
     if len(with_image) < _MIN_IMAGES:
         return None
 
@@ -411,7 +413,7 @@ def get_or_create_outfit_collage(
 
     items: List[Tuple[str, Image.Image]] = []
     for slot, item in with_image:
-        fetched = _download(item.image_url)
+        fetched = _download(usable_image_url(item))
         if fetched is None:
             continue  # missing/unreachable item photo: skip the tile, keep going
         try:
@@ -470,8 +472,12 @@ _UNUSABLE_GEN_STATUS = frozenset({"failed", "pending_retry"})
 
 
 def usable_image_url(item: ClothingItem) -> Optional[str]:
-    """The item's image_url iff it points at a real, showable photo — else None."""
-    url = item.image_url
+    """The item's image_url iff it points at a real, showable photo — else None.
+
+    G6: goes through display_image_url first, so an ON-MODEL crop (a person) is NEVER
+    composited into a collage until a verified person-free card lands. A masked item drops
+    out of the collage AND changes the cache key, so a later self-heal re-renders it in."""
+    url = display_image_url(item)
     if not url:
         return None
     if (getattr(item, "image_status", None) or "") in _UNUSABLE_IMAGE_STATUS:
