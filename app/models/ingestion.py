@@ -179,6 +179,18 @@ class IngestCandidate(Base):
         # Ingestion source (Wave 1). Mirrors clothing_items.source_type; confirm copies
         # it onto the closet row. Default 'gmail'; the photo pipeline stages 'photo'.
         CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
+        # READY-FIRST Phase 1 (migration 0035): the authoritative per-candidate readiness
+        # state machine. The review deck and the Home banner settle gate STRICTLY on
+        # 'ready' — no computed/inferred readiness anywhere else.
+        CheckConstraint(
+            "pipeline_state IN ('staged','canonicalized','image_pending',"
+            "'image_generated','verified_clean','ready','failed')",
+            name='pipeline_state'),
+        # Fail-closed person tri-state (migration 0035): 'unknown' = not affirmatively
+        # determined -> MASKED. Only an affirmative 'person_free' may show a raw image.
+        CheckConstraint(
+            "person_status IN ('unknown','person_present','person_free')",
+            name='person_status'),
         # Content-key staging dedup (phase 3c): the same owned item appearing in
         # multiple emails collapses to ONE candidate via ON CONFLICT DO UPDATE.
         UniqueConstraint("user_id", "source_line_key",
@@ -269,8 +281,21 @@ class IngestCandidate(Base):
     # An on-model crop CONTAINS A PERSON, so it must NEVER be displayed — it is kept only as
     # the generation reference. Display code masks image_url until a verified, person-free
     # generated card lands (generation_status='ready'). false for Gmail + flat-lay photos.
-    # Owned by migration 0032.
+    # Owned by migration 0032. Still written by the photo detector; person_status below is
+    # the FAIL-CLOSED display key derived alongside it (0032's bare boolean conflated
+    # "unchecked" with "no person" — the email leak this replaces).
     on_model = Column(Boolean, nullable=False, default=False)
+
+    # READY-FIRST Phase 1 (migration 0035): authoritative readiness state machine.
+    #   staged -> canonicalized -> image_pending -> image_generated -> verified_clean
+    #   -> ready | failed
+    # Server-written at each transition; deck + banner gate STRICTLY on 'ready'.
+    pipeline_state = Column(Text, nullable=False, default="staged", server_default="staged")
+
+    # Fail-closed person signal (migration 0035): 'unknown' (default — detector never ran,
+    # MASKED) | 'person_present' (masked; generation reference only) | 'person_free'
+    # (affirmatively clean; the ONLY state whose raw image may be displayed).
+    person_status = Column(Text, nullable=False, default="unknown", server_default="unknown")
 
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 

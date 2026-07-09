@@ -19,17 +19,23 @@ from app.models._shared import _jsonb, _text_array, _tstz
 
 
 def display_image_url(item) -> Optional[str]:
-    """The clothing item's image_url that is SAFE TO DISPLAY, or None (G6).
+    """The clothing item's image_url that is SAFE TO DISPLAY, or None.
 
-    THE single on-model mask every display surface must go through — closet list/detail,
-    the stylist retrieval serialization, and the Today's-Look / lookbook collages. An
-    on-model photo item keeps its person-containing crop in image_url ONLY as the
-    generation/self-heal reference; it is NEVER shown until generation has replaced it with
-    a verified, person-free card (generation_status='ready'). Gmail + flat-lay items
-    (on_model=false) pass through unchanged."""
-    if getattr(item, "on_model", False) and getattr(item, "generation_status", None) != "ready":
-        return None
-    return item.image_url
+    THE single person-safety mask every display surface must go through — closet
+    list/detail, the stylist retrieval serialization, and the Today's-Look / lookbook
+    collages. FAIL-CLOSED (ready-first Phase 1): an image is shown ONLY when one of two
+    AFFIRMATIVE signals holds —
+      * generation_status='ready': image_url IS the verified generated card (the pair
+        verify hard-fails person_present, so a ready card is person-free by construction);
+      * person_status='person_free': a detector affirmatively determined no person.
+    Everything else — person_status='unknown' (detector never ran; ALL legacy Gmail rows),
+    'person_present', or any non-ready generation state — returns None. "Unchecked" can
+    never again read as "clean"."""
+    if getattr(item, "generation_status", None) == "ready":
+        return item.image_url
+    if getattr(item, "person_status", None) == "person_free":
+        return item.image_url
+    return None
 
 
 class ClothingItem(Base):
@@ -75,6 +81,11 @@ class ClothingItem(Base):
         # photo). Named CHECK (not diffed by autogenerate); server default 'gmail'
         # owned by migration 0014 backfills every legacy row.
         CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
+        # Fail-closed person tri-state (ready-first Phase 1, migration 0035). Named CHECK
+        # (not diffed by autogenerate); mirrors ingest_candidates.person_status.
+        CheckConstraint(
+            "person_status IN ('unknown','person_present','person_free')",
+            name='person_status'),
         # --- AI Stylist universal garment schema (Wave S0, migration 0018) --------
         # Named CHECKs (not diffed by autogenerate). category is a SUPERSET: the
         # canonical 12 + the legacy aliases ('shoes','accessories','other') that still
@@ -196,8 +207,15 @@ class ClothingItem(Base):
     # G6: carried from the confirmed candidate — this item's photo cutout is ON-MODEL (has a
     # person). image_url keeps the crop ONLY as the generation/self-heal reference; the read
     # layer NEVER returns it until a verified person-free card lands (generation_status=
-    # 'ready'). false for Gmail + flat-lay photo items. Owned by migration 0032.
+    # 'ready'). false for Gmail + flat-lay photo items. Owned by migration 0032. Kept for
+    # the photo detector/self-heal; person_status below is the fail-closed DISPLAY key.
     on_model = Column(Boolean, nullable=False, default=False)
+
+    # Fail-closed person tri-state (ready-first Phase 1, migration 0035). 'unknown'
+    # (default — no detector ever ran; all legacy Gmail rows) | 'person_present' |
+    # 'person_free'. display_image_url shows a raw image ONLY on 'person_free' (or a
+    # verified 'ready' generated card). Carried from the candidate at confirm.
+    person_status = Column(Text, nullable=False, default="unknown", server_default="unknown")
 
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 

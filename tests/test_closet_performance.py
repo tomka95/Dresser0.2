@@ -53,6 +53,7 @@ def test_user_with_items(db: Session, test_user: User):
             name=f"Item {i}",
             category="top" if i % 2 == 0 else "bottom",
             brand=f"Brand {i % 5}",
+            person_status="person_free",  # ready-first: display is fail-closed
         )
         # Persist EVERY item: the even-index branch below only set image_url and never
         # added the item, so only the 10 odd-index items were committed while the test
@@ -127,6 +128,7 @@ def test_get_closet_query_count(
             user_id=test_user.id,
             name=f"Test Item {i}",
             category="top",
+            person_status="person_free",  # ready-first: fail-closed ItemImage fallback
         )
         db.add(item)
         db.flush()

@@ -89,6 +89,10 @@ def create_closet_item(
         color_primary=canon.color,  # Map color input to color_primary field
         size=canon.size,
         image_url=image_url,
+        # Fail-closed person-mask exception: a MANUALLY added item's image is the user's
+        # own deliberate choice, not a pipeline auto-ingest — mark it displayable. The
+        # 'unknown'-masked default exists to stop unchecked PIPELINE images leaking.
+        person_status="person_free" if image_url else "unknown",
         attributes_json=canon.attributes,
     )
 
@@ -193,6 +197,8 @@ def update_closet_item(
         item.color_primary = color
     if image_url is not None:
         item.image_url = image_url
+        # User-chosen replacement image: deliberate display choice (see create above).
+        item.person_status = "person_free"
     
     # updated_at is automatically updated by SQLAlchemy's onupdate
     

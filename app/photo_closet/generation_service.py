@@ -374,6 +374,7 @@ def _generate_candidate(
 
         # Mark 'generating' and stream it immediately (the deck renders the loading state).
         cand.generation_status = "generating"
+        cand.pipeline_state = "image_pending"  # ready-first: awaiting its generated card
         db.commit()
 
         dl = _download_bytes(cand.image_url)
@@ -432,6 +433,11 @@ def _generate_candidate(
             # concurrent workers can't lose an increment (row-level lock serializes them).
             cand.generated_image_url = url
             cand.generation_status = "ready"
+            # Ready-first: the verified card is person-free by construction (the pair
+            # verify hard-fails person_present), so BOTH the state machine and the
+            # fail-closed person signal go affirmative in the same transaction.
+            cand.pipeline_state = "ready"
+            cand.person_status = "person_free"
             db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
                 {IngestRun.generation_ready: IngestRun.generation_ready + 1},
                 synchronize_session=False,
@@ -444,6 +450,7 @@ def _generate_candidate(
             # revert to clean NULL residue for a later run, report 'budget'. NOT counted
             # as a failed attempt (nothing was generated/verified).
             cand.generation_status = None
+            cand.pipeline_state = "staged"  # ready-first: back to the machine's entry state
             db.commit()
             return _CandidateOutcome("budget")
 
@@ -481,6 +488,11 @@ def _hold(
         cand.generation_status = _next_failure_status(cand.generation_attempts)
     else:
         cand.generation_status = "pending_retry"
+    # Ready-first: terminal 'failed' leaves the machine at 'failed' (excluded from the
+    # deck AND from blocking the banner); a retryable hold stays 'image_pending'.
+    cand.pipeline_state = (
+        "failed" if cand.generation_status == "failed" else "image_pending"
+    )
     db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
         {IngestRun.generation_failed: IngestRun.generation_failed + 1},
         synchronize_session=False,
@@ -731,6 +743,9 @@ def run_generation_self_heal(
                 c.generated_image_url = r.url
                 c.generation_status = "ready"
                 c.generation_attempts = 0  # verified success clears the failure ledger
+                # Ready-first: verified card => affirmative person-free + machine 'ready'.
+                c.pipeline_state = "ready"
+                c.person_status = "person_free"
                 db.commit()
                 stats.ready += 1
                 stats.cost_usd += r.cost_usd
@@ -738,6 +753,9 @@ def run_generation_self_heal(
                 # Real generate->verify miss: bump the attempt ceiling; terminal at N.
                 c.generation_attempts = (c.generation_attempts or 0) + 1
                 c.generation_status = _next_failure_status(c.generation_attempts)
+                c.pipeline_state = (
+                    "failed" if c.generation_status == "failed" else "image_pending"
+                )
                 db.commit()
                 stats.held += 1
 
@@ -756,6 +774,8 @@ def run_generation_self_heal(
                     it.image_url = r.url
                     it.generation_status = "ready"
                     it.generation_attempts = 0  # verified success clears the ledger
+                    # Ready-first: the verified card replacing the crop is person-free.
+                    it.person_status = "person_free"
                     db.commit()
                     stats.ready += 1
                     stats.cost_usd += r.cost_usd
@@ -883,6 +903,8 @@ def run_item_regeneration(
             item.image_url = new_url
             item.generation_status = "ready"
             item.generation_attempts = 0  # verified success clears the failure ledger
+            # Ready-first: regeneration output passed the verified person-free gate.
+            item.person_status = "person_free"
             db.commit()
             logger.info(
                 "item regen user=%s item=%s: ready (steered=%s ref=%s)",

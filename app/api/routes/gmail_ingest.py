@@ -226,6 +226,12 @@ class CandidateOut(BaseModel):
     seen_count: int = 1
     # Ingestion source: 'gmail' | 'photo'. Drives the source-aware deck badge.
     source_type: str = "gmail"
+    # Ready-first Phase 1 (additive): the fail-closed person tri-state and the
+    # authoritative readiness state. The deck only ever receives pipeline_state='ready'
+    # rows, but the fields are surfaced for observability/debug UI.
+    on_model: bool = False
+    person_status: str = "unknown"
+    pipeline_state: str = "staged"
     source: CandidateSource
 
 
@@ -345,14 +351,17 @@ def get_pending_review(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PendingReviewOut:
-    """Home banner feed: the newest completed run with pending candidates whose IMAGE phase
-    has SETTLED and that the user hasn't opened/dismissed. pending=False otherwise.
+    """Home banner feed: the newest completed run whose WHOLE batch is READY and that the
+    user hasn't opened/dismissed. pending=False otherwise.
 
-    Settle condition avoids surfacing half-imaged cards: a run qualifies only when its
-    generation counters are done (generation_ready + generation_failed >= generation_total)
-    OR it uses no generation counters (generation_total == 0 — a Gmail run resolves/generates
-    images inline within run_full_ingest, so 'completed' already means settled). An empty
-    inbox produces zero pending candidates -> pending=False -> the banner never appears.
+    READY-FIRST settle condition (Phase 1): a run surfaces ONLY when every pending
+    candidate in it has pipeline_state='ready' — tag-complete with a verified,
+    person-free image — or is terminally 'failed' (a failed candidate is EXCLUDED from
+    the batch: it neither blocks the banner forever nor appears in the deck). The old
+    generation-counter clause is replaced: it was vacuously true for Gmail runs
+    (generation_total stayed 0), which let the banner surface half-imaged batches.
+    ready_count counts ONLY the ready candidates — the number the deck will actually
+    serve. An empty inbox produces zero ready candidates -> pending=False.
     JWT-pinned; only the caller's own runs. Read-only (opening/dismissing is POST ack)."""
     runs = (
         db.query(IngestRun)
@@ -361,29 +370,39 @@ def get_pending_review(
             IngestRun.status == "completed",
             IngestRun.review_surfaced_at.is_(None),
             IngestRun.review_dismissed_at.is_(None),
-            or_(
-                IngestRun.generation_total == 0,
-                (IngestRun.generation_ready + IngestRun.generation_failed)
-                >= IngestRun.generation_total,
-            ),
         )
         .order_by(IngestRun.finished_at.desc().nullslast(), IngestRun.started_at.desc())
         .limit(10)
         .all()
     )
     for r in runs:
-        pending_count = (
+        # Whole-batch settle gate: ANY pending candidate not yet 'ready' and not
+        # terminally 'failed' means the batch is still in flight — do not surface.
+        unsettled = (
             db.query(func.count(IngestCandidate.id))
             .filter(
                 IngestCandidate.user_id == current_user.id,
                 IngestCandidate.sync_id == str(r.sync_id),
                 IngestCandidate.status == "pending",
+                IngestCandidate.pipeline_state.notin_(("ready", "failed")),
             )
             .scalar()
         ) or 0
-        if pending_count > 0:
+        if unsettled > 0:
+            continue
+        ready_count = (
+            db.query(func.count(IngestCandidate.id))
+            .filter(
+                IngestCandidate.user_id == current_user.id,
+                IngestCandidate.sync_id == str(r.sync_id),
+                IngestCandidate.status == "pending",
+                IngestCandidate.pipeline_state == "ready",
+            )
+            .scalar()
+        ) or 0
+        if ready_count > 0:
             return PendingReviewOut(
-                pending=True, sync_id=str(r.sync_id), ready_count=int(pending_count)
+                pending=True, sync_id=str(r.sync_id), ready_count=int(ready_count)
             )
     return PendingReviewOut(pending=False)
 
