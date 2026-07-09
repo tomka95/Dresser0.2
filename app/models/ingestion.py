@@ -417,6 +417,12 @@ class IngestRun(Base):
         CheckConstraint("status IN ('running','completed','error')", name="status"),
         # Which ingestion source this run belongs to: 'gmail' | 'photo' (Wave 1).
         CheckConstraint("source_type IN ('gmail','photo')", name="source_type"),
+        # What kicked this run (Wave C / Fix 1): 'onboarding' (the connect auto-scan) |
+        # 'manual' (the explicit "Scan my inbox" CTA). NULL for pre-0031 runs. Named CHECK
+        # (not diffed by autogenerate); owned by migration 0031.
+        CheckConstraint(
+            "\"trigger\" IS NULL OR \"trigger\" IN ('onboarding','manual')", name="trigger"
+        ),
         Index("idx_ingest_runs_user_id", "user_id"),
     )
 
@@ -472,3 +478,12 @@ class IngestRun(Base):
     started_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
     finished_at = Column(_tstz(), nullable=True)
+
+    # --- Wave C / Fix 1: onboarding background scan + Home review banner ---------
+    # trigger: 'onboarding' | 'manual' (CHECK above). NULL for pre-0031 runs.
+    trigger = Column(Text, nullable=True)
+    # Show-once state for the Home "review N items ready" banner. GET /pending-review
+    # surfaces a completed run only while BOTH are NULL; opening the banner stamps
+    # review_surfaced_at, an explicit dismiss stamps review_dismissed_at — either retires it.
+    review_surfaced_at = Column(_tstz(), nullable=True)
+    review_dismissed_at = Column(_tstz(), nullable=True)

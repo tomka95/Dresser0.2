@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { CloudRain, Cloud, Plus, Sun } from 'lucide-react';
+import { CloudRain, Cloud, Plus, Sun, X } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { getCurrentUser } from '@/lib/api/auth';
 import { getWeather, getCachedWeather, isWeatherFresh, type WeatherResponse } from '@/lib/api/weather';
@@ -34,6 +34,7 @@ import { useClosetStore } from '@/stores/useClosetStore';
 import { useOnline } from '@/lib/useOnline';
 import { homeGreeting } from '@/lib/greeting';
 import { logEvent } from '@/lib/api/events';
+import { getPendingReview, ackPendingReview } from '@/lib/api/gmail';
 import {
   getShopFeed,
   ShopAuthError,
@@ -81,6 +82,14 @@ export default function HomePage() {
 
   const [firstName, setFirstName] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Server-driven "receipts ready to review" banner from the onboarding background
+  // Gmail scan. Purely server state (GET /gmail/ingest/pending-review) — deliberately
+  // NOT useGenerationStore — so it also shows for a user who connected on another
+  // device or returns to the app later.
+  const [pendingReview, setPendingReview] = useState<{ syncId: string; readyCount: number } | null>(
+    null,
+  );
 
   // Feed state.
   const [cards, setCards] = useState<Card[]>([]);
@@ -132,6 +141,34 @@ export default function HomePage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuth]);
+
+  // Pending-review banner — one read on mount. getPendingReview never throws (silent
+  // default on any failure), so a miss just leaves the banner hidden.
+  useEffect(() => {
+    if (!isAuth) return;
+    let active = true;
+    void getPendingReview().then((r) => {
+      if (active && r.pending && r.ready_count > 0 && r.sync_id) {
+        setPendingReview({ syncId: r.sync_id, readyCount: r.ready_count });
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [isAuth]);
+
+  const openReview = useCallback(async () => {
+    if (!pendingReview) return;
+    const { syncId } = pendingReview;
+    await ackPendingReview(syncId, 'opened');
+    router.push(`/review?sync_id=${encodeURIComponent(syncId)}`);
+  }, [pendingReview, router]);
+
+  const dismissReview = useCallback(async () => {
+    if (!pendingReview) return;
+    await ackPendingReview(pendingReview.syncId, 'dismissed');
+    setPendingReview(null);
+  }, [pendingReview]);
 
   const loadFeed = useCallback(async () => {
     setFeedLoading(true);
@@ -264,6 +301,52 @@ export default function HomePage() {
             onClick={() => setDrawerOpen(true)}
           />
         </div>
+
+        {/* Review-ready banner — server-driven (onboarding background Gmail scan).
+            A dismissible glass banner: the row taps through to the scoped review deck,
+            the X acks a dismissal and hides it locally. */}
+        {pendingReview && (
+          <div
+            className="mt-4 flex items-center gap-2.5"
+            style={{
+              padding: '12px 14px',
+              borderRadius: 16,
+              background: 'rgba(75,226,214,0.12)',
+              border: '1px solid rgba(75,226,214,0.34)',
+              backdropFilter: 'blur(12px)',
+              WebkitBackdropFilter: 'blur(12px)',
+            }}
+            role="status"
+          >
+            <button
+              type="button"
+              onClick={() => void openReview()}
+              className="flex min-w-0 flex-1 items-center gap-3 text-left"
+            >
+              <Spark size={16} />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13.5px] font-semibold text-white">
+                  {`${pendingReview.readyCount} ${
+                    pendingReview.readyCount === 1 ? 'receipt' : 'receipts'
+                  } ready to review`}
+                </span>
+                <span className="block text-[11.5px]" style={{ color: M.faint }}>
+                  Tap to confirm what lands in your closet
+                </span>
+              </span>
+              <Icon name="ArrowChevronRightMD" size={15} style={{ color: 'var(--mint)' }} />
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => void dismissReview()}
+              className="flex shrink-0 items-center justify-center"
+              style={{ width: 28, height: 28, borderRadius: 999, color: M.faint }}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
 
         {/* Bento: weather + calendar tiles — both REAL now (GET /weather, GET
             /calendar/today), each degrading quietly when unavailable. The ranked

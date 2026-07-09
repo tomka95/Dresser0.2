@@ -103,14 +103,22 @@ export interface GmailConnectionStatus {
  * and a signed, user-bound `state`. We never construct the consent URL or hold
  * any client secret on the frontend; we just navigate to the URL the backend
  * returns. Google then redirects back to the /gmail/oauth/callback Route Handler.
+ *
+ * `onboarding` requests an onboarding-purpose state (?onboarding=1): the backend
+ * auto-starts a background receipt scan on exchange and the callback bounces back
+ * to /onboarding (not /profile). Default false keeps every existing caller — the
+ * Settings/profile/review connect buttons — on the plain profile-return flow.
  */
-export async function startGmailConnect(): Promise<void> {
+export async function startGmailConnect(onboarding = false): Promise<void> {
   const token = await getAccessToken();
   if (!token) {
     throw new Error('Not authenticated. Please sign in first.');
   }
 
-  const response = await fetch(`${API_BASE_URL}/gmail/oauth/start`, {
+  const startUrl = onboarding
+    ? `${API_BASE_URL}/gmail/oauth/start?onboarding=1`
+    : `${API_BASE_URL}/gmail/oauth/start`;
+  const response = await fetch(startUrl, {
     method: 'GET',
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -125,6 +133,63 @@ export async function startGmailConnect(): Promise<void> {
   }
   // Full-page navigation to Google's consent screen.
   window.location.href = url;
+}
+
+// ─── Onboarding background-scan → Home "review ready" banner ────────────────────
+
+/** Server-driven pending-review state for the Home banner. */
+export interface PendingReview {
+  pending: boolean;
+  sync_id: string | null;
+  ready_count: number;
+}
+
+/**
+ * Read whether an onboarding background scan has candidates waiting for review.
+ * BEST-EFFORT for the Home banner: any failure (no session, network, non-ok)
+ * resolves to the silent default so this can never throw into Home's render path
+ * — the banner simply doesn't show.
+ */
+export async function getPendingReview(): Promise<PendingReview> {
+  const silent: PendingReview = { pending: false, sync_id: null, ready_count: 0 };
+  try {
+    const token = await getAccessToken();
+    if (!token) return silent;
+
+    const response = await fetch(`${API_BASE_URL}/gmail/ingest/pending-review`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return silent;
+    return (await response.json()) as PendingReview;
+  } catch {
+    return silent;
+  }
+}
+
+/**
+ * Acknowledge the pending-review banner — 'opened' (tapped through to /review) or
+ * 'dismissed' (X'd away). Best-effort: errors are swallowed so a failed ack never
+ * blocks the navigation or the local hide the caller performs alongside it.
+ */
+export async function ackPendingReview(
+  syncId: string,
+  action: 'opened' | 'dismissed',
+): Promise<void> {
+  try {
+    const token = await getAccessToken();
+    if (!token) return;
+    await fetch(`${API_BASE_URL}/gmail/ingest/pending-review/ack`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sync_id: syncId, action }),
+    });
+  } catch {
+    /* best-effort — never surface an ack failure */
+  }
 }
 
 /** Read whether the current user has a usable (refresh-token-bearing) Gmail connection. */

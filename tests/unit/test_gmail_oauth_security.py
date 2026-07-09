@@ -13,8 +13,11 @@ import pytest
 from app.core import token_crypto
 from app.core.config import settings
 from app.core.gmail_oauth_state import (
+    _PURPOSE,
+    _PURPOSE_ONBOARDING,
     OAuthStateError,
     issue_state,
+    read_state_purpose,
     verify_state,
 )
 from app.core.token_crypto import (
@@ -102,3 +105,38 @@ def test_state_signed_with_other_secret_rejected(monkeypatch):
     monkeypatch.setattr(settings, "GMAIL_OAUTH_STATE_SECRET", "different-secret", raising=False)
     with pytest.raises(OAuthStateError):
         verify_state(state, expected_user_id="user-123")
+
+
+# --- Wave C: distinct onboarding purpose + cross-purpose replay guard --------
+
+def test_onboarding_state_cannot_be_replayed_as_plain_connect():
+    onb = issue_state("user-123", purpose=_PURPOSE_ONBOARDING)
+    # Strict verify against the DEFAULT (plain-connect) purpose rejects it — the exact
+    # cross-flow replay guard: an onboarding state can't masquerade as a plain connect.
+    with pytest.raises(OAuthStateError):
+        verify_state(onb, expected_user_id="user-123")  # expected_purpose defaults to connect
+    # ...and it DOES verify against its own purpose.
+    verify_state(onb, expected_user_id="user-123", expected_purpose=_PURPOSE_ONBOARDING)
+
+
+def test_plain_connect_state_cannot_verify_as_onboarding():
+    conn = issue_state("user-123")  # plain connect
+    with pytest.raises(OAuthStateError):
+        verify_state(conn, expected_user_id="user-123", expected_purpose=_PURPOSE_ONBOARDING)
+
+
+def test_read_state_purpose_returns_signed_purpose():
+    assert read_state_purpose(issue_state("u1"), expected_user_id="u1") == _PURPOSE
+    onb = issue_state("u1", purpose=_PURPOSE_ONBOARDING)
+    assert read_state_purpose(onb, expected_user_id="u1") == _PURPOSE_ONBOARDING
+
+
+def test_read_state_purpose_rejects_foreign_user():
+    onb = issue_state("u1", purpose=_PURPOSE_ONBOARDING)
+    with pytest.raises(OAuthStateError):
+        read_state_purpose(onb, expected_user_id="u2")
+
+
+def test_issue_state_rejects_unknown_purpose():
+    with pytest.raises(OAuthStateError):
+        issue_state("u1", purpose="totally_made_up")

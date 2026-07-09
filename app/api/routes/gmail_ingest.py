@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -31,7 +34,7 @@ from app.gmail_closet.review_service import (
 )
 from app.platform.jobs import enqueue
 from app.platform.usage import get_user_cost_summary
-from app.models import GoogleAccount, IngestRun, User
+from app.models import GoogleAccount, IngestCandidate, IngestRun, User
 from app.services.events_service import EventValidationError, log_event
 
 logger = logging.getLogger(__name__)
@@ -86,11 +89,82 @@ def _log_confirm_events(db: Session, user_id, body: "ConfirmRequest", result) ->
 
 
 # ---------------------------------------------------------------------------
+# Shared ingest dispatch (reused by POST /start and the onboarding OAuth exchange)
+# ---------------------------------------------------------------------------
+
+def _dispatch_ingest_run(
+    db: Session, user_id: UUID, background_tasks: BackgroundTasks, *, trigger: str
+) -> str:
+    """Create the IngestRun and dispatch the sync via the EXISTING dual-path. Returns sync_id.
+
+    Flag ON -> enqueue a durable gmail_ingest job in the SAME transaction as the run (the
+    flip is the ONLY change needed for prod-grade recovery — SCRUM-66). Flag OFF (current
+    default) -> a Starlette BackgroundTask. ``trigger`` ('onboarding' | 'manual') is stamped
+    on the run so Home can find onboarding scans. ids-only payload (no tokens/PII)."""
+    sync_id = uuid.uuid4()
+    run = IngestRun(sync_id=sync_id, user_id=user_id, status="running", trigger=trigger)
+    db.add(run)
+    if settings.JOBS_GMAIL_INGEST_ENABLED:
+        job = enqueue(
+            db,
+            type="gmail_ingest",
+            user_id=user_id,
+            payload={"user_id": str(user_id), "sync_id": str(sync_id)},
+            max_attempts=settings.JOBS_MAX_ATTEMPTS,
+        )
+        run.job_id = job.id
+        db.commit()
+        logger.info("sync_id=%s: ingest enqueued job=%s user=%s trigger=%s",
+                    sync_id, job.id, user_id, trigger)
+    else:
+        db.commit()
+        background_tasks.add_task(ingest_background, str(user_id), str(sync_id))
+        logger.info("sync_id=%s: ingest scheduled user=%s trigger=%s", sync_id, user_id, trigger)
+    return str(sync_id)
+
+
+def maybe_start_onboarding_scan(
+    db: Session, user_id: UUID, background_tasks: BackgroundTasks
+) -> Optional[str]:
+    """Auto-start a background receipt scan on the onboarding Gmail connect. Never raises.
+
+    Idempotent + 409-guarded: if a run is already 'running' for this user, reuse it (return
+    its sync_id) rather than double-start. Requires a stored refresh token (the exchange
+    just wrote one). A failure here must NEVER fail the OAuth connect, so the caller wraps
+    this defensively — connect succeeds even if the scan couldn't start."""
+    account = (
+        db.query(GoogleAccount).filter(GoogleAccount.user_id == user_id).first()
+    )
+    if not account or not account.refresh_token:
+        return None
+    running = (
+        db.query(IngestRun)
+        .filter(IngestRun.user_id == user_id, IngestRun.status == "running")
+        .first()
+    )
+    if running:
+        return str(running.sync_id)  # already scanning -> don't double-start
+    return _dispatch_ingest_run(db, user_id, background_tasks, trigger="onboarding")
+
+
+# ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
 
 class StartIngestResponse(BaseModel):
     sync_id: str
+
+
+class PendingReviewOut(BaseModel):
+    """The Home "review N items ready" banner payload. pending=False -> show nothing."""
+    pending: bool = False
+    sync_id: Optional[str] = None
+    ready_count: int = 0
+
+
+class AckReviewRequest(BaseModel):
+    sync_id: str
+    action: str = Field("opened", description="'opened' (user tapped through) | 'dismissed'")
 
 
 class IngestProgress(BaseModel):
@@ -222,37 +296,10 @@ def start_ingest(
             detail=f"A sync is already running: sync_id={running.sync_id}",
         )
 
-    sync_id = uuid.uuid4()
-    run = IngestRun(sync_id=sync_id, user_id=current_user.id, status="running")
-    db.add(run)
-
-    # Durable-queue cutover (P3.8/R1), read ONCE here. Flag OFF -> the legacy
-    # BackgroundTasks path, byte-identical to before. Flag ON -> enqueue a jobs
-    # row in the SAME transaction as the IngestRun (transactional enqueue: the run
-    # and its owning job commit atomically), and let the worker do the sync.
-    if settings.JOBS_GMAIL_INGEST_ENABLED:
-        job = enqueue(
-            db,
-            type="gmail_ingest",
-            user_id=current_user.id,
-            payload={"user_id": str(current_user.id), "sync_id": str(sync_id)},
-            max_attempts=settings.JOBS_MAX_ATTEMPTS,
-        )
-        run.job_id = job.id
-        db.commit()
-        logger.info("sync_id=%s: ingest enqueued job=%s for user=%s",
-                    sync_id, job.id, current_user.id)
-    else:
-        db.commit()
-        # Starlette routes sync BackgroundTasks through run_in_threadpool — safe to block.
-        background_tasks.add_task(
-            ingest_background,
-            str(current_user.id),
-            str(sync_id),
-        )
-        logger.info("sync_id=%s: ingest scheduled for user=%s", sync_id, current_user.id)
-
-    return StartIngestResponse(sync_id=str(sync_id))
+    # Create + dispatch via the shared dual-path (flag ON -> durable job; OFF ->
+    # BackgroundTask). trigger='manual' distinguishes this from the onboarding auto-scan.
+    sync_id = _dispatch_ingest_run(db, current_user.id, background_tasks, trigger="manual")
+    return StartIngestResponse(sync_id=sync_id)
 
 
 @router.get("/status", response_model=IngestStatusResponse)
@@ -291,6 +338,80 @@ def get_ingest_status(
         started_at=run.started_at.isoformat() if run.started_at else None,
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
     )
+
+
+@router.get("/pending-review", response_model=PendingReviewOut)
+def get_pending_review(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PendingReviewOut:
+    """Home banner feed: the newest completed run with pending candidates whose IMAGE phase
+    has SETTLED and that the user hasn't opened/dismissed. pending=False otherwise.
+
+    Settle condition avoids surfacing half-imaged cards: a run qualifies only when its
+    generation counters are done (generation_ready + generation_failed >= generation_total)
+    OR it uses no generation counters (generation_total == 0 — a Gmail run resolves/generates
+    images inline within run_full_ingest, so 'completed' already means settled). An empty
+    inbox produces zero pending candidates -> pending=False -> the banner never appears.
+    JWT-pinned; only the caller's own runs. Read-only (opening/dismissing is POST ack)."""
+    runs = (
+        db.query(IngestRun)
+        .filter(
+            IngestRun.user_id == current_user.id,
+            IngestRun.status == "completed",
+            IngestRun.review_surfaced_at.is_(None),
+            IngestRun.review_dismissed_at.is_(None),
+            or_(
+                IngestRun.generation_total == 0,
+                (IngestRun.generation_ready + IngestRun.generation_failed)
+                >= IngestRun.generation_total,
+            ),
+        )
+        .order_by(IngestRun.finished_at.desc().nullslast(), IngestRun.started_at.desc())
+        .limit(10)
+        .all()
+    )
+    for r in runs:
+        pending_count = (
+            db.query(func.count(IngestCandidate.id))
+            .filter(
+                IngestCandidate.user_id == current_user.id,
+                IngestCandidate.sync_id == str(r.sync_id),
+                IngestCandidate.status == "pending",
+            )
+            .scalar()
+        ) or 0
+        if pending_count > 0:
+            return PendingReviewOut(
+                pending=True, sync_id=str(r.sync_id), ready_count=int(pending_count)
+            )
+    return PendingReviewOut(pending=False)
+
+
+@router.post("/pending-review/ack", status_code=204)
+def ack_pending_review(
+    body: AckReviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Mark a run's review banner as opened or dismissed so it never reappears (show-once).
+
+    Both actions hide it (the GET gates on both timestamps being NULL). JWT-pinned; a
+    foreign/unknown sync_id is a 404 (cross-user reject)."""
+    run = (
+        db.query(IngestRun)
+        .filter(IngestRun.sync_id == body.sync_id, IngestRun.user_id == current_user.id)
+        .first()
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Sync run not found.")
+    now = datetime.now(timezone.utc)
+    if body.action == "dismissed":
+        run.review_dismissed_at = now
+    else:  # 'opened' (default) — tapping through also retires the banner
+        run.review_surfaced_at = now
+    db.commit()
+    return None
 
 
 @router.get("/candidates", response_model=List[CandidateOut])

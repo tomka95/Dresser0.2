@@ -9,7 +9,9 @@ vi.mock('@/lib/auth', () => ({ getAccessToken: vi.fn(async () => 'tok') }));
 import { regenerateItemImage } from '@/lib/api/closet';
 
 describe('regenerateItemImage (multipart)', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it('sends FormData with reason + reference and no Content-Type header', async () => {
     const calls: any[] = [];
