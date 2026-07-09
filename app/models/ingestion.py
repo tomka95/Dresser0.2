@@ -250,6 +250,11 @@ class IngestCandidate(Base):
     # generating | ready | failed | pending_retry. NULL = not a generation target.
     generation_status = Column(Text, nullable=True)
 
+    # Count of FAILED generate->verify attempts (cost cut #2, migration 0034). After
+    # GENERATION_MAX_ATTEMPTS the target goes terminal ('failed') and self-heal never
+    # re-selects it; transient misses (download error / budget) don't increment it.
+    generation_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+
     confidence_overall = Column(Numeric, nullable=True)
 
     confidence_json = Column(_jsonb(), nullable=True)

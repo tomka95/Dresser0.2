@@ -119,12 +119,12 @@ def _run(db, sync_id) -> IngestRun:
 
 # --- the ladder --------------------------------------------------------------
 
-def test_nano_pass_stores_ready(db, user, monkeypatch):
+def test_flux2_pass_stores_ready(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro", cost=0.045))
     nano = _FakeProvider("nano_banana", _result("nano_banana"))
-    flux = _FakeProvider("flux_kontext", _result("flux_kontext"))
-    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": flux})
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": nano})
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_photo_generation(user.id, db, sync)
@@ -134,28 +134,28 @@ def test_nano_pass_stores_ready(db, user, monkeypatch):
     assert c.generated_image_url == "https://blob/gen.png"
     assert c.image_url == "https://blob/cut.jpg"       # crop never overwritten
     assert c.image_status == "user_uploaded"           # image_status untouched
-    assert nano.calls == 1 and flux.calls == 0         # nano passed -> no fallback
+    assert flux2.calls == 1 and nano.calls == 0        # flux2 (rung-1) passed -> no fallback
     run = _run(db, sync)
     assert run.status == "completed" and run.finished_at is not None
     assert (run.generation_total, run.generation_ready, run.generation_failed) == (1, 1, 0)
     assert stats.ready == 1 and stats.held == 0
-    assert stats.cost_usd == pytest.approx(0.134)
+    assert stats.cost_usd == pytest.approx(0.045)      # rung-1 flux2, not $0.134 nano
 
 
-def test_flux_fallback_on_verify_fail(db, user, monkeypatch):
+def test_nano_fallback_on_verify_fail(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro", cost=0.045))
     nano = _FakeProvider("nano_banana", _result("nano_banana"))
-    flux = _FakeProvider("flux_kontext", _result("flux_kontext"))
-    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": flux})
-    # Only the flux candidate passes the gate; nano's is rejected -> retry.
-    _verify(monkeypatch, lambda **k: _ok() if k["candidate_bytes"] == b"gen-flux_kontext" else _fail())
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": nano})
+    # Only the nano candidate passes the gate; flux2's is rejected -> retry to nano.
+    _verify(monkeypatch, lambda **k: _ok() if k["candidate_bytes"] == b"gen-nano_banana" else _fail())
 
     gen.run_photo_generation(user.id, db, sync)
 
     db.refresh(c)
     assert c.generation_status == "ready"
-    assert nano.calls == 1 and flux.calls == 1         # ladder walked to flux
+    assert flux2.calls == 1 and nano.calls == 1        # ladder walked flux2 -> nano
     run = _run(db, sync)
     assert run.generation_ready == 1 and run.generation_failed == 0
 
@@ -164,8 +164,8 @@ def test_both_fail_holds_for_retry(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
     _providers(monkeypatch, {
+        "flux2_pro": _FakeProvider("flux2_pro", _result("flux2_pro")),
         "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
     })
     _verify(monkeypatch, lambda **k: _fail())
 
@@ -173,6 +173,7 @@ def test_both_fail_holds_for_retry(db, user, monkeypatch):
 
     db.refresh(c)
     assert c.generation_status == "pending_retry"
+    assert c.generation_attempts == 1                   # one failed generate->verify attempt
     assert c.generated_image_url is None               # nothing stored
     assert c.image_url == "https://blob/cut.jpg"        # crop untouched (no raw fallback)
     run = _run(db, sync)
@@ -186,8 +187,8 @@ def test_provider_unavailable_holds_without_verify(db, user, monkeypatch):
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
     # Both providers unavailable (Null / balance): generate() returns None.
     _providers(monkeypatch, {
+        "flux2_pro": _FakeProvider("flux2_pro", None),
         "nano_banana": _FakeProvider("nano_banana", None),
-        "flux_kontext": _FakeProvider("flux_kontext", None),
     })
     verify_calls = []
     _verify(monkeypatch, lambda **k: verify_calls.append(1) or _ok())
@@ -205,8 +206,8 @@ def test_verify_skipped_is_not_stored(db, user, monkeypatch):
     store = _seams(monkeypatch)
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
     _providers(monkeypatch, {
+        "flux2_pro": _FakeProvider("flux2_pro", _result("flux2_pro")),
         "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
     })
     _verify(monkeypatch, lambda **k: _skipped())
 
@@ -221,15 +222,16 @@ def test_verify_skipped_is_not_stored(db, user, monkeypatch):
 def test_download_error_holds_before_generate(db, user, monkeypatch):
     _seams(monkeypatch, download=None)  # cutout re-fetch fails
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
-    nano = _FakeProvider("nano_banana", _result("nano_banana"))
-    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": _FakeProvider("flux_kontext", None)})
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro"))
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": _FakeProvider("nano_banana", None)})
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_photo_generation(user.id, db, sync)
 
     db.refresh(c)
     assert c.generation_status == "pending_retry"
-    assert nano.calls == 0                     # never generate without a reference
+    assert c.generation_attempts == 0          # transient (download) miss must NOT count
+    assert flux2.calls == 0                     # never generate without a reference
     assert stats.download_errors == 1
     assert _run(db, sync).status == "completed"
 
@@ -238,8 +240,8 @@ def test_idempotent_rerun_skips_ready(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
     _providers(monkeypatch, {
+        "flux2_pro": _FakeProvider("flux2_pro", _result("flux2_pro")),
         "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
     })
     _verify(monkeypatch, lambda **k: _ok())
     gen.run_photo_generation(user.id, db, sync)
@@ -247,13 +249,13 @@ def test_idempotent_rerun_skips_ready(db, user, monkeypatch):
     assert c.generation_status == "ready"
 
     # Second pass: 'ready' is excluded from the target set -> no provider call.
+    flux2b = _FakeProvider("flux2_pro", _result("flux2_pro"))
     nano2 = _FakeProvider("nano_banana", _result("nano_banana"))
-    flux2 = _FakeProvider("flux_kontext", _result("flux_kontext"))
-    _providers(monkeypatch, {"nano_banana": nano2, "flux_kontext": flux2})
+    _providers(monkeypatch, {"flux2_pro": flux2b, "nano_banana": nano2})
     stats = gen.run_photo_generation(user.id, db, sync)
 
     assert stats.targets == 0
-    assert nano2.calls == 0 and flux2.calls == 0
+    assert flux2b.calls == 0 and nano2.calls == 0
     db.refresh(c)
     assert c.generated_image_url == "https://blob/gen.png"   # unchanged
 
@@ -262,18 +264,39 @@ def test_budget_cap_leaves_residue(db, user, monkeypatch):
     _seams(monkeypatch)
     monkeypatch.setattr(gen.settings, "GENERATION_MAX_PER_RUN", 0)  # no budget
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
-    nano = _FakeProvider("nano_banana", _result("nano_banana"))
-    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": _FakeProvider("flux_kontext", None)})
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro"))
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": _FakeProvider("nano_banana", None)})
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_photo_generation(user.id, db, sync)
 
     db.refresh(c)
     assert stats.budget_stopped is True
-    assert nano.calls == 0
+    assert flux2.calls == 0
     assert c.generation_status is None          # untouched -> a later sweep retries it
     run = _run(db, sync)
     assert run.status == "completed" and run.generation_total == 1 and run.generation_ready == 0
+
+
+def test_budget_counts_calls_not_candidates(db, user, monkeypatch):
+    """Cost cut #3: the per-run budget bounds actual generation CALLS. With budget=1 and
+    a candidate whose flux2 rung fails verify, the single unit is spent on the flux2 call
+    and the nano retry is budget-blocked — so exactly ONE generation call happens, not a
+    fresh unit per rung."""
+    _seams(monkeypatch)
+    monkeypatch.setattr(gen.settings, "GENERATION_MAX_PER_RUN", 1)  # ONE generation call
+    sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro"))
+    nano = _FakeProvider("nano_banana", _result("nano_banana"))
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": nano})
+    _verify(monkeypatch, lambda **k: _fail())  # flux2 fails -> would retry nano if budget
+
+    gen.run_photo_generation(user.id, db, sync)
+
+    db.refresh(c)
+    assert flux2.calls == 1 and nano.calls == 0   # budget spent on the call, nano blocked
+    assert c.generation_status == "pending_retry"  # one real attempt made -> held
+    assert c.generation_attempts == 1
 
 
 # --- concurrency -------------------------------------------------------------
@@ -284,9 +307,9 @@ def test_concurrent_all_ready_counts_are_race_safe(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4(); _run_row(db, user, sync)
     cands = [_stage(db, user, sync, source_line_key=f"slk{i}", name=f"Item{i}") for i in range(4)]
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro"))
     nano = _FakeProvider("nano_banana", _result("nano_banana"))
-    flux = _FakeProvider("flux_kontext", _result("flux_kontext"))
-    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": flux})
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": nano})
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_photo_generation(user.id, db, sync)
@@ -297,7 +320,7 @@ def test_concurrent_all_ready_counts_are_race_safe(db, user, monkeypatch):
         assert c.generation_status == "ready"
         assert c.generated_image_url == "https://blob/gen.png"
         assert c.image_url == "https://blob/cut.jpg"   # crop never overwritten
-    assert flux.calls == 0                              # nano passed every one
+    assert nano.calls == 0                              # flux2 (rung-1) passed every one
     run = _run(db, sync)
     assert run.status == "completed"
     assert (run.generation_total, run.generation_ready, run.generation_failed) == (4, 4, 0)
@@ -310,8 +333,8 @@ def test_concurrent_budget_is_shared_across_workers(db, user, monkeypatch):
     monkeypatch.setattr(gen.settings, "GENERATION_MAX_PER_RUN", 2)  # 2 generations, 4 targets
     sync = uuid4(); _run_row(db, user, sync)
     cands = [_stage(db, user, sync, source_line_key=f"b{i}") for i in range(4)]
-    nano = _FakeProvider("nano_banana", _result("nano_banana"))
-    _providers(monkeypatch, {"nano_banana": nano, "flux_kontext": _FakeProvider("flux_kontext", None)})
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro"))
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": _FakeProvider("nano_banana", None)})
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_photo_generation(user.id, db, sync)
@@ -357,14 +380,18 @@ def _item(db, user, **over):
     return it
 
 
+def _heal_providers(monkeypatch, *, flux2=None, nano=None):
+    _providers(monkeypatch, {
+        "flux2_pro": _FakeProvider("flux2_pro", flux2 if flux2 is not None else _result("flux2_pro")),
+        "nano_banana": _FakeProvider("nano_banana", nano if nano is not None else _result("nano_banana")),
+    })
+
+
 def test_self_heal_candidate_regenerates(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4()
     c = _stage(db, user, sync, generation_status="pending_retry")
-    _providers(monkeypatch, {
-        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
-    })
+    _heal_providers(monkeypatch)
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_generation_self_heal(user.id, db)
@@ -379,10 +406,7 @@ def test_self_heal_candidate_regenerates(db, user, monkeypatch):
 def test_self_heal_clothing_item_regenerates(db, user, monkeypatch):
     _seams(monkeypatch)
     it = _item(db, user)
-    _providers(monkeypatch, {
-        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
-    })
+    _heal_providers(monkeypatch)
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_generation_self_heal(user.id, db)
@@ -400,10 +424,7 @@ def test_self_heal_idempotent_skips_ready(db, user, monkeypatch):
     _stage(db, user, sync, generation_status="ready",
            generated_image_url="https://blob/done.png")
     _item(db, user, generation_status="ready", image_url="https://blob/done.png")
-    _providers(monkeypatch, {
-        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
-    })
+    _heal_providers(monkeypatch)
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_generation_self_heal(user.id, db)
@@ -416,28 +437,51 @@ def test_self_heal_both_fail_leaves_pending_retry(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4()
     c = _stage(db, user, sync, generation_status="pending_retry")
-    _providers(monkeypatch, {
-        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
-    })
+    _heal_providers(monkeypatch)
     _verify(monkeypatch, lambda **k: _fail())
 
     stats = gen.run_generation_self_heal(user.id, db)
 
     db.refresh(c)
-    assert c.generation_status == "pending_retry"        # still a target for next sweep
+    assert c.generation_status == "pending_retry"        # still a target (1 < ceiling)
+    assert c.generation_attempts == 1                    # one real failed attempt counted
     assert c.generated_image_url is None
     assert stats.held == 1 and stats.ready == 0
+
+
+def test_self_heal_attempt_ceiling_goes_terminal(db, user, monkeypatch):
+    """Cost cut #2: a candidate that has already failed to the ceiling is NOT re-selected;
+    a fresh candidate that fails its LAST allowed attempt goes terminal ('failed'), so a
+    later sweep never re-bills gen + 2×verify for it."""
+    _seams(monkeypatch)
+    monkeypatch.setattr(gen.settings, "GENERATION_MAX_ATTEMPTS", 3)
+    sync = uuid4()
+    # Already at the ceiling -> excluded from the target set entirely.
+    maxed = _stage(db, user, sync, source_line_key="maxed",
+                   generation_status="pending_retry", generation_attempts=3)
+    # One shy of the ceiling -> selected, fails once, tips over to terminal 'failed'.
+    almost = _stage(db, user, sync, source_line_key="almost",
+                    generation_status="pending_retry", generation_attempts=2)
+    _heal_providers(monkeypatch)
+    _verify(monkeypatch, lambda **k: _fail())
+
+    stats = gen.run_generation_self_heal(user.id, db)
+
+    db.refresh(maxed); db.refresh(almost)
+    assert stats.candidates_seen == 1                    # only 'almost' was a target
+    assert maxed.generation_status == "pending_retry" and maxed.generation_attempts == 3
+    assert almost.generation_status == "failed" and almost.generation_attempts == 3
+
+    # A second sweep now finds NOTHING to do -> no generation/verify re-billing.
+    stats2 = gen.run_generation_self_heal(user.id, db)
+    assert stats2.candidates_seen == 0 and stats2.ready == 0 and stats2.held == 0
 
 
 def test_self_heal_excludes_current_sync(db, user, monkeypatch):
     _seams(monkeypatch)
     sync = uuid4()
     c = _stage(db, user, sync, generation_status="pending_retry")
-    _providers(monkeypatch, {
-        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
-    })
+    _heal_providers(monkeypatch)
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_generation_self_heal(user.id, db, exclude_sync_id=sync)
@@ -452,12 +496,28 @@ def test_self_heal_scoped_per_user(db, user, monkeypatch):
     other = User(email="x@example.com", hashed_password="x", display_name="X")
     db.add(other); db.commit(); db.refresh(other)
     _item(db, other)                                     # another user's pending_retry item
-    _providers(monkeypatch, {
-        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-        "flux_kontext": _FakeProvider("flux_kontext", _result("flux_kontext")),
-    })
+    _heal_providers(monkeypatch)
     _verify(monkeypatch, lambda **k: _ok())
 
     stats = gen.run_generation_self_heal(user.id, db)
 
     assert stats.items_seen == 0 and stats.ready == 0    # never touches another user's rows
+
+
+def test_self_heal_shares_budget_with_main_pass(db, user, monkeypatch):
+    """Cost cut #3: when the caller passes a shared budget, the self-heal tail draws from
+    the SAME pool as the main pass — an exhausted budget stops it (no fresh 50)."""
+    _seams(monkeypatch)
+    sync = uuid4()
+    c = _stage(db, user, sync, generation_status="pending_retry")
+    _heal_providers(monkeypatch)
+    _verify(monkeypatch, lambda **k: _ok())
+
+    spent = gen.GenerationBudget(0)  # already fully spent by a prior main pass
+    stats = gen.run_generation_self_heal(user.id, db, gen_budget=spent)
+
+    db.refresh(c)
+    assert stats.budget_stopped is True
+    assert stats.ready == 0
+    assert c.generation_status == "pending_retry"        # untouched, no re-bill
+    assert c.generation_attempts == 0                    # budget miss is not a failed attempt

@@ -183,6 +183,11 @@ class ClothingItem(Base):
     # ingest_candidates.generation_status (CHECK above).
     generation_status = Column(Text, nullable=True)
 
+    # Count of FAILED generate->verify attempts (cost cut #2, migration 0034). After
+    # GENERATION_MAX_ATTEMPTS the item goes terminal ('failed') and self-heal never
+    # re-selects it; transient misses (download error / budget) don't increment it.
+    generation_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+
     # Ingestion source: 'gmail' (receipts) | 'photo' (user-uploaded photo). NOT NULL;
     # server default 'gmail' (migration 0014) backfills legacy rows. Confirm copies the
     # candidate's source_type forward so the closet records how each item arrived.

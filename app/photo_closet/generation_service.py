@@ -14,11 +14,12 @@ THE PER-CANDIDATE LADDER
   1. Fetch the cutout bytes back from candidate.image_url (feeds BOTH the generation
      request AND the verify reference).
   2. generation_status = 'generating' (streamed: the deck can show a progress state).
-  3. nano_banana.generate -> verify_generated_image. matches -> store, 'ready'.
-  4. verify FAILS (matches False, incl. skipped) -> retry once with flux_kontext.
-  5. flux also fails / both unavailable / storage down -> 'pending_retry' (a later
+  3. flux2_pro.generate -> verify_generated_image. matches -> store, 'ready'.
+  4. verify FAILS (matches False, incl. skipped) -> retry once with nano_banana.
+  5. nano also fails / both unavailable / storage down -> 'pending_retry' (a later
      self-heal sweep re-attempts). generated_image_url stays NULL — the deck must NOT
-     fall back to the raw crop as the product card.
+     fall back to the raw crop as the product card. After GENERATION_MAX_ATTEMPTS failed
+     generate->verify attempts the target goes terminal ('failed'), never re-selected.
 
 SAFETY / COST
 -------------
@@ -56,10 +57,11 @@ from app.services.image_generation.base import (
 
 logger = logging.getLogger(__name__)
 
-# Provider ladder for the live photo flow: nano_banana first, flux_kontext on a
-# verify-fail retry. get_generation_provider(name) dispatches by explicit name, so it
-# bypasses GENERATION_ENABLED (that gate only guards the no-name default path).
-_GENERATION_LADDER: Tuple[str, ...] = ("nano_banana", "flux_kontext")
+# Provider ladder for the live photo flow: FLUX.2 [pro] first (BFL, OFF the Gemini cap),
+# nano_banana (Gemini, ON-cap $0.134) only as the verify-fail retry.
+# get_generation_provider(name) dispatches by explicit name, so it bypasses
+# GENERATION_ENABLED (that gate only guards the no-name default path).
+_GENERATION_LADDER: Tuple[str, ...] = ("flux2_pro", "nano_banana")
 
 # Generation targets: NULL (never attempted) + residue a later sweep should retry.
 # 'ready' and terminal 'failed' are excluded so re-running is idempotent; a stale
@@ -67,6 +69,18 @@ _GENERATION_LADDER: Tuple[str, ...] = ("nano_banana", "flux_kontext")
 _RETRYABLE_STATUSES = ("pending_retry", "generating")
 
 _SUFFIX_BY_CT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+
+
+def _next_failure_status(attempts: int) -> str:
+    """Terminal 'failed' once a target has burned its attempt ceiling, else 'pending_retry'.
+
+    Cost cut #2: a permanently-failing item (verify never passes) would otherwise sit at
+    'pending_retry' forever and be re-generated + re-verified by every self-heal sweep.
+    After GENERATION_MAX_ATTEMPTS failed generate->verify attempts it goes terminal
+    ('failed'), which every target query already excludes — so it stops being re-billed.
+    Genuinely-transient misses (download error / budget / provider unavailable) do NOT
+    bump the counter, so real transients keep retrying."""
+    return "failed" if attempts >= settings.GENERATION_MAX_ATTEMPTS else "pending_retry"
 
 
 @dataclass
@@ -166,13 +180,18 @@ def generate_background(user_id_str: str, sync_id_str: str) -> None:
     try:
         user_id = UUID(user_id_str)
         sync_id = UUID(sync_id_str)
-        run_photo_generation(user_id, db, sync_id)
+        # Cost cut #3: ONE shared generation-call budget for the whole background
+        # invocation — the main pass AND the self-heal tail draw from it, so the run can
+        # never make more than GENERATION_MAX_PER_RUN generation calls total (previously
+        # each allocated a fresh 50).
+        gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
+        run_photo_generation(user_id, db, sync_id, gen_budget=gen_budget)
         # Opportunistic self-heal (mirrors run_image_fill running at the tail of a Gmail
         # sync): now that a provider + storage are demonstrably reachable, re-attempt this
         # user's OTHER stale 'pending_retry' targets — candidates from earlier runs and
         # confirmed items that fell back to the crop. exclude_sync_id skips THIS run's
         # fresh failures (just attempted). Best-effort; never affects the commit response.
-        run_generation_self_heal(user_id, db, exclude_sync_id=sync_id)
+        run_generation_self_heal(user_id, db, exclude_sync_id=sync_id, gen_budget=gen_budget)
     except Exception as exc:
         logger.error(
             "generate_background: unhandled error — %s: %s", type(exc).__name__, exc
@@ -194,6 +213,9 @@ def _select_targets(db: Session, user_id: UUID, sync_id: UUID) -> List[IngestCan
             IngestCandidate.source_type == "photo",
             IngestCandidate.status == "pending",
             IngestCandidate.image_url.isnot(None),
+            # Cost cut #2: never re-select a target that has burned its attempt ceiling
+            # (belt-and-suspenders with the terminal 'failed' status below).
+            IngestCandidate.generation_attempts < settings.GENERATION_MAX_ATTEMPTS,
             or_(
                 IngestCandidate.generation_status.is_(None),
                 IngestCandidate.generation_status.in_(_RETRYABLE_STATUSES),
@@ -219,6 +241,7 @@ def run_photo_generation(
     storage_client=None,
     provider_ladder: Optional[Sequence[str]] = None,
     max_concurrency: Optional[int] = None,
+    gen_budget: Optional[GenerationBudget] = None,
 ) -> GenerationStats:
     """Generate + verify + store a product card for each staged photo candidate.
 
@@ -253,8 +276,11 @@ def run_photo_generation(
             storage_client = _storage_from_env()
 
         # Budgets + usage are thread-safe (lock-guarded) and SHARED across all workers,
-        # so the caps apply to the whole concurrent set, not per worker.
-        gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
+        # so the caps apply to the whole concurrent set, not per worker. A caller may pass
+        # a SHARED gen_budget (cost cut #3) so this pass and the self-heal tail draw from
+        # ONE bounded pool of generation calls instead of each allocating a fresh 50.
+        if gen_budget is None:
+            gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
         verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
         usage = UsageAccumulator()
 
@@ -340,9 +366,10 @@ def _generate_candidate(
         if dedup_check(db, user_id, cand).verdict != "unique":
             return _CandidateOutcome("skipped")
 
-        # Shared budget across all workers (thread-safe). Deny -> leave the candidate
-        # untouched (null) as residue for a later run; never mark it 'generating'.
-        if not gen_budget.take():
+        # Fast-path skip when the SHARED budget is already spent (cost cut #3): don't
+        # churn a 'generating' write + cutout download we can't act on. The authoritative
+        # per-CALL take() lives in the ladder loop below.
+        if gen_budget.remaining <= 0:
             return _CandidateOutcome("budget")
 
         # Mark 'generating' and stream it immediately (the deck renders the loading state).
@@ -351,11 +378,17 @@ def _generate_candidate(
 
         dl = _download_bytes(cand.image_url)
         if dl is None:
-            _hold(db, cand, sync_id)
+            _hold(db, cand, sync_id, count_attempt=False)  # transient -> no ceiling bump
             return _CandidateOutcome("download_error")
         ref_bytes, ref_ct = dl
 
+        calls_made = 0
         for provider_name in ladder:
+            # BUDGET COUNTS CALLS (cost cut #3): consume one unit per ACTUAL generation
+            # call, so a 2-rung ladder costs 2 units and MAX_PER_RUN is a real ceiling.
+            if not gen_budget.take():
+                break  # shared budget exhausted mid-ladder
+            calls_made += 1
             provider = get_generation_provider(provider_name)
             result = provider.generate(
                 GenerationRequest(
@@ -406,8 +439,17 @@ def _generate_candidate(
             db.commit()
             return _CandidateOutcome("ready", float(result.cost_usd or 0.0))
 
-        # Ladder exhausted (or storage down after a pass): hold for a later sweep.
-        _hold(db, cand, sync_id)
+        if calls_made == 0:
+            # Budget ran out before any generation call (race with concurrent workers):
+            # revert to clean NULL residue for a later run, report 'budget'. NOT counted
+            # as a failed attempt (nothing was generated/verified).
+            cand.generation_status = None
+            db.commit()
+            return _CandidateOutcome("budget")
+
+        # Ladder exhausted after real attempts (or storage down after a pass): hold for a
+        # later sweep and bump the attempt ceiling.
+        _hold(db, cand, sync_id, count_attempt=True)
         return _CandidateOutcome("held")
     except Exception as exc:
         logger.warning(
@@ -422,12 +464,23 @@ def _generate_candidate(
         db.close()
 
 
-def _hold(db: Session, cand: IngestCandidate, sync_id: UUID) -> None:
-    """Mark 'pending_retry' + atomically bump generation_failed, in one transaction.
+def _hold(
+    db: Session, cand: IngestCandidate, sync_id: UUID, *, count_attempt: bool = True
+) -> None:
+    """Hold a candidate for a later sweep + atomically bump the run's generation_failed.
 
     generated_image_url is left NULL and image_url (the crop) untouched — the deck must
-    not show the raw cutout as the finished product card."""
-    cand.generation_status = "pending_retry"
+    not show the raw cutout as the finished product card.
+
+    ``count_attempt`` (cost cut #2): a real generate->verify miss bumps the per-item
+    generation_attempts counter and goes terminal ('failed') once the ceiling is burned;
+    a transient miss (download error) passes count_attempt=False so it keeps retrying and
+    never poisons the ceiling."""
+    if count_attempt:
+        cand.generation_attempts = (cand.generation_attempts or 0) + 1
+        cand.generation_status = _next_failure_status(cand.generation_attempts)
+    else:
+        cand.generation_status = "pending_retry"
     db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
         {IngestRun.generation_failed: IngestRun.generation_failed + 1},
         synchronize_session=False,
@@ -523,14 +576,22 @@ def _generate_from_crop(
     ``steering`` is an OPTIONAL untrusted user correction (Regenerate reason). It is
     fenced inside the prompt (prompt._steering_clause) and NEVER relaxes the verify gate —
     a steered generation still has to pass verify against the crop, so a reason cannot
-    force a hallucinated result through."""
-    if not gen_budget.take():
+    force a hallucinated result through.
+
+    BUDGET COUNTS CALLS (cost cut #3): gen_budget.take() is consumed once per ACTUAL
+    provider call (in the rung loop), and the SHARED budget passed in by the caller means
+    self-heal draws from the SAME bounded pool as the main pass — never a fresh 50."""
+    if gen_budget.remaining <= 0:
         return _HealOutcome("budget")
     dl = _download_bytes(crop_url)
     if dl is None:
         return _HealOutcome("download_error")
     ref_bytes, ref_ct = dl
+    calls_made = 0
     for provider_name in ladder:
+        if not gen_budget.take():
+            break  # shared budget exhausted mid-ladder
+        calls_made += 1
         provider = get_generation_provider(provider_name)
         result = provider.generate(
             GenerationRequest(
@@ -564,7 +625,9 @@ def _generate_from_crop(
         if not url:
             break  # passed verify but storage down -> hold for a later sweep
         return _HealOutcome("ready", url=url, cost_usd=float(result.cost_usd or 0.0))
-    return _HealOutcome("held")
+    # Budget denied before any call -> 'budget' (caller stops the sweep); a real attempt
+    # that missed -> 'held' (caller bumps the item's attempt ceiling).
+    return _HealOutcome("budget" if calls_made == 0 else "held")
 
 
 def run_generation_self_heal(
@@ -575,6 +638,7 @@ def run_generation_self_heal(
     item_limit: Optional[int] = None,
     storage_client=None,
     provider_ladder: Optional[Sequence[str]] = None,
+    gen_budget: Optional[GenerationBudget] = None,
 ) -> SelfHealStats:
     """Re-attempt generation for a user's 'pending_retry' targets. Never raises.
 
@@ -584,6 +648,15 @@ def run_generation_self_heal(
         ``exclude_sync_id`` skips a run whose candidates were JUST attempted (the commit
         that triggered this sweep), so we don't immediately re-hit its fresh failures.
       * confirmed clothing_items: photo, generation_status='pending_retry', crop present.
+
+    Both target sets exclude rows that have burned GENERATION_MAX_ATTEMPTS (cost cut #2):
+    a permanently-failing item goes terminal ('failed') after N misses and is never
+    re-selected, so a self-heal sweep stops re-billing gen + 2×verify for it every run.
+
+    ``gen_budget`` (cost cut #3): the caller (generate_background / the worker) passes the
+    SAME budget it gave run_photo_generation, so the main pass + this self-heal tail share
+    ONE bounded pool of generation calls instead of each allocating a fresh
+    GENERATION_MAX_PER_RUN. Default None -> a fresh budget (standalone / dev-script use).
 
     Idempotent + budget-capped; safe to run repeatedly. A no-op when generation isn't
     armed (no provider -> every rung returns None -> targets stay 'pending_retry')."""
@@ -599,6 +672,7 @@ def run_generation_self_heal(
             IngestCandidate.generation_status == _SELF_HEAL_STATUS,
             IngestCandidate.image_url.isnot(None),
             IngestCandidate.generated_image_url.is_(None),
+            IngestCandidate.generation_attempts < settings.GENERATION_MAX_ATTEMPTS,
         )
         if exclude_sync_id is not None:
             cand_q = cand_q.filter(IngestCandidate.sync_id != exclude_sync_id)
@@ -614,6 +688,7 @@ def run_generation_self_heal(
                     ClothingItem.source_type == "photo",
                     ClothingItem.generation_status == _SELF_HEAL_STATUS,
                     ClothingItem.image_url.isnot(None),
+                    ClothingItem.generation_attempts < settings.GENERATION_MAX_ATTEMPTS,
                 )
                 .order_by(ClothingItem.created_at.desc())
                 .limit(remaining)
@@ -628,7 +703,10 @@ def run_generation_self_heal(
         if storage_client is None:
             storage_client = _storage_from_env()
 
-        gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
+        # Cost cut #3: share the caller's bounded budget when supplied (main pass + this
+        # tail draw from ONE pool); otherwise a fresh cap for standalone/dev-script runs.
+        if gen_budget is None:
+            gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
         verify_budget = VerifyBudget(settings.GMAIL_VERIFY_MAX_PER_RUN)
         usage = UsageAccumulator()
 
@@ -652,11 +730,16 @@ def run_generation_self_heal(
             if r.url:
                 c.generated_image_url = r.url
                 c.generation_status = "ready"
+                c.generation_attempts = 0  # verified success clears the failure ledger
                 db.commit()
                 stats.ready += 1
                 stats.cost_usd += r.cost_usd
             else:
-                stats.held += 1  # left 'pending_retry' (no write)
+                # Real generate->verify miss: bump the attempt ceiling; terminal at N.
+                c.generation_attempts = (c.generation_attempts or 0) + 1
+                c.generation_status = _next_failure_status(c.generation_attempts)
+                db.commit()
+                stats.held += 1
 
         # --- confirmed items: the card IS image_url, so success replaces it --------
         if not stats.budget_stopped:
@@ -672,10 +755,15 @@ def run_generation_self_heal(
                 if r.url:
                     it.image_url = r.url
                     it.generation_status = "ready"
+                    it.generation_attempts = 0  # verified success clears the ledger
                     db.commit()
                     stats.ready += 1
                     stats.cost_usd += r.cost_usd
                 else:
+                    # Real generate->verify miss: bump the attempt ceiling; terminal at N.
+                    it.generation_attempts = (it.generation_attempts or 0) + 1
+                    it.generation_status = _next_failure_status(it.generation_attempts)
+                    db.commit()
                     stats.held += 1
 
         logger.info(
@@ -794,6 +882,7 @@ def run_item_regeneration(
         if new_url:
             item.image_url = new_url
             item.generation_status = "ready"
+            item.generation_attempts = 0  # verified success clears the failure ledger
             db.commit()
             logger.info(
                 "item regen user=%s item=%s: ready (steered=%s ref=%s)",
@@ -801,9 +890,15 @@ def run_item_regeneration(
             )
             return RegenOutcome("ready", changed=True, cost_usd=cost)
 
-        # Miss (verify fail / provider down / budget / download error): keep the current
-        # image (may be None for an image-less item); mark pending_retry for a later sweep.
-        item.generation_status = "pending_retry"
+        # Miss: keep the current image (may be None for an image-less item). A real
+        # generate->verify miss ('held') bumps the attempt ceiling and goes terminal at N
+        # (cost cut #2 — stops self-heal re-billing it); a transient miss (budget /
+        # download error) just leaves it 'pending_retry' for a later sweep.
+        if miss == "held":
+            item.generation_attempts = (item.generation_attempts or 0) + 1
+            item.generation_status = _next_failure_status(item.generation_attempts)
+        else:
+            item.generation_status = "pending_retry"
         db.commit()
         logger.info("item regen user=%s item=%s: held (%s)", user_id, item_id, miss)
         return RegenOutcome("held")

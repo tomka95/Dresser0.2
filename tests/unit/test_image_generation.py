@@ -80,6 +80,10 @@ def test_dispatch_env_selects_default_provider(monkeypatch):
 
 
 def test_dispatch_env_selects_each_provider(monkeypatch):
+    from app.services.image_generation.flux2_pro import Flux2ProProvider
+
+    _configure(monkeypatch, GENERATION_PROVIDER="flux2_pro")
+    assert isinstance(get_generation_provider(), Flux2ProProvider)
     _configure(monkeypatch, GENERATION_PROVIDER="seedream")
     assert isinstance(get_generation_provider(), SeedreamProvider)
     _configure(monkeypatch, GENERATION_PROVIDER="nano_banana")
@@ -108,6 +112,7 @@ def test_dispatch_explicit_name_overrides_env_and_flag(monkeypatch):
 def test_list_available_providers_reflects_keys(monkeypatch):
     _configure(monkeypatch, FAL_API_KEY=None)
     assert list_available_providers() == {
+        "flux2_pro": True,        # BFL FLUX.2 [pro], the rung-1 provider (BFL_API_KEY)
         "flux_kontext": True,
         "seedream": False,
         "nano_banana": True,

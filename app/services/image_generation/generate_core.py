@@ -52,8 +52,9 @@ from app.services.image_generation.base import (
 
 logger = logging.getLogger(__name__)
 
-# Same live ladder as the photo path: nano_banana first, flux_kontext on a verify-fail retry.
-_LADDER: Tuple[str, ...] = ("nano_banana", "flux_kontext")
+# Same live ladder as the photo path: FLUX.2 [pro] first (BFL, OFF the Gemini cap),
+# nano_banana (Gemini, ON-cap) only as the verify-fail retry.
+_LADDER: Tuple[str, ...] = ("flux2_pro", "nano_banana")
 _SUFFIX_BY_CT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
@@ -128,11 +129,18 @@ def generate_from_reference_bytes(
     the already-verified, SSRF-clean reference bytes it holds. Runs the provider ladder,
     gates EACH candidate on the MANDATORY verify_generated_image (which fails on any person
     in the candidate), stores the first pass. NEVER stores the reference itself. No DB
-    writes — the caller persists the returned URL. Never raises."""
+    writes — the caller persists the returned URL. Never raises.
+
+    BUDGET COUNTS CALLS (cost cut #3): gen_budget.take() is consumed once per ACTUAL
+    provider generation call (inside the rung loop), not once per candidate — so a ladder
+    that walks N rungs costs N budget units and the per-run ceiling is a real cap on
+    generation calls. Budget exhausted before any call -> 'budget'."""
     rungs = tuple(ladder or _LADDER)
-    if not gen_budget.take():
-        return GenOutcome("budget")
+    calls_made = 0
     for provider_name in rungs:
+        if not gen_budget.take():
+            break  # per-run generation-call ceiling hit mid-ladder
+        calls_made += 1
         provider = get_generation_provider(provider_name)
         result = provider.generate(
             GenerationRequest(
@@ -174,7 +182,9 @@ def generate_from_reference_bytes(
             verify_score=float(verdict.score or 0.0),
             cost_usd=float(result.cost_usd or 0.0),
         )
-    return GenOutcome("held")
+    # Budget denied before we could even attempt the first rung -> 'budget' (so callers
+    # treat it as capped, not as a verify miss). Any call made but no pass -> 'held'.
+    return GenOutcome("budget" if calls_made == 0 else "held")
 
 
 def generate_from_text(

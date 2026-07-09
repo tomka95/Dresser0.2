@@ -81,6 +81,7 @@ def _handle_photo_generation(payload: dict, should_cancel: ShouldCancel) -> None
         run_item_regeneration,
         run_photo_generation,
     )
+    from app.services.image_generation.base import GenerationBudget
 
     user_id = UUID(payload["user_id"])
     db = SessionLocal()
@@ -101,10 +102,13 @@ def _handle_photo_generation(payload: dict, should_cancel: ShouldCancel) -> None
         # yet cooperatively cancellable mid-batch (Wave 2). It still shuts down
         # promptly via the second-signal escape hatch, and the reclaim sweep +
         # _select_targets idempotency make an interrupted run safe to resume.
-        run_photo_generation(user_id, db, sync_id)
+        # Cost cut #3: one SHARED generation-call budget across the main pass + the
+        # self-heal tail (never a fresh GENERATION_MAX_PER_RUN for each).
+        gen_budget = GenerationBudget(settings.GENERATION_MAX_PER_RUN)
+        run_photo_generation(user_id, db, sync_id, gen_budget=gen_budget)
         # Opportunistic self-heal of this user's OTHER stale targets, mirroring the
         # legacy generate_background tail (exclude THIS run's fresh failures).
-        run_generation_self_heal(user_id, db, exclude_sync_id=sync_id)
+        run_generation_self_heal(user_id, db, exclude_sync_id=sync_id, gen_budget=gen_budget)
     finally:
         db.close()
 

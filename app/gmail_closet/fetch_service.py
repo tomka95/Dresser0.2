@@ -23,7 +23,7 @@ import time
 import uuid as _uuid_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, List, NamedTuple, Optional, Set, Tuple
 from uuid import UUID
 
@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.gmail_closet.gmail_oauth_client import default_since
 from app.gmail_closet.gmail_oauth_service import ensure_fresh_token
 from app.gmail_closet.receipt_filter import clothing_priority, passes_tier1_filter
@@ -119,9 +120,14 @@ def _build_query(since: datetime) -> str:
 
 
 def _list_all_ids(
-    client: httpx.Client, token: str, query: str
+    client: httpx.Client, token: str, query: str, max_messages: Optional[int] = None
 ) -> Tuple[List[str], int]:
-    """Paginate Gmail messages.list; return (all_message_ids, result_size_estimate)."""
+    """Paginate Gmail messages.list; return (all_message_ids, result_size_estimate).
+
+    ``max_messages`` (DEV-ONLY cap, #5): when set, stop paginating and truncate the id
+    list once this many ids have been collected. None (the prod default) = unbounded full
+    scan — so the cap is structurally incapable of shrinking a prod scan (the caller only
+    passes a value when GMAIL_DEV_SCAN_CAP_ENABLED is explicitly true)."""
     headers = {"Authorization": f"Bearer {token}"}
     params: dict = {"q": query, "maxResults": 500, "fields": _FIELDS_LIST}
     all_ids: List[str] = []
@@ -147,6 +153,11 @@ def _list_all_ids(
         if not estimate:
             estimate = data.get("resultSizeEstimate", 0)
         all_ids.extend(msg["id"] for msg in data.get("messages", []))
+
+        # DEV cap: stop early once we've collected enough (prod passes None -> never).
+        if max_messages is not None and len(all_ids) >= max_messages:
+            all_ids = all_ids[:max_messages]
+            break
 
         next_page = data.get("nextPageToken")
         if not next_page:
@@ -338,7 +349,21 @@ def _run_ingest_core(
             skipped=0, fetched=0, filtered=0, errors=0, elapsed=time.time() - t0,
         )
 
-    since = default_since()
+    # DEV-ONLY scan cap (#5): a dev iterating locally can bound the scan to a short window
+    # + a message ceiling so they don't fetch + LLM-extract a full 2-year mailbox. This is
+    # a PURE BOUND (no filter/extraction change) and is STRUCTURALLY off in prod — the
+    # flag defaults False, and both bounds fall back to the full scan when it is unset.
+    dev_cap_messages: Optional[int] = None
+    if settings.GMAIL_DEV_SCAN_CAP_ENABLED:
+        dev_days = max(1, int(settings.GMAIL_DEV_SCAN_MAX_DAYS))
+        since = datetime.utcnow() - timedelta(days=dev_days)
+        dev_cap_messages = max(1, int(settings.GMAIL_DEV_SCAN_MAX_MESSAGES))
+        logger.warning(
+            "sync_id=%s: DEV SCAN CAP ACTIVE — window=%dd max_messages=%d (never enable in prod)",
+            sync_id, dev_days, dev_cap_messages,
+        )
+    else:
+        since = default_since()
     query = _build_query(since)
     ga_id = google_account.id
 
@@ -357,7 +382,7 @@ def _run_ingest_core(
             # Phase 1: paginate Gmail to collect all matching message IDs
             # ----------------------------------------------------------------
             logger.info("sync_id=%s: listing message IDs...", sync_id)
-            all_ids, estimate = _list_all_ids(http, access_token, query)
+            all_ids, estimate = _list_all_ids(http, access_token, query, dev_cap_messages)
 
             logger.info(
                 "sync_id=%s: resultSizeEstimate=%d list_total=%d",

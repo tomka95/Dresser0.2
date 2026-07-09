@@ -4,14 +4,19 @@ Two passes over the S0/S1 preference substrate (preference_signals ->
 style_preferences -> style_profiles.narrative_blob). NO schema is added here; this
 is wiring over tables 0018/0020 already shipped.
 
-  1. POST-SESSION CHAT DISTILL  (distill_background / run_chat_distill)
-     After a chat turn completes, a Flash-Lite pass reads the recent transcript
-     window and mines the user's revealed tastes — BOTH positives (likes) and
-     negatives (dislikes/constraints) — plus the conversational context. Each
-     becomes an append-only ``preference_signals`` row with source='chat_inferred'.
-     A 2-3 sentence episodic session summary is written as one more signal
-     (signal_type='session_summary'). Cheap (~$0.001/session), off the response
-     path, never raises. This is the eager, per-session half.
+  1. POST-SESSION CHAT DISTILL  (run_distill_sweep -> run_chat_distill)
+     Fires ONCE PER SESSION, not per turn (cost cut #4): a dirty-session SWEEP
+     (run_distill_sweep) finds each conversation that has gone idle
+     (DISTILL_SESSION_IDLE_MINUTES with no new message) and has new content since it
+     was last mined, and runs ONE Flash-Lite pass over its transcript window. The
+     sweep is triggered off the chat response path at the next turn's tail (of any
+     conversation) and by the nightly backstop. The miner mines the user's revealed
+     tastes — BOTH positives (likes) and negatives (dislikes/constraints) — plus the
+     conversational context; each becomes an append-only ``preference_signals`` row
+     with source='chat_inferred', and a 2-3 sentence episodic summary is written as one
+     more signal (signal_type='session_summary'). Cheap (~$0.001/session — ONE miner
+     call per session, not per turn), off the response path, never raises. run_chat_distill
+     mines one conversation; distill_background remains for direct/single-conversation use.
 
   2. NIGHTLY RE-DISTILL  (run_redistill / scripts.dev_redistill)
      Batch pass, cron- or hand-run:
@@ -50,10 +55,17 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import ChatMessage, PreferenceSignal, StylePreference, StyleProfile
+from app.models import (
+    ChatMessage,
+    Conversation,
+    PreferenceSignal,
+    StylePreference,
+    StyleProfile,
+)
 from app.services.stylist.costs import chat_gemini_cost, usage_tokens
 from app.services.stylist.persistence import recent_messages
 
@@ -266,12 +278,17 @@ def _mine_transcript(provider, transcript: str):
 
 
 def run_chat_distill(
-    db: Session, user_id: UUID, conversation_id: UUID, *, provider=None
+    db: Session, user_id: UUID, conversation_id: UUID, *, provider=None,
+    message_window: Optional[int] = None,
 ) -> DistillStats:
     """Mine one conversation's recent window into preference_signals + a summary.
 
     Appends rows only (source='chat_inferred'); the caller owns the transaction.
     Never raises — a distill miss must never affect the chat turn that spawned it.
+
+    ``message_window`` overrides how many trailing messages the miner reads (default
+    DISTILL_MESSAGE_WINDOW). The session-end sweep passes the deeper
+    DISTILL_SESSION_MESSAGE_WINDOW so a whole session is mined in the single call.
     """
     t0 = time.time()
     stats = DistillStats(user_id=user_id, conversation_id=conversation_id)
@@ -281,7 +298,8 @@ def run_chat_distill(
             return stats
 
         messages = recent_messages(
-            db, user_id, conversation_id, limit=settings.DISTILL_MESSAGE_WINDOW
+            db, user_id, conversation_id,
+            limit=message_window or settings.DISTILL_MESSAGE_WINDOW,
         )
         stats.messages_seen = len(messages)
         # Need at least one user message with content to mine anything.
@@ -373,6 +391,156 @@ def distill_background(user_id_str: str, conversation_id_str: str) -> None:
             run_chat_distill(db, user_id, conversation_id)
     except Exception as exc:  # incl. RlsSetupError — best-effort, never propagate
         logger.error("distill_background: unhandled %s: %s", type(exc).__name__, exc)
+
+
+# ---------------------------------------------------------------------------
+# Dirty-session sweep — distill each ENDED conversation exactly once (cost cut #4)
+# ---------------------------------------------------------------------------
+@dataclass
+class DistillSweepStats:
+    user_id: UUID
+    sessions_idle: int = 0        # idle conversations examined
+    sessions_distilled: int = 0   # dirty sessions mined this sweep
+    signals_written: int = 0
+    cost_usd: float = 0.0
+    skipped_reason: Optional[str] = None
+
+
+def _last_distilled_at(db: Session, user_id: UUID, conv_ids: List[UUID]) -> Dict[str, datetime]:
+    """conversation_id (str) -> the newest distill-signal timestamp for it.
+
+    A conversation whose last message is NEWER than this marker (or which has no marker)
+    still has un-mined content — it is 'dirty'. Distilling it appends signals stamped
+    'now' (> its last message), which advances the marker, so a subsequent sweep sees it
+    as clean: distillation fires exactly ONCE per session (until new messages arrive)."""
+    if not conv_ids:
+        return {}
+    rows = (
+        db.query(PreferenceSignal.evidence_ref, func.max(PreferenceSignal.created_at))
+        .filter(
+            PreferenceSignal.user_id == user_id,
+            PreferenceSignal.signal_type.in_(
+                (_SIGNAL_TYPE_DISTILLED, _SIGNAL_TYPE_SESSION_SUMMARY)
+            ),
+            PreferenceSignal.evidence_ref.in_([str(cid) for cid in conv_ids]),
+        )
+        .group_by(PreferenceSignal.evidence_ref)
+        .all()
+    )
+    return {ref: ts for ref, ts in rows if ref is not None and ts is not None}
+
+
+def run_distill_sweep(
+    db: Session,
+    user_id: UUID,
+    *,
+    active_conversation_id: Optional[UUID] = None,
+    now: Optional[datetime] = None,
+) -> DistillSweepStats:
+    """Distill every ENDED-but-not-yet-mined conversation for one user, ONCE each.
+
+    A conversation is a target when it (a) has gone idle — no new message for
+    DISTILL_SESSION_IDLE_MINUTES — so the session is effectively over; (b) is not the
+    currently-active conversation (``active_conversation_id``, still in session); and
+    (c) is DIRTY — its last message is newer than the last distillation of it (or it was
+    never distilled). Bounded to DISTILL_SWEEP_MAX_SESSIONS sessions per sweep. The caller
+    owns the transaction boundary; each distilled session is committed individually so a
+    later failure never loses an already-mined one. Never raises.
+
+    'no signals dropped' vs the old per-turn firing: run_chat_distill mines the same
+    trailing DISTILL_MESSAGE_WINDOW it always did — the full session up to that window is
+    mined once at the end instead of re-mined every turn, so nothing a per-turn pass would
+    have captured is lost; only the duplicate re-mining (and its cost) is removed."""
+    stats = DistillSweepStats(user_id=user_id)
+    try:
+        if not distill_armed():
+            stats.skipped_reason = "disarmed"
+            return stats
+        now = _as_naive_utc(_now(now))
+        idle_cutoff = now - timedelta(minutes=settings.DISTILL_SESSION_IDLE_MINUTES)
+        cap = settings.DISTILL_SWEEP_MAX_SESSIONS
+
+        q = db.query(Conversation).filter(
+            Conversation.user_id == user_id,
+            Conversation.updated_at <= idle_cutoff,
+        )
+        if active_conversation_id is not None:
+            q = q.filter(Conversation.id != active_conversation_id)
+        # A little headroom over the cap so already-distilled idle rows don't crowd out
+        # dirty ones; we distill at most `cap` of the dirty survivors.
+        idle_convs = q.order_by(Conversation.updated_at.desc()).limit(cap * 3).all()
+        stats.sessions_idle = len(idle_convs)
+        if not idle_convs:
+            return stats
+
+        markers = _last_distilled_at(db, user_id, [c.id for c in idle_convs])
+        dirty = [
+            c for c in idle_convs
+            if (
+                markers.get(str(c.id)) is None
+                or _as_naive_utc(markers[str(c.id)]) < _as_naive_utc(c.updated_at)
+            )
+        ][:cap]
+
+        for conv in dirty:
+            # Deeper window than the per-turn default: mine the whole session in one call.
+            sub = run_chat_distill(
+                db, user_id, conv.id,
+                message_window=settings.DISTILL_SESSION_MESSAGE_WINDOW,
+            )
+            if sub.signals_written or sub.summary_written:
+                db.commit()  # advance the marker so this session is never re-mined
+                stats.sessions_distilled += 1
+                stats.signals_written += sub.signals_written
+                stats.cost_usd += sub.cost_usd
+            else:
+                # Nothing minable (empty/no-user-content) or a miner miss: no signal was
+                # written, so leave the marker as-is (a later sweep is cheap — run_chat_distill
+                # short-circuits before any LLM call when there is no user content).
+                db.rollback()
+        logger.info(
+            "distill sweep user=%s idle=%d distilled=%d signals=%d cost=$%.5f",
+            user_id, stats.sessions_idle, stats.sessions_distilled,
+            stats.signals_written, stats.cost_usd,
+        )
+        return stats
+    except Exception as exc:  # sweep is best-effort — never crash the caller
+        logger.error("distill sweep user=%s: %s: %s", user_id, type(exc).__name__, exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        stats.skipped_reason = "error"
+        return stats
+
+
+def distill_sweep_background(
+    user_id_str: str, active_conversation_id_str: Optional[str] = None
+) -> None:
+    """Background entry point — fired at a chat turn's tail (own RLS-scoped thread).
+
+    Sweeps the user's OTHER idle+dirty conversations (never the one still active), mining
+    each ended session exactly once. Opens its own RLS-scoped session (decoupled from the
+    request session), commits per session, never raises."""
+    if not distill_armed():
+        return
+    from app.services.stylist.rls import rls_scoped_session
+
+    try:
+        user_id = UUID(user_id_str)
+    except (ValueError, TypeError):
+        return
+    active_id: Optional[UUID] = None
+    if active_conversation_id_str:
+        try:
+            active_id = UUID(active_conversation_id_str)
+        except (ValueError, TypeError):
+            active_id = None
+    try:
+        with rls_scoped_session(user_id) as db:
+            run_distill_sweep(db, user_id, active_conversation_id=active_id)
+    except Exception as exc:  # incl. RlsSetupError — best-effort, never propagate
+        logger.error("distill_sweep_background: unhandled %s: %s", type(exc).__name__, exc)
 
 
 # ===========================================================================

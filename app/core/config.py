@@ -148,10 +148,12 @@ class Settings(BaseSettings):
     # decides whether one is shown. Ships disabled with a NullGenerationProvider;
     # nothing in the product flow calls the seam yet (the bake-off script does).
     GENERATION_ENABLED: bool = False
-    # Which provider get_generation_provider() dispatches to:
-    # 'flux_kontext' (BFL, the default) | 'seedream' (fal.ai) | 'nano_banana'
-    # (Gemini image gen, reuses GEMINI_API_KEY). Unknown/keyless -> Null.
-    GENERATION_PROVIDER: str = "flux_kontext"
+    # Which provider get_generation_provider() dispatches to (single-provider default;
+    # the live ladders name their rungs explicitly):
+    # 'flux2_pro' (BFL FLUX.2 [pro], the default rung-1) | 'flux_kontext' (BFL FLUX.1
+    # Kontext [pro], kept selectable) | 'seedream' (fal.ai) | 'nano_banana' (Gemini
+    # image gen, reuses GEMINI_API_KEY). Unknown/keyless -> Null.
+    GENERATION_PROVIDER: str = "flux2_pro"
     BFL_API_KEY: Optional[str] = None
     FAL_API_KEY: Optional[str] = None
     # Gemini image model behind the nano_banana provider ("Nano Banana Pro").
@@ -168,9 +170,21 @@ class Settings(BaseSettings):
     GENERATION_MAX_CONCURRENCY: int = 6
     # Editable per-IMAGE USD rates (same idea as the per-1M token rates above):
     # GenerationResult.cost_usd reads straight from these; bump on price change.
+    # FLUX.2 [pro] (BFL, the rung-1 provider) is megapixel-priced: $0.03 for the first
+    # output MP + $0.015/MP after, plus $0.015/MP for each reference (input) image.
+    # Our flows always pass ONE ~1MP garment reference and produce a ~1MP card, so the
+    # realistic per-image cost is $0.03 (output) + $0.015 (1 ref) = $0.045. Billed to
+    # BFL_API_KEY (OFF the Gemini cap). nano_banana stays the on-cap rung-2 retry.
+    FLUX2_PRO_USD_PER_IMAGE: float = 0.045
     FLUX_KONTEXT_USD_PER_IMAGE: float = 0.04
     SEEDREAM_USD_PER_IMAGE: float = 0.03
     NANO_BANANA_USD_PER_IMAGE: float = 0.134
+    # Self-heal attempt ceiling (P2 cost cut): after this many FAILED generate→verify
+    # attempts a target goes terminal (generation_status='failed') instead of perpetual
+    # 'pending_retry', so a permanently-failing item stops being re-selected — and
+    # re-billed gen + 2×verify — by every self-heal sweep. Genuinely-transient misses
+    # (download error, budget, provider down) do NOT count toward this ceiling.
+    GENERATION_MAX_ATTEMPTS: int = 3
 
     # --- Background image fill + self-heal (Phase 4) -----------------------
     # The slow image tiers (og:image / feed / search) and the cross-user self-heal
@@ -192,6 +206,16 @@ class Settings(BaseSettings):
     # (MAX_YEARS_TO_SCAN) and could raise on years <= 0.
     GMAIL_MAX_YEARS: float = 2.0
     GMAIL_IMAP_TIMEOUT: int = 30
+    # DEV-ONLY Gmail scan cap (cost cut #5). When GMAIL_DEV_SCAN_CAP_ENABLED is True the
+    # receipt scan is bounded to at most GMAIL_DEV_SCAN_MAX_MESSAGES message IDs and a
+    # GMAIL_DEV_SCAN_MAX_DAYS window — so a dev iterating locally doesn't fetch + LLM-
+    # extract a full 2-year mailbox. This is a PURE BOUND: no extraction/filter logic
+    # changes. It is STRUCTURALLY off in prod — the flag defaults False, and every code
+    # path that reads it falls back to the full scan (default_since / unbounded paging)
+    # when it is unset. NEVER enable in a prod config.
+    GMAIL_DEV_SCAN_CAP_ENABLED: bool = False
+    GMAIL_DEV_SCAN_MAX_MESSAGES: int = 20
+    GMAIL_DEV_SCAN_MAX_DAYS: int = 90
 
     # --- AI Stylist (Wave S0) ----------------------------------------------
     # Model seams for the Stylist. Branch A only defines them (nothing reads these
@@ -341,6 +365,12 @@ class Settings(BaseSettings):
     # long turn's cost + write volume).
     DISTILL_MESSAGE_WINDOW: int = 12
     DISTILL_MAX_SIGNALS_PER_SESSION: int = 12
+    # Session-end mine depth (cost cut #4). Because distillation now fires ONCE per session
+    # (not per turn), the single end-of-session pass reads a DEEPER trailing window than the
+    # per-turn default so a whole typical session is mined in one call — nothing an earlier
+    # per-turn pass would have seen (before it scrolled out of the 12-msg window) is dropped.
+    # Still one cheap Lite call per session (~$0.001).
+    DISTILL_SESSION_MESSAGE_WINDOW: int = 40
     # Confidence decay (nightly): a preference loses half its confidence every
     # HALFLIFE_DAYS it goes un-reinforced (Δt measured from last_seen_at). λ =
     # ln(2)/HALFLIFE_DAYS; confidence *= exp(-λ·Δt_days). An INFERRED preference
@@ -360,6 +390,14 @@ class Settings(BaseSettings):
     # this caps total narrative calls across an --all sweep (cost guard, mirrors
     # ENRICHMENT_MAX_LLM_CALLS_PER_RUN). Decay + recompute are pure-Python + free.
     DISTILL_MAX_NARRATIVE_CALLS_PER_RUN: int = 1000
+    # Chat distillation fires ONCE PER SESSION, not per turn (cost cut P?/PRD spec —
+    # ~$0.001/session, not ~$0.001 × every turn). A conversation is "ended" once it has
+    # gone IDLE for this many minutes with no new message; a dirty-session sweep (run off
+    # the chat response path at the next turn's tail, plus the nightly backstop) then
+    # distills each ended-but-not-yet-distilled conversation exactly once. Bounds how many
+    # such sessions one sweep mines (cost guard; each is one Lite miner call).
+    DISTILL_SESSION_IDLE_MINUTES: int = 30
+    DISTILL_SWEEP_MAX_SESSIONS: int = 20
 
     # --- Durable job queue (P3.8, ARCHITECTURE_AUDIT R1, Wave 1) ------------
     # A Postgres-native durable queue (jobs table, claimed via FOR UPDATE SKIP
