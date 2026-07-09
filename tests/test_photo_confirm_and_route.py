@@ -302,8 +302,17 @@ def test_route_detect_requires_auth(client):
 def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     """Full Wave-1.5 loop: detect -> select region -> commit -> the staged candidate
     appears via the SHARED deck endpoint, scoped to the commit's sync_id (stale
-    candidates from other runs excluded) — the confirm spine is untouched."""
+    candidates from other runs excluded) — the confirm spine is untouched.
+
+    Generation is DISARMED for determinism: with real provider keys in the local .env,
+    TestClient's synchronous BackgroundTasks would otherwise make live generation +
+    verify + storage calls whose verdicts (and therefore the candidate's final
+    pipeline_state) are nondeterministic. This test covers the COMMIT contract; the
+    generation state machine has its own fully-faked suites."""
     import uuid
+    from app.photo_closet import generation_service as gen_service
+
+    monkeypatch.setattr(gen_service, "generation_armed", lambda: False)
     user, headers = _auth(db, "scope@example.com")
 
     # A stale, image-less pending Gmail candidate from an earlier run.

@@ -1,9 +1,13 @@
 """Wave 2 background product-image generation for photo candidates.
 
 SQLite DB; the provider seam, the verify gate, cutout download and blob storage are all
-faked so these tests exercise ONLY the orchestration: the nano->flux ladder, the
+faked so these tests exercise ONLY the orchestration: the flux2->nano ladder, the
 mandatory fidelity gate, per-candidate lifecycle writes, run counters + deferred
-finalization, budget cap, and idempotency."""
+finalization, budget cap, and idempotency.
+
+Photo-seam Phase 1: generation/verify/store now run inside the ONE shared core
+(app.services.image_generation.generate_core), so the provider + verify + store fakes
+patch THAT module; only the cutout download stays a photo-module seam."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -15,6 +19,7 @@ from app.db import Base, SessionLocal, engine
 from app.models import ClothingItem, IngestCandidate, IngestRun, User
 from app.gmail_closet.image_verify import VerifyVerdict
 from app.photo_closet import generation_service as gen
+from app.services.image_generation import generate_core as core
 from app.services.image_generation.base import GenerationResult
 
 
@@ -74,16 +79,17 @@ def _skipped() -> VerifyVerdict:
 
 
 def _providers(monkeypatch, mapping):
-    monkeypatch.setattr(gen, "get_generation_provider", lambda name=None: mapping[name])
+    # Shared seam: the rung loop lives in generate_core now.
+    monkeypatch.setattr(core, "get_generation_provider", lambda name=None: mapping[name])
     return mapping
 
 
 def _verify(monkeypatch, fn):
-    monkeypatch.setattr(gen, "verify_generated_image", fn)
+    monkeypatch.setattr(core, "verify_generated_image", fn)
 
 
 def _seams(monkeypatch, download=(b"cut", "image/jpeg"), store="https://blob/gen.png"):
-    """Fake cutout download + blob store; return a call-count dict for the store."""
+    """Fake cutout download (photo module) + blob store (shared core)."""
     monkeypatch.setattr(gen, "_download_bytes", lambda url: download)
     calls = {"store": 0}
 
@@ -91,15 +97,18 @@ def _seams(monkeypatch, download=(b"cut", "image/jpeg"), store="https://blob/gen
         calls["store"] += 1
         return store
 
-    monkeypatch.setattr(gen, "_store_generated", _store)
+    monkeypatch.setattr(core, "_store", _store)
     return calls
 
 
 def _stage(db, user, sync_id, **over):
+    # size present by default: the shared readiness invariant (mark_candidate_ready)
+    # requires size present-or-sizeless for 'ready'; staging normally defaults it from
+    # the user's onboarding facts. Sizeless-hold behavior has its own dedicated test.
     fields = dict(
         user_id=user.id, sync_id=sync_id, source_type="photo", status="pending",
         image_url="https://blob/cut.jpg", image_status="user_uploaded",
-        name="Tee", category="top", color="red", generation_status=None,
+        name="Tee", category="top", color="red", size="M", generation_status=None,
     )
     fields.update(over)
     c = IngestCandidate(**fields)

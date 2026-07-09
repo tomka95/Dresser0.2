@@ -42,6 +42,8 @@ from app.core.config import settings
 from app.models import IngestCandidate, IngestRun, PhotoDetectSession, ProcessedUpload
 from app.photo_closet.cutout import build_cutout
 from app.photo_closet.dedup import dedup_check
+from app.services.closet_canonicalize import default_size_for_category, load_user_facts
+from app.services.readiness import advance, mark_candidate_ready, tags_ready
 from app.photo_closet.detection import (
     DetectionResult,
     GarmentCategory,
@@ -193,7 +195,7 @@ def _is_duplicate_upload(db: Session, user_id: UUID, sanitized: SanitizedImage) 
 
 def _stage_candidate(
     db: Session, user_id: UUID, sync_id: UUID, garment, image_url: Optional[str],
-    source_line_key: str, *, on_model: bool = False,
+    source_line_key: str, *, on_model: bool = False, facts: Optional[dict] = None,
 ) -> IngestCandidate:
     """Upsert one garment as a pending photo candidate on UNIQUE(user_id, source_line_key).
 
@@ -204,6 +206,11 @@ def _stage_candidate(
     ``on_model`` (G6): the source photo had a person (person_count>=1), so this cutout
     contains a person. It's kept only as the generation reference; the display layer masks
     it until a verified person-free card lands.
+
+    ``facts`` (Photo-seam Phase 1, stage-time canonicalize-lite): the user's onboarding
+    facts — a photo can't reveal a size, so the size defaults from facts.sizes exactly
+    like the Gmail fill pass does. The shared readiness invariant requires size
+    present-or-sizeless before a candidate may go 'ready'.
     """
     conf = garment.confidence
     confidence_json = {
@@ -214,6 +221,7 @@ def _stage_candidate(
             "color": conf.color,
         }
     }
+    category = garment.category.value
     fields = dict(
         sync_id=sync_id,
         message_id=None,
@@ -221,9 +229,10 @@ def _stage_candidate(
         seen_count=1,
         name=garment.name,
         brand=garment.brand,
-        category=garment.category.value,
+        category=category,
         color=garment.color,
-        size=None,
+        # Stage-time canonicalize-lite (same lookup the Gmail fill + confirm use).
+        size=default_size_for_category((facts or {}).get("sizes"), category),
         image_url=image_url,
         image_status="user_uploaded",
         source_type="photo",
@@ -247,13 +256,26 @@ def _stage_candidate(
         .first()
     )
     if existing is not None:
+        was_ready = existing.pipeline_state == "ready"
         for k, v in fields.items():
             setattr(existing, k, v)
         # A re-staged candidate that already carries a VERIFIED generated card stays
-        # 'ready' — resetting it to 'staged' would hide it from the ready-gated deck
-        # forever (generation never re-selects generation_status='ready' rows).
+        # visible — resetting it to 'staged' would hide it from the ready-gated deck
+        # forever (generation never re-selects generation_status='ready' rows). Restored
+        # through the SHARED readiness machine: the retained card is verified person-free
+        # by construction (so person_status goes affirmative WITH it — previously this
+        # re-set 'ready' while the fields overwrite left person_status='person_present',
+        # resurrecting a ready+person_present row, the exact inconsistency the shared
+        # invariant forbids), and 'ready' via mark_candidate_ready. A row that was
+        # ALREADY terminal-ready keeps 'ready' even if its tags are legacy-incomplete —
+        # terminal states never regress on a re-upload of the same photo.
         if existing.generation_status == "ready" and existing.generated_image_url:
-            existing.pipeline_state = "ready"
+            existing.person_status = "person_free"
+            advance(existing, "verified_clean")
+            if tags_ready(existing):
+                mark_candidate_ready(existing)
+            elif was_ready:
+                existing.pipeline_state = "ready"  # terminal immutability
         return existing
 
     cand = IngestCandidate(
@@ -563,6 +585,9 @@ def run_photo_commit(
     db.commit()
 
     result = PhotoCommitResult(sync_id=str(sync_id))
+    # Stage-time canonicalize-lite: one facts load per commit feeds every staged
+    # candidate's size default (the shared readiness invariant needs size-or-sizeless).
+    facts = load_user_facts(db, user_id)
     try:
         for selection, session in loaded:
             sanitized = sanitized_by_sha[session.image_sha256]
@@ -603,7 +628,7 @@ def run_photo_commit(
                 # person — flag them so the crop is never displayed, only used as the gen ref.
                 cand = _stage_candidate(
                     db, user_id, sync_id, garment, image_url, slk,
-                    on_model=session.person_count >= 1,
+                    on_model=session.person_count >= 1, facts=facts,
                 )
                 db.flush()  # assign cand.id before the dedup seam inspects it
                 # Wired dedup seam (currently a no-op 'unique' stub). The real matcher
@@ -639,7 +664,7 @@ def run_photo_commit(
                 slk = _source_line_key(session.image_sha256, box)
                 cand = _stage_candidate(
                     db, user_id, sync_id, described, image_url, slk,
-                    on_model=session.person_count >= 1,
+                    on_model=session.person_count >= 1, facts=facts,
                 )
                 db.flush()
                 dedup_check(db, user_id, cand)
