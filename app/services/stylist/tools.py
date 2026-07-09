@@ -497,7 +497,7 @@ TOOL_LABELS = {
     "add_photo_to_closet": "adding to your closet…",
     "product_search": "searching the shops…",
     "weather": "checking the weather…",
-    "compose_outfit": "composing an outfit…",
+    "compose_outfit": "tailoring an outfit…",
     "save_outfit": "saving your outfit…",
     "record_preference": "noting your taste…",
 }
