@@ -351,17 +351,23 @@ def get_pending_review(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PendingReviewOut:
-    """Home banner feed: the newest completed run whose WHOLE batch is READY and that the
-    user hasn't opened/dismissed. pending=False otherwise.
+    """Home banner feed: the newest completed run whose WHOLE batch is TERMINAL and that
+    the user hasn't opened/dismissed. pending=False otherwise.
 
-    READY-FIRST settle condition (Phase 1): a run surfaces ONLY when every pending
-    candidate in it has pipeline_state='ready' — tag-complete with a verified,
-    person-free image — or is terminally 'failed' (a failed candidate is EXCLUDED from
-    the batch: it neither blocks the banner forever nor appears in the deck). The old
-    generation-counter clause is replaced: it was vacuously true for Gmail runs
-    (generation_total stayed 0), which let the banner surface half-imaged batches.
-    ready_count counts ONLY the ready candidates — the number the deck will actually
-    serve. An empty inbox produces zero ready candidates -> pending=False.
+    READY-FIRST settle condition (final, Phase 3): a run surfaces ONLY when EVERY pending
+    candidate in it has reached a TERMINAL pipeline_state — 'ready' (tag-complete with a
+    verified, person-free, stored image) or 'failed' (excluded from the batch: it neither
+    blocks the banner forever nor appears in the deck) — AND at least one is 'ready'. Any
+    candidate still mid-pipeline (staged/canonicalized/image_pending/image_generated/
+    verified_clean) withholds the banner. An all-'failed' batch surfaces NOTHING — silent,
+    same as an empty inbox. ready_count counts ONLY the ready candidates — exactly what
+    the deck will serve.
+
+    RACE-FREE: 'ready' is written by mark_candidate_ready in the same transaction as (and
+    only after validating) the image/person/tag fields it asserts, so a committed 'ready'
+    row is always fully written; an uncommitted one is invisible to this read. Server-
+    driven + show-once: state lives here (review_surfaced_at / review_dismissed_at), so
+    the banner survives device switches and never re-nags after open/dismiss.
     JWT-pinned; only the caller's own runs. Read-only (opening/dismissing is POST ack)."""
     runs = (
         db.query(IngestRun)

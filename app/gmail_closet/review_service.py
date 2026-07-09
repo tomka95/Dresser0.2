@@ -185,6 +185,23 @@ def list_pending_candidates(
     if sync_id is not None:
         q = q.filter(IngestCandidate.sync_id == sync_id)
 
+    # Observability (Phase 3): terminally-failed candidates are silently EXCLUDED from
+    # the deck (no user-facing error) — log their count so a quietly shrinking batch is
+    # visible in ops. ids+counts only, never names/content.
+    failed_q = db.query(func.count(IngestCandidate.id)).filter(
+        IngestCandidate.user_id == user_id,
+        IngestCandidate.status == "pending",
+        IngestCandidate.pipeline_state == "failed",
+    )
+    if sync_id is not None:
+        failed_q = failed_q.filter(IngestCandidate.sync_id == sync_id)
+    failed_count = failed_q.scalar() or 0
+    if failed_count:
+        logger.info(
+            "deck user=%s sync=%s: %d terminally-failed candidate(s) excluded",
+            user_id, sync_id or "*", failed_count,
+        )
+
     rows = (
         q
         .order_by(
