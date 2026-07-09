@@ -141,8 +141,9 @@ def test_flux2_pass_stores_ready(db, user, monkeypatch):
     db.refresh(c)
     assert c.generation_status == "ready"
     assert c.generated_image_url == "https://blob/gen.png"
-    assert c.image_url == "https://blob/cut.jpg"       # crop never overwritten
-    assert c.image_status == "user_uploaded"           # image_status untouched
+    # Photo-seam Phase 5 (raw-crop purge): the card replaced the crop's only purpose —
+    # the reference pointer is nulled so no query can ever resolve to the raw crop.
+    assert c.image_url is None
     assert flux2.calls == 1 and nano.calls == 0        # flux2 (rung-1) passed -> no fallback
     run = _run(db, sync)
     assert run.status == "completed" and run.finished_at is not None
@@ -332,7 +333,7 @@ def test_concurrent_all_ready_counts_are_race_safe(db, user, monkeypatch):
         db.refresh(c)
         assert c.generation_status == "ready"
         assert c.generated_image_url == "https://blob/gen.png"
-        assert c.image_url == "https://blob/cut.jpg"   # crop never overwritten
+        assert c.image_url is None                     # Phase 5: crop purged with the card
     assert nano.calls == 0                              # flux2 (rung-1) passed every one
     run = _run(db, sync)
     assert run.status == "completed"
@@ -414,7 +415,7 @@ def test_self_heal_candidate_regenerates(db, user, monkeypatch):
     db.refresh(c)
     assert c.generation_status == "ready"
     assert c.generated_image_url == "https://blob/gen.png"
-    assert c.image_url == "https://blob/cut.jpg"        # crop (source) untouched
+    assert c.image_url is None                          # Phase 5: crop purged with the card
     assert stats.candidates_seen == 1 and stats.ready == 1 and stats.held == 0
 
 

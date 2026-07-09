@@ -63,10 +63,12 @@ def test_candidate_view_masks_on_model_while_generating():
     assert view["image_url"] is None
 
 
-def test_candidate_view_shows_flatlay_crop():
-    # A flat-lay photo (no person) is safe to show as before.
+def test_candidate_view_never_emits_photo_crop():
+    """Photo-seam Phase 5 (display purity): a PHOTO candidate's image_url is a raw
+    source crop — a generation reference, never a display source — so the deck payload
+    NEVER carries it, even for a person-free flat-lay. The card is generated_image_url."""
     view = _candidate_to_view(_cand(on_model=False, person_status="person_free", generation_status="pending_retry"), None)
-    assert view["image_url"] == "https://cdn/crop-with-person.jpg"  # here: a clean flat-lay crop
+    assert view["image_url"] is None
     assert view["on_model"] is False
 
 
@@ -95,9 +97,13 @@ def test_closet_read_shows_generated_card_when_ready():
     assert _get_image_url(it) == "https://cdn/clean-card.jpg"
 
 
-def test_closet_read_shows_flatlay_crop():
+def test_closet_read_masks_flatlay_crop_until_card_ready():
+    """Photo-seam Phase 5: GENERATED-CARD-ONLY for photo items — even a person-free
+    flat-lay crop is a raw source, masked until the verified card is ready."""
     it = _item(on_model=False, person_status="person_free", generation_status="pending_retry", image_url="https://cdn/flatlay.jpg")
-    assert _get_image_url(it) == "https://cdn/flatlay.jpg"
+    assert _get_image_url(it) is None
+    ready = _item(on_model=False, person_status="person_free", generation_status="ready", image_url="https://cdn/card.jpg")
+    assert _get_image_url(ready) == "https://cdn/card.jpg"
 
 
 # --------------------------------------------------------------------------- stage flag
@@ -147,7 +153,11 @@ def test_shared_display_mask_helper():
     assert display_image_url(_item(on_model=True, generation_status="pending_retry")) is None
     assert display_image_url(_item(on_model=True, generation_status=None)) is None
     assert display_image_url(_item(on_model=True, generation_status="ready", image_url="card")) == "card"
-    assert display_image_url(_item(on_model=False, person_status="person_free", generation_status="pending_retry", image_url="flat")) == "flat"
+    # Photo-seam Phase 5: GENERATED-CARD-ONLY for photo items — a person-free raw
+    # flat-lay crop is a generation reference, never a display source.
+    assert display_image_url(_item(on_model=False, person_status="person_free", generation_status="pending_retry", image_url="flat")) is None
+    # A gmail item's verified resolved image still shows on an affirmative person_free.
+    assert display_image_url(_item(source_type="gmail", on_model=False, person_status="person_free", generation_status=None, image_url="retailer")) == "retailer"
     # Ready-first Phase 1: FAIL-CLOSED — an item whose person status was never determined
     # ('unknown') is masked exactly like a person_present one.
     assert display_image_url(_item(on_model=False, person_status="unknown", generation_status=None, image_url="never-checked")) is None
@@ -171,8 +181,9 @@ def test_retrieval_serialize_item_masks_on_model():
     assert masked["imageUrl"] is None
     shown = serialize_item(_item(on_model=True, generation_status="ready", image_url="clean-card"))
     assert shown["imageUrl"] == "clean-card"
+    # Phase 5: even a person-free photo crop is masked until the card is ready.
     flat = serialize_item(_item(on_model=False, person_status="person_free", generation_status="pending_retry", image_url="flatlay"))
-    assert flat["imageUrl"] == "flatlay"
+    assert flat["imageUrl"] is None
 
 
 # --------------------------------------------------------------------------- C2: confirm never stores a 'ready' crop

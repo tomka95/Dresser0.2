@@ -120,13 +120,19 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         "currency": c.currency,
         "order_date": c.order_date.isoformat() if c.order_date else None,
         "is_return": bool(c.is_return),
-        # FAIL-CLOSED person mask (ready-first Phase 1). On a CANDIDATE image_url is ALWAYS
-        # the raw source image (the verified card lives separately in generated_image_url),
-        # so it is sent ONLY on an AFFIRMATIVE person_free verdict. 'unknown' (no detector
-        # ever ran — every legacy Gmail row) and 'person_present' are masked identically:
-        # the deck shows the generated card once ready, a neutral placeholder until then.
-        # "Unchecked" can never again read as "clean".
-        "image_url": c.image_url if c.person_status == "person_free" else None,
+        # DISPLAY PURITY (Photo-seam Phase 5). On a photo/manual CANDIDATE image_url is
+        # ALWAYS the raw source crop / uploaded reference — a GENERATION REFERENCE,
+        # never a display source — so it is NEVER emitted for those sources (this also
+        # closes the old leak where a person-containing crop URL rode along in the
+        # payload after generation flipped person_status to person_free). The deck
+        # shows generated_image_url once ready, a neutral panel until then. A gmail
+        # candidate's image_url IS its verified resolved product image: sent only on
+        # an AFFIRMATIVE person_free verdict; 'unknown'/'person_present' stay masked.
+        "image_url": (
+            c.image_url
+            if (c.source_type or "gmail") == "gmail" and c.person_status == "person_free"
+            else None
+        ),
         "on_model": bool(c.on_model),
         "person_status": c.person_status,
         "pipeline_state": c.pipeline_state,

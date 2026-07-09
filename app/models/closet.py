@@ -19,18 +19,29 @@ from app.models._shared import _jsonb, _text_array, _tstz
 
 
 def display_image_url(item) -> Optional[str]:
-    """The clothing item's image_url that is SAFE TO DISPLAY, or None.
+    """The clothing item's image_url that is SAFE TO DISPLAY, or None (placeholder).
 
-    THE single person-safety mask every display surface must go through — closet
-    list/detail, the stylist retrieval serialization, and the Today's-Look / lookbook
-    collages. FAIL-CLOSED (ready-first Phase 1): an image is shown ONLY when one of two
-    AFFIRMATIVE signals holds —
-      * generation_status='ready': image_url IS the verified generated card (the pair
-        verify hard-fails person_present, so a ready card is person-free by construction);
-      * person_status='person_free': a detector affirmatively determined no person.
-    Everything else — person_status='unknown' (detector never ran; ALL legacy Gmail rows),
-    'person_present', or any non-ready generation state — returns None. "Unchecked" can
-    never again read as "clean"."""
+    THE single display gate every surface must go through — closet list/detail, the
+    stylist retrieval serialization, and the Today's-Look / lookbook collages.
+    FAIL-CLOSED, and since Photo-seam Phase 5 GENERATED-CARD-ONLY for the photo/manual
+    sources:
+
+      * source_type 'photo'/'manual': the image shows ONLY when generation_status=
+        'ready' — image_url then IS the verified, invariant-compliant generated card
+        (the writers replace the crop with the card in the same transaction; the pair
+        verify hard-fails person_present/extra-items/background/framing). Any other
+        state (pending_retry, failed, generating, legacy person_free RAW CROPS) →
+        None. A raw source crop is a GENERATION REFERENCE, never a display source.
+
+      * source_type 'gmail' (default): the resolved, verified retailer/email product
+        image is the card; it shows only on an AFFIRMATIVE person_free verdict (or a
+        ready generated card from the on-model routing). 'unknown' (no verify ever
+        ran) and 'person_present' stay masked — "unchecked" never reads as "clean".
+    """
+    if (getattr(item, "source_type", None) or "gmail") in ("photo", "manual"):
+        if getattr(item, "generation_status", None) == "ready":
+            return item.image_url
+        return None
     if getattr(item, "generation_status", None) == "ready":
         return item.image_url
     if getattr(item, "person_status", None) == "person_free":

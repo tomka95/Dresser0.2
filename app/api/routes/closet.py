@@ -140,42 +140,14 @@ class ClosetItemOut(BaseModel):
 
 
 def _get_image_url(item: ClothingItem) -> Optional[str]:
-    """Get image URL for item, preferring clothing_items.image_url, then primary ItemImage.
-    
-    Optimized: Uses eagerly-loaded images relationship if available (no DB query).
-    Falls back to lazy loading if images relationship not yet loaded.
-    
-    Args:
-        item: ClothingItem instance (images relationship may or may not be loaded)
-        
-    Returns:
-        Image URL string or None
+    """The item's displayable image via THE single display gate, or None (placeholder).
+
+    Photo-seam Phase 5: the gate (models.closet.display_image_url) is the ONLY source —
+    the legacy primary-ItemImage fallback is gone (no pipeline ever wrote item_images
+    rows, and a side-channel around the gate is exactly what display purity forbids).
+    None renders as the client's neutral placeholder, never a broken image.
     """
-    # Route through the single FAIL-CLOSED person mask (models.closet.display_image_url):
-    # an image is surfaced only on an affirmative signal — a verified 'ready' generated
-    # card or person_status='person_free'. 'unknown' (never checked) stays masked.
-    masked = display_image_url(item)
-    if masked:
-        return masked
-    # A masked item (person unknown/present without a ready card) must NOT fall through
-    # to a primary ItemImage either — fail-closed applies to every fallback.
-    if (
-        getattr(item, "generation_status", None) != "ready"
-        and getattr(item, "person_status", None) != "person_free"
-    ):
-        return None
-
-    # Fallback to primary ItemImage from images relationship
-    # Accessing item.images will trigger lazy load if not already loaded
-    if hasattr(item, 'images') and item.images:
-        primary_image = next(
-            (img for img in item.images if img.is_primary),
-            None
-        )
-        if primary_image:
-            return primary_image.image_url
-
-    return None
+    return display_image_url(item)
 
 
 def _map_clothing_item_to_out(

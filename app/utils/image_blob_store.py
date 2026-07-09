@@ -96,3 +96,33 @@ def get_or_upload(raw: bytes, upload: Callable[[], Optional[str]]) -> Optional[s
         return winner.image_url if winner is not None else url
     finally:
         db.close()
+
+
+def delete_by_url(url: str) -> int:
+    """Drop the dedup mapping(s) for a purged blob (Photo-seam Phase 5). Never raises.
+
+    Without this, re-uploading the same bytes after a purge would 'dedup' onto the
+    DELETED storage object and record a dead URL. Own short-lived session (same
+    threading rationale as get_or_upload). Returns rows removed."""
+    if not url:
+        return 0
+    from app.db import SessionLocal
+    from app.models import ImageBlob
+
+    db = SessionLocal()
+    try:
+        n = (
+            db.query(ImageBlob)
+            .filter(ImageBlob.image_url == url)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        return int(n or 0)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return 0
+    finally:
+        db.close()

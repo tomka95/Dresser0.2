@@ -168,7 +168,9 @@ def _maybe_promote_card(
     )
 
 
-def _stamp_candidate_card_ready(db: Session, cand: IngestCandidate, url: str) -> None:
+def _stamp_candidate_card_ready(
+    db: Session, cand: IngestCandidate, url: str, *, storage_client=None
+) -> None:
     """Write a VERIFIED card onto the candidate and drive the SHARED state machine.
 
     Same transition shape as the Gmail fill's success path: card fields + affirmative
@@ -177,7 +179,15 @@ def _stamp_candidate_card_ready(db: Session, cand: IngestCandidate, url: str) ->
     ONLY via the shared mark_candidate_ready invariant (which also requires complete
     tags). A candidate with incomplete tags (no size for a sized category and no
     onboarding default) keeps its card but rests at 'verified_clean' — masked, never
-    leaked. Caller commits."""
+    leaked. Caller commits.
+
+    RAW-CROP PURGE (Photo-seam Phase 5): the moment the verified card lands, the raw
+    source crop / uploaded reference has served its only purpose (generation
+    reference) — the candidate's pointer is nulled so NO query can ever resolve to
+    it again, and our own photo_items/ crop blob (+ its image_blobs dedup row) is
+    deleted best-effort. Non-photo_items references (e.g. a manual add's uploaded
+    reference in regenerate_refs/) are only unlinked, never deleted — the
+    content-addressed blob store shares identical bytes across rows."""
     cand.generated_image_url = url
     cand.generation_status = "ready"
     cand.generation_attempts = 0  # verified success clears the failure ledger
@@ -191,6 +201,27 @@ def _stamp_candidate_card_ready(db: Session, cand: IngestCandidate, url: str) ->
             cand.size = default
     if tags_ready(cand):
         mark_candidate_ready(cand)
+    _purge_crop_reference(cand, storage_client)
+
+
+def _purge_crop_reference(cand: IngestCandidate, storage_client) -> None:
+    """Unlink (and, for our own crops, delete) the raw source image. Never raises."""
+    crop_url = cand.image_url
+    if not crop_url:
+        return
+    cand.image_url = None  # display-unreachable regardless of blob deletion outcome
+    if "/photo_items/" not in crop_url:
+        return  # foreign/shared reference — unlink only
+    try:
+        from app.utils.image_blob_store import delete_by_url
+
+        deleted = bool(storage_client) and storage_client.delete_object(crop_url)
+        delete_by_url(crop_url)
+        logger.info(
+            "crop purged cand=%s blob_deleted=%s", cand.id, deleted
+        )
+    except Exception as exc:
+        logger.warning("crop purge failed (%s) cand=%s", type(exc).__name__, cand.id)
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +446,7 @@ def _generate_candidate(
         # personal garments never participate (see _cache_key_for).
         cached = lookup_verified(_cache_key_for(cand.brand, cand.name, cand.color))
         if cached:
-            _stamp_candidate_card_ready(db, cand, cached)
+            _stamp_candidate_card_ready(db, cand, cached, storage_client=storage_client)
             db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
                 {IngestRun.generation_ready: IngestRun.generation_ready + 1},
                 synchronize_session=False,
@@ -466,7 +497,7 @@ def _generate_candidate(
             # Candidate write + atomic counter increment in ONE transaction. The
             # `generation_ready = generation_ready + 1` runs as a single SQL UPDATE, so
             # concurrent workers can't lose an increment (row-level lock serializes them).
-            _stamp_candidate_card_ready(db, cand, g.url)
+            _stamp_candidate_card_ready(db, cand, g.url, storage_client=storage_client)
             db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
                 {IngestRun.generation_ready: IngestRun.generation_ready + 1},
                 synchronize_session=False,
@@ -756,7 +787,7 @@ def run_generation_self_heal(
             # Shared cache-first (branded products only — see _cache_key_for).
             cached = lookup_verified(_cache_key_for(c.brand, c.name, c.color))
             if cached:
-                _stamp_candidate_card_ready(db, c, cached)
+                _stamp_candidate_card_ready(db, c, cached, storage_client=storage_client)
                 db.commit()
                 stats.ready += 1
                 continue
@@ -771,7 +802,7 @@ def run_generation_self_heal(
             if r.url:
                 # Verified card + the SHARED state machine (ready only via the shared
                 # mark_candidate_ready invariant; incomplete tags rest at verified_clean).
-                _stamp_candidate_card_ready(db, c, r.url)
+                _stamp_candidate_card_ready(db, c, r.url, storage_client=storage_client)
                 db.commit()
                 _maybe_promote_card(
                     brand=c.brand, name=c.name, color=c.color, url=r.url,
@@ -1101,7 +1132,7 @@ def _generate_manual_candidate(
     # Shared cache-first (branded products only — see _cache_key_for).
     cached = lookup_verified(_cache_key_for(cand.brand, cand.name, cand.color))
     if cached:
-        _stamp_candidate_card_ready(db, cand, cached)
+        _stamp_candidate_card_ready(db, cand, cached, storage_client=storage_client)
         db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
             {IngestRun.generation_ready: IngestRun.generation_ready + 1},
             synchronize_session=False,
@@ -1153,7 +1184,7 @@ def _generate_manual_candidate(
             )
 
         if g.outcome == "ready" and g.url:
-            _stamp_candidate_card_ready(db, cand, g.url)
+            _stamp_candidate_card_ready(db, cand, g.url, storage_client=storage_client)
             db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
                 {IngestRun.generation_ready: IngestRun.generation_ready + 1},
                 synchronize_session=False,

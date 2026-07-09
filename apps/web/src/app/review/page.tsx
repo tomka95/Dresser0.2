@@ -694,12 +694,12 @@ export default function ReviewPage() {
     chips.push({ label: 'Price', value: `${currencySymbol}${Number(price).toFixed(2)}` });
   }
 
-  // Wave 2 card image selection. A photo card shows the VERIFIED generated product card
-  // once ready; while it's being made — or the run is still generating and this card
-  // hasn't flipped to a status yet — it shows a "creating…" state, NEVER the raw crop
-  // (a full-scene shot with face/background). pending_retry/failed fall back to the crop
-  // with a subtle "Preview" tag (the item still gets an image on confirm). Gmail cards
-  // (generation_status null, unscoped) are unaffected — they render image_url as before.
+  // Card image selection (Photo-seam Phase 5 — display purity). A photo/manual card
+  // shows ONLY the VERIFIED generated product card; the server never sends a raw
+  // crop for those sources (image_url is null in the payload), so mid-generation
+  // cards show the "tailoring" panel and NOTHING else. Gmail cards render their
+  // verified resolved image_url as before. The old Preview-the-crop fallback is
+  // gone with the payload that fed it.
   const genStatus = current.generation_status;
   const isPhotoCard = current.source_type === 'photo';
   const generatedReady = genStatus === 'ready' && !!current.generated_image_url;
@@ -707,14 +707,7 @@ export default function ReviewPage() {
     isPhotoCard &&
     (genStatus === 'generating' ||
       (genStatus == null && runGenerating) ||
-      // G6: the server masks an ON-MODEL crop (image_url null — it contains a person) until
-      // a verified person-free card lands. Show the neutral "preparing" panel, NEVER a
-      // person and never a broken/no-image gap. Covers on-model pending_retry/failed too.
       (!generatedReady && !current.image_url));
-  // Preview-the-crop fallback is ONLY for a real (flat-lay) crop the server still sends —
-  // an on-model crop is masked to null above, so it can never reach this path.
-  const showPreviewTag =
-    isPhotoCard && !!current.image_url && (genStatus === 'pending_retry' || genStatus === 'failed');
   const cardSrc = generatedReady ? current.generated_image_url : current.image_url;
 
   // Alternating stack tilt: even cards lean left (−2°), odd cards lean right (+2°), so a
@@ -960,24 +953,6 @@ export default function ReviewPage() {
               >
                 {Math.round(conf * 100)}% sure
               </span>
-
-              {/* Generation held (pending_retry / failed): the crop stands in as a preview
-                  — a subtle tag signals it isn't the final product card. Never blocks confirm. */}
-              {showPreviewTag && (
-                <span
-                  className="absolute left-3 inline-flex items-center text-[10.5px] font-semibold"
-                  style={{
-                    top: 44,
-                    color: 'rgba(255,255,255,0.85)',
-                    background: 'rgba(0,0,0,0.5)',
-                    border: '1px solid var(--tr-20)',
-                    borderRadius: 999,
-                    padding: '3px 9px',
-                  }}
-                >
-                  Preview
-                </span>
-              )}
 
               {/* Swipe affordance stamps — fade in with drag distance/direction. */}
               <span

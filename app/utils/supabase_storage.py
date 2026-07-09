@@ -71,6 +71,28 @@ class SupabaseStorageClient:
             return f"{self.public_base_url}/{self.bucket}/{key}"
         return key
 
+    def delete_object(self, url_or_key: str) -> bool:
+        """Delete one stored object by its public URL (or bare key). Best-effort.
+
+        Photo-seam Phase 5 (raw-crop purge): once a verified card replaces a raw
+        source crop, the crop blob is removed so a person-containing source cannot
+        linger in public storage. Only OUR public-URL shape is parsed
+        ({public_base_url}/{bucket}/{key}); anything else is refused (False).
+        Returns True when a delete was issued, False otherwise. Never raises.
+        """
+        key = url_or_key or ""
+        if self.public_base_url and key.startswith(f"{self.public_base_url}/{self.bucket}/"):
+            key = key[len(f"{self.public_base_url}/{self.bucket}/"):]
+        elif key.startswith("http://") or key.startswith("https://"):
+            return False  # not our storage shape — never delete foreign URLs
+        if not key or "/" not in key:
+            return False  # bare/implausible key — refuse
+        try:
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
+            return True
+        except Exception:
+            return False  # best-effort: an orphan blob is acceptable, a crash is not
+
     def upload_bytes(
         self,
         image_bytes: bytes,
