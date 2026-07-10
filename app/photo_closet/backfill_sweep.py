@@ -398,12 +398,17 @@ def _revalidate_candidates(
         )
         if g.outcome == "ready" and g.url:
             if photoish:
-                _stamp_candidate_card_ready(db, cand, g.url, storage_client=storage_client)
+                _stamp_candidate_card_ready(
+                    db, cand, g.url, storage_client=storage_client,
+                    provider=g.provider, cost_usd=g.cost_usd,
+                )
             else:
                 cand.image_url = g.url
                 cand.image_status = "resolved"
                 cand.person_status = "person_free"
                 cand.invariant_checked_at = _now_utc()
+                cand.generation_provider = g.provider
+                cand.generation_cost_usd = g.cost_usd
                 advance(cand, "verified_clean")
                 if tags_ready(cand):
                     mark_candidate_ready(cand)
@@ -491,6 +496,8 @@ def _revalidate_items(
                 it.generation_attempts = 0
                 it.person_status = "person_free"
                 it.invariant_checked_at = _now_utc()
+                it.generation_provider = g.provider
+                it.generation_cost_usd = g.cost_usd
                 db.commit()
                 _maybe_promote_card(
                     brand=it.brand, name=it.name, color=it.color_primary,
@@ -556,6 +563,8 @@ def _revalidate_items(
             it.generation_attempts = 0
             it.person_status = "person_free"
             it.invariant_checked_at = _now_utc()
+            it.generation_provider = g.provider
+            it.generation_cost_usd = g.cost_usd
             db.commit()
             _maybe_promote_card(
                 brand=it.brand, name=it.name, color=it.color_primary,

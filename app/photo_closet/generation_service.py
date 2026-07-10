@@ -476,7 +476,8 @@ def _generate_candidate(
         # personal garments never participate (see _cache_key_for).
         cached = lookup_verified(_cache_key_for(cand.brand, cand.name, cand.color))
         if cached:
-            _stamp_candidate_card_ready(db, cand, cached, storage_client=storage_client)
+            _stamp_candidate_card_ready(db, cand, cached, storage_client=storage_client,
+                                            provider="cache", cost_usd=0.0)
             db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
                 {IngestRun.generation_ready: IngestRun.generation_ready + 1},
                 synchronize_session=False,
@@ -897,7 +898,8 @@ def run_generation_self_heal(
             # Shared cache-first (branded products only — see _cache_key_for).
             cached = lookup_verified(_cache_key_for(c.brand, c.name, c.color))
             if cached:
-                _stamp_candidate_card_ready(db, c, cached, storage_client=storage_client)
+                _stamp_candidate_card_ready(db, c, cached, storage_client=storage_client,
+                                            provider="cache", cost_usd=0.0)
                 db.commit()
                 stats.ready += 1
                 continue
@@ -951,6 +953,8 @@ def run_generation_self_heal(
                     it.generation_attempts = 0
                     it.person_status = "person_free"  # cached cards are verified person-free
                     it.invariant_checked_at = _now_utc()
+                    it.generation_provider = "cache"
+                    it.generation_cost_usd = 0.0
                     db.commit()
                     stats.ready += 1
                     continue
@@ -1273,7 +1277,8 @@ def _generate_manual_candidate(
     # Shared cache-first (branded products only — see _cache_key_for).
     cached = lookup_verified(_cache_key_for(cand.brand, cand.name, cand.color))
     if cached:
-        _stamp_candidate_card_ready(db, cand, cached, storage_client=storage_client)
+        _stamp_candidate_card_ready(db, cand, cached, storage_client=storage_client,
+                                            provider="cache", cost_usd=0.0)
         db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
             {IngestRun.generation_ready: IngestRun.generation_ready + 1},
             synchronize_session=False,

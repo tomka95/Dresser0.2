@@ -193,6 +193,18 @@ def test_confirm_ready_without_stored_card_falls_back_to_crop():
     assert params["image_url"] == "https://blob.example/cut.jpg"
 
 
+def test_confirm_carries_generation_provider_and_cost_to_item():
+    """Observability (0039): the candidate's generation_provider + cost travel to the
+    clothing_item at confirm, so a generated item's provider is never null just because
+    it was born through the confirm chokepoint."""
+    cand = _gen_candidate("ready", generated="https://blob.example/gen.png")
+    cand.generation_provider = "flux2_pro"
+    cand.generation_cost_usd = 0.045
+    params = _upsert_params(cand)
+    assert params["generation_provider"] == "flux2_pro"
+    assert float(params["generation_cost_usd"]) == 0.045
+
+
 def test_confirm_gmail_candidate_uses_crop_and_null_generation():
     import uuid
     cand = IngestCandidate(

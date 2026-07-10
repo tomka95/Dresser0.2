@@ -305,6 +305,9 @@ def _reconcile_person(
             cand.image_status = "resolved"
             cand.person_status = "person_free"
             cand.invariant_checked_at = _now_utc()  # v2-gated card by construction
+            if hasattr(cand, "generation_provider"):
+                cand.generation_provider = g.provider
+                cand.generation_cost_usd = g.cost_usd
             promote_verified(
                 brand=cand.brand, name=cand.name, color=cand.color,
                 image_url=g.url, content_sha256=g.content_sha256 or "",
