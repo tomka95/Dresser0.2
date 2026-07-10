@@ -52,6 +52,7 @@ from app.gmail_closet.reconcile import (
     LineDecision,
     MessageDecision,
     parse_variant,
+    plan_name_merges,
     reconcile_message,
     signatures_match,
 )
@@ -526,6 +527,58 @@ def _enrichment_pass(db, user_id: UUID, sync_id: UUID) -> int:
     return merged
 
 
+def _name_drift_pass(db, user_id: UUID, sync_id: UUID) -> int:
+    """Collapse same-order name-drift rows in the DB (incremental twin of
+    reconcile.merge_order_name_drift): for every order touched by this run, plan
+    merges over the order's admitted rows and absorb each source row into its
+    canonical (longest-name) row — message ids united, source demoted terminal
+    with reason 'merged_duplicate'. Returns #rows merged."""
+    touched = (
+        db.query(IngestCandidate.order_id)
+        .filter(
+            IngestCandidate.user_id == user_id,
+            IngestCandidate.sync_id == sync_id,
+            IngestCandidate.source_type == "gmail",
+            IngestCandidate.order_id.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    merged = 0
+    for (order_id,) in touched:
+        rows = (
+            db.query(IngestCandidate)
+            .filter(
+                IngestCandidate.user_id == user_id,
+                IngestCandidate.source_type == "gmail",
+                IngestCandidate.order_id == order_id,
+                IngestCandidate.pipeline_state != "rejected_recommendation",
+                IngestCandidate.is_return.is_(False),
+            )
+            .all()
+        )
+        by_key = {r.source_line_key: r for r in rows}
+        mapping = plan_name_merges(
+            [(r.source_line_key, r.name, r.size, r.color) for r in rows])
+        for src_key, dst_key in mapping.items():
+            src, dst = by_key[src_key], by_key[dst_key]
+            existing = set(dst.source_message_ids or [])
+            for mid in src.source_message_ids or []:
+                if mid not in existing:
+                    dst.source_message_ids = (dst.source_message_ids or []) + [mid]
+                    existing.add(mid)
+                    dst.seen_count = (dst.seen_count or 1) + 1
+            dst.size = dst.size or src.size
+            dst.color = dst.color or src.color
+            dst.needs_enrichment = bool(dst.needs_enrichment and src.needs_enrichment)
+            src.pipeline_state = "rejected_recommendation"
+            src.quarantine_reason = REASON_MERGED
+            merged += 1
+    if merged:
+        db.commit()
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -768,6 +821,7 @@ def run_extraction_sync(
         # the reconcile metrics onto the run row.
         try:
             stats.enriched = _enrichment_pass(db, user_id, sync_id)
+            stats.enriched += _name_drift_pass(db, user_id, sync_id)
         except Exception:
             logger.warning("sync_id=%s: enrichment pass failed (non-fatal)", sync_id)
 

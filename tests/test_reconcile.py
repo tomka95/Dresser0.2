@@ -310,3 +310,68 @@ def test_enrichment_join_containment_color_match():
     dc, ds = reconcile_message("mc", confirm), reconcile_message("ms", ship)
     assert enrichment_join([dc, ds]) == 1
     assert ds.admitted[0].line.name == "Dance Studio Mid-Rise Pant"
+
+
+# ===========================================================================
+# Line-noise stripping + name-drift merge (the lulu 13-rows-for-7-items fix)
+# ===========================================================================
+
+from app.gmail_closet.reconcile import (   # noqa: E402
+    merge_order_name_drift,
+    plan_name_merges,
+    strip_line_noise,
+)
+
+
+def test_strip_line_noise():
+    assert strip_line_noise("SIZE: Brown QTY: 1") == "Brown"
+    assert strip_line_noise("SIZE: Multicolor-Beige 24 Grid") == "Multicolor-Beige 24 Grid"
+    assert strip_line_noise("Wunder Train HR Tight 25\"") == "Wunder Train HR Tight 25\""
+
+
+def test_manifest_noise_collapses_to_one_key():
+    # "SIZE: Brown" (delivery notice) and "SIZE: Brown QTY: 1" (ship email) are the
+    # same physical item — identical v2 keys after noise stripping.
+    doc = _doc(EmailKind.shipping, order=OrderInfo(order_id="G1"),
+               lines=[_line("SIZE: Brown"), _line("SIZE: Brown QTY: 1")])
+    d = reconcile_message("m1", doc)
+    assert len({ld.content_key for ld in d.admitted}) == 1
+
+
+def test_name_drift_merge_lulu_chain():
+    # The live c1759 chain: one bra, three phrasings across confirm/ship/delivered.
+    confirm = _doc(EmailKind.order_confirmation, merchant="lululemon",
+                   order=OrderInfo(order_id="c1"),
+                   lines=[_line("Flow Y Bra Nulu *Light Support, A-C Cups",
+                                size="10", color="Lavender Frost")])
+    ship = _doc(EmailKind.shipping, merchant="lululemon", order=OrderInfo(order_id="c1"),
+                lines=[_line("Flow Y Nulu Bra", size="10", color="Lavender Frost")])
+    delivered = _doc(EmailKind.delivery, merchant="lululemon", order=OrderInfo(order_id="c1"),
+                     lines=[_line("Flow Y Nulu Bra LFRS 10", size="10", color="Lavender Frost")])
+    ds = [reconcile_message(m, d) for m, d in (("mc", confirm), ("ms", ship), ("md", delivered))]
+    merged = merge_order_name_drift(ds)
+    assert merged == 2
+    keys = {ld.content_key for d in ds for ld in d.admitted}
+    assert len(keys) == 1
+    # canonical = the longest, most complete name
+    names = {ld.line.name for d in ds for ld in d.admitted}
+    assert names == {"Flow Y Bra Nulu *Light Support, A-C Cups"}
+
+
+def test_name_drift_does_not_merge_different_items_same_sig():
+    # Two genuinely different garments sharing (size, color) must NOT merge.
+    doc = _doc(EmailKind.order_confirmation, merchant="lululemon",
+               order=OrderInfo(order_id="c1"),
+               lines=[_line("Align High-Rise Short 4", size="10", color="Lavender Frost"),
+                      _line("Flow Y Nulu Bra", size="10", color="Lavender Frost")])
+    d = reconcile_message("m1", doc)
+    assert merge_order_name_drift([d]) == 0
+    assert len({ld.content_key for ld in d.admitted}) == 2
+
+
+def test_plan_name_merges_prefers_longest_name():
+    mapping = plan_name_merges([
+        ("k1", "Wunder Train HR Tight 25", "8", "Sequoia"),
+        ("k2", "Wunder Train High-Rise Tight 25 inch", "8", "Sequoia"),
+    ])
+    assert mapping == {"k1": "k2"}

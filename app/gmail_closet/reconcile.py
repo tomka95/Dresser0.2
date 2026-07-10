@@ -82,6 +82,31 @@ _SIZE_TOKEN_RE = re.compile(
 )
 _PACK_TOKEN_RE = re.compile(r"^\d+\s*pcs?$", re.IGNORECASE)
 
+# Color / shade vocabulary used ONLY to judge "is this bare variant text": tokens
+# here don't count as product-name words. Deliberately common-shades-only.
+_COLOR_WORDS = frozenset((
+    "black", "white", "blue", "navy", "green", "pink", "red", "brown", "silver",
+    "gold", "gray", "grey", "beige", "cream", "ivory", "purple", "violet",
+    "yellow", "orange", "khaki", "apricot", "burgundy", "maroon", "teal", "cyan",
+    "multicolor", "multicolour", "multi", "dark", "light", "hot", "pale", "deep",
+    "true", "dusty", "neon", "pastel", "size",
+))
+
+
+_LINE_NOISE_PREFIX_RE = re.compile(r"^\s*size\s*:\s*", re.IGNORECASE)
+_LINE_NOISE_SUFFIX_RE = re.compile(r"\s*qty\s*:?\s*\d+\s*$", re.IGNORECASE)
+
+
+def strip_line_noise(name: Optional[str]) -> str:
+    """Drop SHEIN manifest furniture from a line name: a leading 'SIZE:' label and a
+    trailing 'QTY: n'. 'SIZE: Brown QTY: 1' -> 'Brown', so the same physical item
+    keyed from the ship email and the delivery notification collapses to ONE row."""
+    if not name:
+        return ""
+    out = _LINE_NOISE_PREFIX_RE.sub("", name.strip())
+    out = _LINE_NOISE_SUFFIX_RE.sub("", out)
+    return out.strip()
+
 
 def parse_variant(text: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """Split a bare variant string into (color, size); (None, None) when unparseable.
@@ -91,10 +116,16 @@ def parse_variant(text: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     remains, joined in order, is the color/descriptor. Ambiguity returns what was
     confidently found — a miss keeps the row needs_enrichment, never mis-binds it.
     """
+    text = strip_line_noise(text)
     if not text:
         return None, None
-    tokens = [t.strip() for t in text.split("-") if t.strip()]
     size: Optional[str] = None
+    # "one-size" contains the split character — extract it before tokenizing.
+    one_size = re.search(r"one[- ]?size", text, re.IGNORECASE)
+    if one_size:
+        size = "one-size"
+        text = (text[:one_size.start()] + " " + text[one_size.end():]).strip(" -")
+    tokens = [t.strip() for t in text.split("-") if t.strip()]
     color_parts: List[str] = []
     for tok in tokens:
         if size is None and _SIZE_TOKEN_RE.match(tok):
@@ -115,17 +146,18 @@ def looks_like_variant_only(name: Optional[str]) -> bool:
     Tight 25\"" -> False. Deliberately conservative: a false False just means an
     enrichable row keeps its (real) name; a false True only flags enrichment.
     """
-    if not name:
+    stripped = strip_line_noise(name)
+    if not stripped:
         return True
-    stripped = name.strip()
     if len(stripped) > 40:
         return False
     tokens = re.split(r"[-,/ ]+", stripped)
     wordy = [t for t in tokens if len(t) > 2 and not _SIZE_TOKEN_RE.match(t)
-             and not _PACK_TOKEN_RE.match(t)]
-    # <=2 descriptor words ("Navy Blue", "Multicolor") = variant text; a real
-    # product name has 3+ ("Align High-Rise Short").
-    return len(wordy) <= 2
+             and not _PACK_TOKEN_RE.match(t)
+             and t.lower() not in _COLOR_WORDS]
+    # <=1 non-color descriptor word ("Embroidery") = variant text; a real product
+    # name has 2+ garment nouns ("Align High-Rise Short", "Graphic Crew Tee").
+    return len(wordy) <= 1
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +286,8 @@ def _decide_line(doc: ReceiptDocument, kind: EmailKind, line: OrderLine, *,
         line=line,
         admitted=admitted,
         reason=reason,
-        content_key=make_content_key_v2(doc.merchant, order_id, line.name, line.size, line.color),
+        content_key=make_content_key_v2(
+            doc.merchant, order_id, strip_line_noise(line.name), line.size, line.color),
         needs_enrichment=needs_enrichment,
         is_return=is_return,
         provenance=_mk_provenance(doc, kind, line, evidence, reconciled),
@@ -355,8 +388,18 @@ def apply_retargeting_rule(decisions: List[MessageDecision]) -> int:
     orderless: Dict[str, List[Tuple[MessageDecision, LineDecision]]] = {}
     for md in decisions:
         for ld in md.admitted:
-            if ld.provenance.get("order_evidence") is None and not ld.is_return:
-                orderless.setdefault(normalize_name(ld.line.name), []).append((md, ld))
+            if ld.is_return:
+                continue
+            evidence = ld.provenance.get("order_evidence") or ""
+            if evidence.startswith("order_id:"):
+                continue   # order-id association: exempt by construction
+            if (ld.provenance.get("email_kind") == "order_confirmation"
+                    and ld.provenance.get("reconciled") is True):
+                # An orderless CONFIRMATION whose math reconciles is a real receipt —
+                # two of them at different prices are a genuine repurchase, not ads
+                # (locked Gate-1 exemption).
+                continue
+            orderless.setdefault(normalize_name(ld.line.name), []).append((md, ld))
 
     demoted = 0
     for name, entries in orderless.items():
@@ -459,6 +502,100 @@ def _matches(named: Tuple[Optional[str], Optional[str]],
         if vcolor != ncolor and vcolor not in ncolor and ncolor not in vcolor:
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Name-drift merge — one physical item, many email phrasings.
+#
+# The SAME ordered item appears with a different name in each chain email
+# ("Flow Y Nulu™ Bra" / "Flow Y Bra Nulu *Light Support, A–C Cups" /
+# "Flow Y Nulu™ Bra LFRS 10"), splitting the v2 key. Within ONE order:
+#   phase 1 — identical noise-stripped names merge unconditionally;
+#   phase 2 — lines sharing (size, color) merge when the shorter name's tokens
+#             are ≥60% contained in the longer's (guards two genuinely different
+#             items that happen to share a size+color).
+# ---------------------------------------------------------------------------
+
+_NAME_SPLIT_RE = re.compile(r"[^0-9a-z\u0590-\u05ff]+")
+
+
+def _name_tokens(name: Optional[str]) -> frozenset:
+    toks = [t for t in _NAME_SPLIT_RE.split(strip_line_noise(name).lower()) if t]
+    return frozenset(t for t in toks if not _SIZE_TOKEN_RE.match(t))
+
+
+def _names_alike(a: Optional[str], b: Optional[str]) -> bool:
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if not ta or not tb:
+        return False
+    shorter, longer = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return len(shorter & longer) / len(shorter) >= 0.6
+
+
+def plan_name_merges(items: List[Tuple[str, Optional[str], Optional[str], Optional[str]]]
+                     ) -> Dict[str, str]:
+    """Plan same-order merges over (key, name, size, color) records.
+
+    Returns {source_key: canonical_key}. Canonical = the longest (most complete)
+    name of each merged cluster. Pure; caller applies the mapping (collapse keys
+    in-memory, or absorb+demote rows in the DB)."""
+    records = sorted(items, key=lambda r: len(strip_line_noise(r[1]) or ""), reverse=True)
+    canon: List[Tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+    mapping: Dict[str, str] = {}
+    for key, name, size, color in records:
+        target = None
+        sname = strip_line_noise(name).lower()
+        for ckey, cname, csize, ccolor in canon:
+            if sname and sname == strip_line_noise(cname).lower():
+                target = ckey
+                break
+            same_sig = (
+                (size or "").strip().lower() == (csize or "").strip().lower()
+                and (color or "").strip().lower() == (ccolor or "").strip().lower()
+                and (size or color)
+            )
+            if same_sig and _names_alike(name, cname):
+                target = ckey
+                break
+        if target is None:
+            canon.append((key, name, size, color))
+        elif target != key:
+            mapping[key] = target
+    return mapping
+
+
+def merge_order_name_drift(decisions: List[MessageDecision]) -> int:
+    """Corpus-level name-drift merge: collapse same-order drifting keys. Returns
+    #lines re-keyed. Runs AFTER enrichment_join (enriched rows already share keys)."""
+    by_order: Dict[Tuple[Optional[str], Optional[str]], List[LineDecision]] = {}
+    for md in decisions:
+        for ld in md.admitted:
+            if md.order_id and not ld.is_return:
+                by_order.setdefault((normalize_name(md.merchant), md.order_id), []).append(ld)
+
+    merged = 0
+    for _grp, lines in by_order.items():
+        seen: Dict[str, LineDecision] = {}
+        uniq: List[Tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+        for ld in lines:
+            if ld.content_key not in seen:
+                seen[ld.content_key] = ld
+                uniq.append((ld.content_key, ld.line.name, ld.line.size, ld.line.color))
+        mapping = plan_name_merges(uniq)
+        if not mapping:
+            continue
+        for ld in lines:
+            target_key = mapping.get(ld.content_key)
+            if target_key is None:
+                continue
+            target = seen[target_key]
+            ld.content_key = target_key
+            ld.line.name = target.line.name
+            ld.line.size = ld.line.size or target.line.size
+            ld.line.color = ld.line.color or target.line.color
+            ld.needs_enrichment = ld.needs_enrichment and target.needs_enrichment
+            merged += 1
+    return merged
 
 
 # Public alias: the DB-level incremental enrichment pass (extraction_service)

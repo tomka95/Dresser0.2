@@ -124,8 +124,11 @@ CLOTHING GATE: set is_clothing = true ONLY if the email involves WEARABLE clothi
 footwear (tops, bottoms, dresses, outerwear, shoes/sneakers/boots, and clothing
 accessories like scarves/hats/belts). Set is_clothing = false for travel, SaaS,
 utilities, tickets, food, electronics, furniture, gift cards, etc. Omit clearly
-non-clothing lines (a tablet, a pillow) from every bucket — but KEEP a fulfillment
-email's variant-only lines (garment unknowable from "Black-L") as order_lines.
+non-clothing lines from every bucket — a tablet, a pillow, a canvas poster, a lunch
+bag, home decor — INCLUDING inside a genuine order's item list (people buy posters
+and clothes in one order; only the clothing enters the closet). The ONE exception:
+KEEP a fulfillment email's nameless variant-only lines ("Black-L" — garment
+unknowable) as order_lines.
 
 CATEGORY (use ONLY these enum values; pick the closest — NEVER invent a value, and
 NEVER default a real garment to "other"):
