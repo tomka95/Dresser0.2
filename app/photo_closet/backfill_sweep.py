@@ -181,11 +181,17 @@ _NON_CLOTHING_KEYWORDS = (
 )
 
 
-def _looks_like_non_clothing(name: Optional[str], category: Optional[str]) -> bool:
+def _non_clothing_keyword_hit(name: Optional[str], category: Optional[str]) -> Optional[str]:
+    """The matched keyword, or None — the single source of truth for the smell test.
+    Category-gated (only 'accessory') + a literal keyword hit; see module docs."""
     if (category or "").strip().lower() != "accessory":
-        return False
+        return None
     n = (name or "").lower()
-    return any(kw in n for kw in _NON_CLOTHING_KEYWORDS)
+    return next((kw for kw in _NON_CLOTHING_KEYWORDS if kw in n), None)
+
+
+def _looks_like_non_clothing(name: Optional[str], category: Optional[str]) -> bool:
+    return _non_clothing_keyword_hit(name, category) is not None
 
 
 def classify(db: Session) -> SweepReport:
@@ -421,16 +427,24 @@ def _revalidate_candidates(
             db.commit()
 
 
-def _quarantine_item(db: Session, it: ClothingItem, report: SweepReport) -> None:
-    """Quarantine (never auto-delete): archived_at hides it from every read path
-    (ranking/features, ranking/feed, stylist retrieval, todays_look, and — as of the
-    Phase 6b list_closet_items fix — the closet grid itself). invariant_checked_at
-    is stamped too so the row converges out of every future sweep. Reversible: an
-    operator un-archives (archived_at=NULL) to restore a false positive."""
+def _quarantine_item(db: Session, it: ClothingItem, report: SweepReport, reason: str) -> None:
+    """Quarantine (never auto-delete). TWO markers, two jobs:
+      * archived_at — the OPERATIVE hide: every read path already filters on it
+        (ranking/features, ranking/feed, stylist retrieval, todays_look, and — as
+        of the Phase 6b list_closet_items + get_closet_item_by_id fixes — the
+        closet grid and item-detail routes too).
+      * is_non_clothing (+ quarantine_reason) — the EXPLICIT, provable WHY,
+        migration 0038: distinguishes a sweep-judged quarantine from a user's own
+        archive action; queryable, not an assertion.
+    invariant_checked_at is stamped too so the row converges out of every future
+    sweep. Reversible: an operator clears is_non_clothing + archived_at to restore
+    a false positive — never a hard delete."""
     it.archived_at = _now_utc()
+    it.is_non_clothing = True
+    it.quarantine_reason = reason
     it.invariant_checked_at = _now_utc()
     report.quarantined.append({
-        "id": str(it.id), "name": it.name, "category": it.category,
+        "id": str(it.id), "name": it.name, "category": it.category, "reason": reason,
     })
     logger.info("quarantined non-clothing item=%s category=%s", it.id, it.category)
     db.commit()
@@ -453,8 +467,9 @@ def _revalidate_items(
     never a violating/imageless-but-displayable row)."""
     rows: List[ClothingItem] = _b5_items_query(db).all()
     for it in rows:
-        if _looks_like_non_clothing(it.name, it.category):
-            _quarantine_item(db, it, report)
+        hit = _non_clothing_keyword_hit(it.name, it.category)
+        if hit is not None:
+            _quarantine_item(db, it, report, reason=f"non_clothing_keyword:{hit}")
             continue
 
         if not it.image_url:

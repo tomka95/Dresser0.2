@@ -202,16 +202,22 @@ def _vector_search(
 def get_owned_items(db: Session, user_id: UUID, item_ids: Sequence[UUID]) -> List[ClothingItem]:
     """Resolve item ids -> rows, RESTRICTED to the caller's closet.
 
-    Ids that don't exist or belong to someone else are silently absent from the
+    Ids that don't exist, belong to someone else, or are archived (Photo-seam
+    Phase 6b: incl. a quarantined non-clothing row) are silently absent from the
     result — the caller compares counts and fails closed. This is the single
-    choke point every model-supplied item id passes through.
+    choke point every model-supplied item id passes through (compose_outfit and
+    every other tool that resolves ids into rows).
     """
     ids = [i for i in item_ids if i is not None]
     if not ids:
         return []
     items = (
         db.query(ClothingItem)
-        .filter(ClothingItem.user_id == user_id, ClothingItem.id.in_(ids))
+        .filter(
+            ClothingItem.user_id == user_id,
+            ClothingItem.id.in_(ids),
+            ClothingItem.archived_at.is_(None),
+        )
         .all()
     )
     _assert_owned(items, user_id)

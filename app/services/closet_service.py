@@ -127,23 +127,28 @@ def get_closet_item_by_id(
     item_id: UUID,
 ) -> Optional[ClothingItem]:
     """Get a single clothing item by ID for a user with images eagerly loaded.
-    
+
     Uses selectinload to fetch images relationship in a single query,
     avoiding N+1 queries.
-    
+
+    Excludes archived_at rows — a quarantined (Photo-seam Phase 6b) or user-
+    archived item must not be directly reachable by id either; this was the last
+    read path missing the filter every other surface already applies.
+
     Args:
         db: Database session
         user_id: UUID of the user (for security check)
         item_id: UUID of the clothing item
-        
+
     Returns:
         ClothingItem SQLAlchemy model with images relationship loaded,
-        or None if not found or doesn't belong to user
+        or None if not found, doesn't belong to user, or is archived
     """
     item = (
         db.query(ClothingItem)
         .filter(ClothingItem.id == item_id)
         .filter(ClothingItem.user_id == user_id)  # Security: ensure user owns the item
+        .filter(ClothingItem.archived_at.is_(None))
         .options(
             selectinload(ClothingItem.images),  # Eagerly load images
         )

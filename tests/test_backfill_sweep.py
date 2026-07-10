@@ -402,10 +402,14 @@ def test_non_clothing_is_quarantined_never_imaged_never_auto_deleted(db, user, m
     report = sweep.run_sweep(db, execute=True, run_gmail_fill=False)
 
     db.refresh(junk)
-    assert report.quarantined == [
-        {"id": str(junk.id), "name": junk.name, "category": "accessory"}
-    ]
-    assert junk.archived_at is not None            # quarantined
+    assert len(report.quarantined) == 1
+    assert report.quarantined[0]["id"] == str(junk.id)
+    assert report.quarantined[0]["name"] == junk.name
+    assert report.quarantined[0]["category"] == "accessory"
+    assert "hairpin" in report.quarantined[0]["reason"] or "hair" in report.quarantined[0]["reason"]
+    assert junk.archived_at is not None            # quarantined (operative hide)
+    assert junk.is_non_clothing is True            # EXPLICIT, provable marker (0038)
+    assert junk.quarantine_reason is not None
     assert junk.invariant_checked_at is not None   # converged
     assert junk.image_url is None                  # STILL exists in the DB — not deleted
     from app.services.closet_service import list_closet_items
@@ -440,3 +444,85 @@ def test_list_closet_items_excludes_archived(db, user):
     ids = {i.id for i in list_closet_items(db, user.id)}
     assert visible.id in ids
     assert hidden.id not in ids
+
+
+# ===========================================================================
+# Phase 6b — quarantined + fail-closed-masked rows excluded from EVERY display
+# surface: closet grid, item detail, compose (stylist id-resolution + serialize),
+# today's-look, collage.
+# ===========================================================================
+
+def _quarantined_and_masked(db, user):
+    """One quarantined row (is_non_clothing) + one fail-closed image-null row
+    (generation_status='failed', never quarantined) — both must be invisible
+    everywhere, for different reasons."""
+    quarantined = ClothingItem(
+        user_id=user.id, name="Quarantined Lunch Bag", category="accessory",
+        source_type="gmail", image_url=None, archived_at=sweep._now_utc(),
+        is_non_clothing=True, quarantine_reason="non_clothing_keyword:lunch bag",
+        invariant_checked_at=sweep._now_utc(),
+    )
+    masked = ClothingItem(
+        user_id=user.id, name="Terminal Failed Item", category="top",
+        source_type="gmail", image_url=None, generation_status="failed",
+        person_status="unknown", invariant_checked_at=sweep._now_utc(),
+    )
+    db.add_all([quarantined, masked]); db.commit()
+    db.refresh(quarantined); db.refresh(masked)
+    return quarantined, masked
+
+
+def test_quarantined_and_masked_excluded_from_closet_grid(db, user):
+    from app.services.closet_service import list_closet_items
+
+    quarantined, masked = _quarantined_and_masked(db, user)
+    ids = {i.id for i in list_closet_items(db, user.id)}
+    assert quarantined.id not in ids
+    # The masked (non-archived) row DOES list — but must show no image (checked below).
+    assert masked.id in ids
+
+
+def test_quarantined_excluded_from_item_detail(db, user):
+    from app.services.closet_service import get_closet_item_by_id
+
+    quarantined, masked = _quarantined_and_masked(db, user)
+    assert get_closet_item_by_id(db, user.id, quarantined.id) is None
+    assert get_closet_item_by_id(db, user.id, masked.id) is not None  # exists, just imageless
+
+
+def test_quarantined_excluded_from_compose_id_resolution(db, user):
+    from app.services.stylist.retrieval import get_owned_items
+
+    quarantined, masked = _quarantined_and_masked(db, user)
+    resolved = get_owned_items(db, user.id, [quarantined.id, masked.id])
+    resolved_ids = {i.id for i in resolved}
+    assert quarantined.id not in resolved_ids
+    assert masked.id in resolved_ids   # resolvable as a row; serialize masks its image
+
+
+def test_both_rows_show_no_image_via_serialize_and_display_gate(db, user):
+    from app.models.closet import display_image_url
+    from app.services.stylist.retrieval import serialize_item
+
+    quarantined, masked = _quarantined_and_masked(db, user)
+    assert display_image_url(quarantined) is None
+    assert display_image_url(masked) is None
+    assert serialize_item(quarantined)["imageUrl"] is None
+    assert serialize_item(masked)["imageUrl"] is None
+
+
+def test_both_rows_excluded_from_todays_look_owned_set(db, user):
+    from app.services.stylist.todays_look import _load_owned
+
+    quarantined, masked = _quarantined_and_masked(db, user)
+    owned_ids = {i.id for i in _load_owned(db, user.id)}
+    assert quarantined.id not in owned_ids     # archived -> not even loaded
+    assert masked.id in owned_ids              # loaded, but usable_image_url masks it
+
+
+def test_both_rows_unusable_in_collage(db, user):
+    from app.services.stylist.collage import usable_image_url
+
+    quarantined, masked = _quarantined_and_masked(db, user)
+    assert usable_image_url(quarantined) is None
+    assert usable_image_url(masked) is None

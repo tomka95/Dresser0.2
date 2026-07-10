@@ -241,6 +241,16 @@ class ClothingItem(Base):
     # candidate at confirm, stamped by the regeneration/self-heal writers.
     invariant_checked_at = Column(_tstz(), nullable=True)
 
+    # Photo-seam Phase 6b (migration 0038): EXPLICIT, provable quarantine — a row
+    # the backfill sweep judged non-wearable (junk mis-filed as a closet item, e.g.
+    # a lunch bag or hair clip). archived_at is what actually hides it from every
+    # read path (reused, not new); this column is the auditable WHY, distinct from
+    # a user's own archive action. NOT auto-delete-eligible — a human confirms
+    # removal separately. quarantine_reason is a short free-text note (e.g. the
+    # matched keyword) for review, never displayed to the user.
+    is_non_clothing = Column(Boolean, nullable=False, default=False, server_default="false")
+    quarantine_reason = Column(Text, nullable=True)
+
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 
     # --- AI Stylist universal garment schema (Wave S0, migration 0018) -----------
