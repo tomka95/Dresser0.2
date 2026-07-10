@@ -156,6 +156,22 @@ class GenerationBudget:
             return self._remaining
 
 
+def error_detail(exc: BaseException) -> str:
+    """Redaction-safe one-liner for a provider-call exception: exception class +
+    HTTP status code when one is cheaply available. NEVER includes the response
+    body, prompt, or image bytes — a status code alone is enough to distinguish
+    'transient rate limit' from 'auth/request-shape bug' in logs without risking
+    a leaked API error body. Best-effort: falls back to just the class name."""
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)          # httpx.HTTPStatusError has .response
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)            # google.genai errors.ClientError
+    return f"{name} status={status}" if status is not None else name
+
+
 def sniff_generated_image(data: Optional[bytes]) -> Optional[str]:
     """Shared provider-output gate: real image bytes under the size cap, or None.
 

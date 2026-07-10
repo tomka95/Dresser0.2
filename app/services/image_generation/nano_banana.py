@@ -33,6 +33,7 @@ from app.core.config import settings
 from app.services.image_generation.base import (
     GenerationRequest,
     GenerationResult,
+    error_detail,
     sniff_generated_image,
 )
 from app.services.image_generation.prompt import build_nano_generation_prompt
@@ -121,7 +122,7 @@ class NanoBananaProvider:
         except Exception as exc:
             logger.warning(
                 "generation [nano_banana] error (%s) latency=%.1fs",
-                type(exc).__name__, time.monotonic() - started,
+                error_detail(exc), time.monotonic() - started,
             )
             return None
 
@@ -181,7 +182,7 @@ def generate_text_to_image(
     except Exception as exc:
         logger.warning(
             "t2i [nano_banana] error (%s) latency=%.1fs",
-            type(exc).__name__, time.monotonic() - started,
+            error_detail(exc), time.monotonic() - started,
         )
         return None
 
