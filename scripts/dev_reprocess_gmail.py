@@ -471,7 +471,7 @@ def print_report(rep: dict) -> None:
     print(f"  email kinds: {rep['email_kind_distribution']}")
     if rep["kind_overridden_messages"]:
         print(f"  kind overridden by order evidence: {rep['kind_overridden_messages']}")
-    print(f"\n  v1 rows: {t['v1_candidate_rows']}  ->  v2 admitted: {t['v2_admitted']} "
+    print(f"\n  v1 distinct name-triples: {t['v1_candidate_rows']} (stored-row truth lives in the ROW LEDGER)  ->  v2 admitted: {t['v2_admitted']} "
           f"(needs_enrichment={t['v2_admitted_needs_enrichment']}, returns={t['v2_return_lines']}) "
           f"demoted: {t['v2_demoted']}")
     print(f"  enrichment joins: {t['enrichment_joins']}   "
