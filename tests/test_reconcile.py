@@ -375,3 +375,19 @@ def test_plan_name_merges_prefers_longest_name():
         ("k2", "Wunder Train High-Rise Tight 25 inch", "8", "Sequoia"),
     ])
     assert mapping == {"k1": "k2"}
+
+
+def test_non_garment_dimension_variant_is_demoted():
+    from app.gmail_closet.reconcile import REASON_NON_GARMENT
+    doc = _doc(EmailKind.shipping, order=OrderInfo(order_id="G1"),
+               lines=[_line("SIZE: Multicolor-30x40cm Wood Framed QTY: 1"),
+                      _line("Black-L")])
+    d = reconcile_message("m1", doc)
+    assert len(d.admitted) == 1                      # the garment stays
+    assert d.demoted[0].reason == REASON_NON_GARMENT  # the poster goes
+
+
+def test_garment_numeric_sizes_not_hit_by_dimension_rule():
+    from app.gmail_closet.reconcile import looks_non_garment_variant
+    assert looks_non_garment_variant(_line("Kids Tee", size="110")) is False
+    assert looks_non_garment_variant(_line('Wunder Train HR Tight 25"')) is False

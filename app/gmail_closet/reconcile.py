@@ -58,6 +58,7 @@ REASON_MARKETING = "marketing_email"                   # any product line in a m
 REASON_NO_ORDER_EVIDENCE = "no_order_evidence"         # order-ish line, but no order id and no reconciling totals
 REASON_RETARGETING = "retargeting_multi_price"         # same name, >=2 prices, no order association
 REASON_MERGED = "merged_duplicate"                     # variant row absorbed by its named line
+REASON_NON_GARMENT = "non_clothing_variant"            # variant size is a physical dimension, not a garment size
 REASON_QUARANTINE_ZERO_LINES = "order_confirmation_zero_lines"   # invariant alarm
 REASON_QUARANTINE_NO_EVIDENCE = "order_confirmation_no_evidence" # neither order id nor totals
 
@@ -81,6 +82,21 @@ _SIZE_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 _PACK_TOKEN_RE = re.compile(r"^\d+\s*pcs?$", re.IGNORECASE)
+
+# A garment size is never a physical dimension. "30x40cm Wood Framed" is a poster;
+# nameless manifest rows carrying one are the order's NON-clothing items (their named
+# lines were rightly omitted upstream, so no enrichment join will ever kill them).
+_NON_GARMENT_SIZE_RE = re.compile(
+    r"\d+\s*[x×]\s*\d+\s*(cm|mm|inch|in)\b|\bframed\b|\bunframed\b",
+    re.IGNORECASE,
+)
+
+
+def looks_non_garment_variant(line: OrderLine) -> bool:
+    """True when a (typically nameless) manifest row's size/name carries a physical
+    dimension — a poster/frame/home item riding in a clothing order."""
+    hay = f"{line.name or ''} {line.size or ''}"
+    return bool(_NON_GARMENT_SIZE_RE.search(hay))
 
 # Color / shade vocabulary used ONLY to judge "is this bare variant text": tokens
 # here don't count as product-name words. Deliberately common-shades-only.
@@ -335,6 +351,11 @@ def reconcile_message(message_id: str, doc: ReceiptDocument) -> MessageDecision:
             out.quarantine_reason = REASON_QUARANTINE_NO_EVIDENCE
             return out
         for line in doc.order_lines:
+            if looks_non_garment_variant(line):
+                out.demoted.append(_decide_line(
+                    doc, kind, line, admitted=False, reason=REASON_NON_GARMENT,
+                    evidence=evidence, reconciled=reconciled))
+                continue
             out.admitted.append(_decide_line(
                 doc, kind, line, admitted=True, reason=None, evidence=evidence,
                 reconciled=reconciled,
@@ -346,7 +367,11 @@ def reconcile_message(message_id: str, doc: ReceiptDocument) -> MessageDecision:
         # creating needs_enrichment rows when the confirmation never showed the
         # name (the enrichment join clears the flag when it can bind them).
         for line in doc.order_lines:
-            if evidence is not None:
+            if evidence is not None and looks_non_garment_variant(line):
+                out.demoted.append(_decide_line(
+                    doc, kind, line, admitted=False, reason=REASON_NON_GARMENT,
+                    evidence=evidence, reconciled=reconciled))
+            elif evidence is not None:
                 out.admitted.append(_decide_line(
                     doc, kind, line, admitted=True, reason=None, evidence=evidence,
                     reconciled=reconciled,
