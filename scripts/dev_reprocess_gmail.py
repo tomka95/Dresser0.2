@@ -52,10 +52,12 @@ from app.gmail_closet.fetch_service import (
 from app.gmail_closet.gmail_oauth_service import ensure_fresh_token
 from app.gmail_closet.reconcile import (
     MessageDecision,
+    _names_alike,
     apply_retargeting_rule,
     enrichment_join,
     merge_order_name_drift,
     reconcile_message,
+    strip_line_noise,
 )
 from app.gmail_closet.receipt_filter import passes_tier1_filter
 from app.gmail_closet.retailers import match_retailer
@@ -340,6 +342,125 @@ def build_report(user_id, db, outcomes: List[MsgOutcome],
     }
 
 
+def build_ledgers(user_id, db, outcomes: List[MsgOutcome],
+                  rows: Dict[str, SimRow], recovery_ids: List[str]) -> dict:
+    """Row ledger: every STORED ingest_candidates row -> exactly one disposition.
+    Message ledger: every corpus message -> its source. Totals must close."""
+    stored = db.execute(sa_text("""
+        SELECT id, name, size, color, unit_price, order_id, merchant,
+               message_id, source_message_ids
+        FROM ingest_candidates
+        WHERE user_id = :uid AND source_type = 'gmail'
+        ORDER BY created_at
+    """), {"uid": str(user_id)}).fetchall()
+
+    kind_by_msg = {o.message_id: (o.decision.email_kind if o.decision else
+                                  ("non_clothing" if o.non_clothing else "failed"))
+                   for o in outcomes}
+
+    def _norm(x):
+        return (strip_line_noise(x or "").lower() or None)
+
+    v2_rows = list(rows.values())
+    row_ledger = []
+    tally = Counter()
+    for (rid, name, size, color, price, order_id, merchant, repr_mid, mids) in stored:
+        nn, nsize, ncolor = _norm(name), (size or "").strip().lower(), (color or "").strip().lower()
+        match = None
+        # 1) exact content match (name+size+color), admitted rows first
+        for r in sorted(v2_rows, key=lambda r: not r.admitted):
+            if _norm(r.name) == nn and (r.size or "").strip().lower() == nsize                and (r.color or "").strip().lower() == ncolor:
+                match = r
+                break
+        # 2) name-alike + shared contributing message
+        if match is None:
+            for r in sorted(v2_rows, key=lambda r: not r.admitted):
+                if set(mids or []) & set(r.message_ids) and _names_alike(name, r.name):
+                    match = r
+                    break
+        # 3) name-alike anywhere (drifted key, message split)
+        if match is None:
+            for r in sorted(v2_rows, key=lambda r: not r.admitted):
+                if _names_alike(name, r.name):
+                    match = r
+                    break
+        if match is not None:
+            outcome = ("superseded_to_admitted_v2" if match.admitted
+                       else "superseded_to_demoted_v2")
+            detail = match.reason
+        else:
+            kinds = {kind_by_msg.get(m, "unknown") for m in (mids or [])}
+            if kinds <= {"marketing", "non_clothing", "unknown"}:
+                outcome, detail = "orphaned", "marketing_line_not_reextracted"
+            else:
+                outcome, detail = "orphaned", f"line_variance_in_kinds:{sorted(kinds)}"
+        tally[outcome if outcome != "orphaned" else f"orphaned:{detail.split(':')[0]}"] += 1
+        row_ledger.append({
+            "row_id": str(rid), "merchant": merchant, "order_id": order_id,
+            "name": (name or "")[:60], "size": size, "color": color,
+            "outcome": outcome, "detail": detail,
+        })
+
+    stored_repr = {r[7] for r in stored}
+    stored_contrib = {m for r in stored for m in (r[8] or [])}
+    msg_ledger = []
+    for o in sorted(outcomes, key=lambda o: o.message_id):
+        if o.message_id in RECOVERY_MESSAGE_IDS:
+            src = "recovery_delivery_notice"
+        elif o.message_id in stored_repr:
+            src = "stored_representative"
+        elif o.message_id in stored_contrib:
+            src = "stored_array_contributor_only"
+        else:
+            src = "UNEXPLAINED"
+        msg_ledger.append({
+            "message_id": o.message_id, "source": src,
+            "labels": o.labels,
+            "email_kind": (o.decision.email_kind if o.decision else
+                           ("non_clothing" if o.non_clothing else "failed")),
+            "subject": o.subject[:60],
+        })
+
+    return {
+        "stored_rows_total": len(stored),
+        "row_disposition_tally": dict(tally),
+        "row_tally_closes": sum(tally.values()) == len(stored),
+        "message_source_tally": dict(Counter(m["source"] for m in msg_ledger)),
+        "row_ledger": row_ledger,
+        "message_ledger": msg_ledger,
+    }
+
+
+def build_chain_table(outcomes: List[MsgOutcome], tier0_ids: Optional[set],
+                      db, user_id) -> List[dict]:
+    """Every real-order chain message: labels + kind + does the NEW Tier-0 query
+    match it. The forward-risk check: a transactional message carrying
+    CATEGORY_PROMOTIONS (or otherwise missed while non-SENT) is the alarm."""
+    chain_mids = {m for (m,) in db.execute(sa_text("""
+        SELECT DISTINCT unnest(source_message_ids)
+        FROM ingest_candidates
+        WHERE user_id = :uid AND source_type = 'gmail' AND order_id IS NOT NULL
+    """), {"uid": str(user_id)}).fetchall()} | set(RECOVERY_MESSAGE_IDS)
+    table = []
+    for o in outcomes:
+        if o.message_id not in chain_mids:
+            continue
+        matched = (o.message_id in tier0_ids) if tier0_ids is not None else None
+        is_sent = "SENT" in o.labels
+        promo = "CATEGORY_PROMOTIONS" in o.labels
+        table.append({
+            "message_id": o.message_id,
+            "labels": o.labels,
+            "email_kind": o.decision.email_kind if o.decision else "?",
+            "subject": o.subject[:52],
+            "tier0_matched": matched,
+            "sent_forward": is_sent,
+            "ALARM_promotions_transactional": promo and not is_sent,
+            "ALARM_missed_non_sent": (matched is False and not is_sent),
+        })
+    return sorted(table, key=lambda r: (r["email_kind"], r["message_id"]))
+
+
 def print_report(rep: dict) -> None:
     w = 74
     print(f"\n{'=' * w}\n  v2 REPROCESS — DRY RUN (no DB writes)\n{'=' * w}")
@@ -535,6 +656,18 @@ def main() -> None:
 
         rep = build_report(user.id, db, outcomes, rows, enriched, retarget_demoted, tier0_ids)
         rep["name_drift_merges"] = drift_merged
+        rep["ledgers"] = build_ledgers(user.id, db, outcomes, rows, RECOVERY_MESSAGE_IDS)
+        rep["chain_table"] = build_chain_table(outcomes, tier0_ids, db, user.id)
+        led = rep["ledgers"]
+        print(f"\n  ROW LEDGER ({led['stored_rows_total']} stored rows, "
+              f"closes={led['row_tally_closes']}): {led['row_disposition_tally']}")
+        print(f"  MESSAGE LEDGER: {led['message_source_tally']}")
+        print(f"\n  CHAIN TABLE (real-order messages vs new Tier-0):")
+        for c in rep["chain_table"]:
+            flag = ("!!ALARM " if (c["ALARM_promotions_transactional"] or c["ALARM_missed_non_sent"])
+                    else ("sent-fwd" if c["sent_forward"] else "ok"))
+            print(f"    [{flag:8}] {c['message_id']} kind={c['email_kind']:18} "
+                  f"tier0={c['tier0_matched']} {c['labels']}")
         rep["elapsed_seconds"] = round(time.time() - t0, 1)
         print_report(rep)
 

@@ -391,3 +391,28 @@ def test_garment_numeric_sizes_not_hit_by_dimension_rule():
     from app.gmail_closet.reconcile import looks_non_garment_variant
     assert looks_non_garment_variant(_line("Kids Tee", size="110")) is False
     assert looks_non_garment_variant(_line('Wunder Train HR Tight 25"')) is False
+
+
+def test_dimension_rule_never_eats_dimension_bearing_garment_names():
+    # ONE-LINE RULE: a line is a non-garment variant only when its name/size carries a
+    # TWO-dimensional physical measurement (N x M cm/mm/in(ch)) or framed/unframed —
+    # single-number garment dimensions (6", 25", 22L, kids' 110) never match.
+    from app.gmail_closet.reconcile import looks_non_garment_variant
+    for real_catalog_name in (
+        'lululemon Align™ High-Rise Short 6"',
+        "Everywhere Backpack 22L",
+        'Wunder Train High-Rise Tight 25"',
+        "City Adventurer Backpack 20L",
+        "Kids Graphic Tee 110",
+    ):
+        assert looks_non_garment_variant(_line(real_catalog_name)) is False, real_catalog_name
+    # And inside a real order they ADMIT:
+    doc = _doc(EmailKind.order_confirmation, merchant="lululemon",
+               order=OrderInfo(order_id="c9"),
+               lines=[_line('lululemon Align™ High-Rise Short 6"'),
+                      _line("Everywhere Backpack 22L")])
+    d = reconcile_message("m1", doc)
+    assert len(d.admitted) == 2 and d.demoted == []
+    # While true two-dimensional items stay demoted:
+    assert looks_non_garment_variant(_line("SIZE: Multicolor-30x40cm Wood Framed")) is True
+    assert looks_non_garment_variant(_line("Canvas Print 60x35cm/23.6x13.7inch")) is True
