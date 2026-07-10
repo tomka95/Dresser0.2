@@ -327,7 +327,7 @@ export default function HomePage() {
               <span className="min-w-0 flex-1">
                 <span className="block text-[13.5px] font-semibold text-white">
                   {`${pendingReview.readyCount} ${
-                    pendingReview.readyCount === 1 ? 'receipt' : 'receipts'
+                    pendingReview.readyCount === 1 ? 'items' : 'items'
                   } ready to review`}
                 </span>
                 <span className="block text-[11.5px]" style={{ color: M.faint }}>

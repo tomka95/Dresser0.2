@@ -147,7 +147,7 @@ export function ProcessingPill({
             )}
           </div>
         )}
-        {done && <div style={{ color: 'var(--mint)', fontSize: 11, marginTop: 1 }}>Added to your closet</div>}
+        {done && <div style={{ color: 'var(--mint)', fontSize: 11, marginTop: 1 }}>Review Now</div>}
         {error && <div style={{ color: '#ff9096', fontSize: 11, marginTop: 1 }}>Failed — tap to retry</div>}
       </div>
       {!done && !error && onDismiss && (
