@@ -452,6 +452,12 @@ def apply_retargeting_rule(decisions: List[MessageDecision]) -> int:
 def enrichment_join(decisions: List[MessageDecision]) -> int:
     """Bind fulfillment variant rows to their order-confirmation named lines.
 
+    TODO(gate-2 close-out, cosmetic): the live GSH11L45C0019HH hat pair didn't
+    join because the confirmation's size field carried descriptor noise
+    ("Embroidery-one-size" vs the variant's "one-size") — loosen the size match
+    to strip descriptor prefixes before comparing, so GSH11L reads 13 items,
+    not 14. Guard with the existing ambiguity rules.
+
     Within one order_id: a needs_enrichment line whose parsed (color, size)
     matches EXACTLY ONE named (non-enrichment) admitted line — and that named
     line matches no other variant — takes the named line's product name/brand/
