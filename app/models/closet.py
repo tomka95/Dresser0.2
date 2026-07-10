@@ -241,6 +241,13 @@ class ClothingItem(Base):
     # candidate at confirm, stamped by the regeneration/self-heal writers.
     invariant_checked_at = Column(_tstz(), nullable=True)
 
+    # Generation observability (migration 0039): WHICH provider produced this item's
+    # card + its per-image USD cost (carried from the candidate at confirm / stamped by
+    # regen + self-heal). Makes nano-vs-flux volume queryable in Postgres. NULL for a
+    # non-generated (e.g. gmail retailer-image) item. Redaction-safe.
+    generation_provider = Column(Text, nullable=True)
+    generation_cost_usd = Column(Numeric, nullable=True)
+
     # Photo-seam Phase 6b (migration 0038): EXPLICIT, provable quarantine — a row
     # the backfill sweep judged non-wearable (junk mis-filed as a closet item, e.g.
     # a lunch bag or hair clip). archived_at is what actually hides it from every

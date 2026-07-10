@@ -304,6 +304,13 @@ class IngestCandidate(Base):
     # stamp it at creation (a post-P2 generated card is v2-compliant by construction).
     invariant_checked_at = Column(_tstz(), nullable=True)
 
+    # Generation observability (migration 0039): WHICH provider produced this row's
+    # card and its per-image USD cost — so nano-vs-flux volume + spend is queryable in
+    # Postgres, not reconstructable from two separate invoices. NULL until a card is
+    # generated. Redaction-safe (a provider name + a number, no bytes/PII).
+    generation_provider = Column(Text, nullable=True)
+    generation_cost_usd = Column(Numeric, nullable=True)
+
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 

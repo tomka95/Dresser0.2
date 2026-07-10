@@ -179,6 +179,15 @@ class Settings(BaseSettings):
     FLUX_KONTEXT_USD_PER_IMAGE: float = 0.04
     SEEDREAM_USD_PER_IMAGE: float = 0.03
     NANO_BANANA_USD_PER_IMAGE: float = 0.134
+    # HARD nano ceiling: nano_banana (gemini-3-pro-image, $0.134, ON the Gemini cap) is
+    # the ONLY on-cap, most-expensive generator. Default OFF: nano is NEVER invoked, at
+    # the single get_generation_provider dispatch gate AND the t2i entry — so no path
+    # (worker / self-heal / manual / backfill / regenerate / t2i) can reach it. With nano
+    # off the ladder runs the off-cap rungs only (FLUX.2 [pro] + flux_kontext); if they
+    # fail, generation FAILS (item -> pending_retry/failed, masked) rather than silently
+    # incurring an expensive on-cap charge. Flip true to re-allow nano as the LAST rung,
+    # only after an off-cap rung genuinely content-failed (a verify SKIP never advances).
+    GENERATION_NANO_FALLBACK_ENABLED: bool = False
     # Self-heal attempt ceiling (P2 cost cut): after this many FAILED generate→verify
     # attempts a target goes terminal (generation_status='failed') instead of perpetual
     # 'pending_retry', so a permanently-failing item stops being re-selected — and

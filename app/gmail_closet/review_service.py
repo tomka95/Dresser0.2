@@ -507,6 +507,9 @@ def _upsert_clothing_item(
         # Photo-seam Phase 6: the candidate's verify-v2 validation marker travels with
         # the item (a card born v2-compliant needs no backfill re-check).
         invariant_checked_at=cand.invariant_checked_at,
+        # Generation observability (0039): carry which provider produced the card + cost.
+        generation_provider=getattr(cand, "generation_provider", None),
+        generation_cost_usd=getattr(cand, "generation_cost_usd", None),
         # provenance='extracted' seed. INSERT-only: NOT in the on_conflict set_ below, so
         # a re-confirm preserves any 'inferred'/'user_edited' attributes already present.
         attributes_json=extracted_attrs,
@@ -539,6 +542,8 @@ def _upsert_clothing_item(
             "on_model": ex.on_model,
             "person_status": ex.person_status,
             "invariant_checked_at": ex.invariant_checked_at,
+            "generation_provider": ex.generation_provider,
+            "generation_cost_usd": ex.generation_cost_usd,
             "updated_at": func.now(),
         },
     ).returning(tbl.c.id, literal_column("(xmax = 0)").label("inserted"))

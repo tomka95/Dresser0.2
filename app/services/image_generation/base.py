@@ -156,6 +156,14 @@ class GenerationBudget:
             return self._remaining
 
 
+def nano_fallback_enabled() -> bool:
+    """True when the on-cap nano_banana generator is allowed (default False).
+
+    THE single predicate both nano gates read (get_generation_provider for the ladder,
+    generate_from_text for t2i) so the flag has exactly one meaning everywhere."""
+    return bool(settings.GENERATION_NANO_FALLBACK_ENABLED)
+
+
 def error_detail(exc: BaseException) -> str:
     """Redaction-safe one-liner for a provider-call exception: exception class +
     HTTP status code when one is cheaply available. NEVER includes the response
@@ -219,6 +227,14 @@ def get_generation_provider(name: Optional[str] = None) -> GenerationProvider:
         return NullGenerationProvider()
 
     resolved = (name or settings.GENERATION_PROVIDER or "").strip().lower()
+    # HARD NANO CEILING — the single dispatch gate. nano_banana (on-cap, $0.134) is
+    # NEVER instantiated unless GENERATION_NANO_FALLBACK_ENABLED is true. Every ladder
+    # caller resolves each rung through here, so one gate covers worker / self-heal /
+    # manual / backfill / regenerate. (The t2i entry — generate_from_text — bypasses
+    # this dispatch and is gated separately at its own call site with the same flag.)
+    if resolved == "nano_banana" and not nano_fallback_enabled():
+        logger.info("generation: nano_banana fallback DISABLED -> null provider (off-cap only)")
+        return NullGenerationProvider()
     key_attr = _PROVIDER_KEY_SETTING.get(resolved)
     if key_attr is None:
         logger.warning("generation: unknown provider %r -> null provider", resolved)

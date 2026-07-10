@@ -177,6 +177,9 @@ def test_email_single_image_pass_surfaces_but_does_not_gate(monkeypatch):
 # ===========================================================================
 
 def _t2i(monkeypatch, verdict: VerifyVerdict):
+    # t2i is nano-only; the nano-ceiling flag gates it OFF by default, so a t2i test
+    # must opt IN to exercise the generation path (not the disabled short-circuit).
+    monkeypatch.setattr(settings, "GENERATION_NANO_FALLBACK_ENABLED", True)
     monkeypatch.setattr(
         nano_banana, "generate_text_to_image",
         lambda p: GenerationResult(

@@ -117,9 +117,11 @@ def test_photo_generation_delegates_to_shared_core(db, user, monkeypatch):
 
 def test_no_photo_local_ladder_or_store_remains(db):
     # The parallel photo implementation is GONE: one ladder, one armed(), one store.
+    # (verify_generated_image IS imported into the photo module — but ONLY for the
+    # nano-ceiling deferred RE-VERIFY of an already-stored card; generation still runs
+    # exclusively through the shared core, which owns the generate->verify->store loop.)
     assert not hasattr(gen, "_GENERATION_LADDER")
     assert not hasattr(gen, "_store_generated")
-    assert not hasattr(gen, "verify_generated_image")  # verify lives in the core seam
     assert gen.generation_armed() == core.generation_armed()
 
 

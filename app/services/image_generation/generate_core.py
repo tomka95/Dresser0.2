@@ -48,6 +48,7 @@ from app.services.image_generation.base import (
     GenerationBudget,
     GenerationRequest,
     get_generation_provider,
+    nano_fallback_enabled,
 )
 from app.services.image_generation.prompt import build_t2i_prompt  # noqa: F401 (re-export)
 
@@ -61,12 +62,25 @@ _SUFFIX_BY_CT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp
 
 @dataclass
 class GenOutcome:
-    """Result of one generate→verify→store attempt (no image bytes / PII)."""
-    outcome: str                     # ready | held | budget
-    url: Optional[str] = None        # stored product-image URL on success
+    """Result of one generate→verify→store attempt (no image bytes / PII).
+
+    outcome:
+      ready           - verified + stored; url is the displayable card.
+      verify_deferred - an off-cap image was generated + STORED but verify could not
+                        run (429/error/disabled/budget). The url holds the stored
+                        (unverified, must-stay-masked) image; a later self-heal
+                        RE-VERIFIES it — no second generation charge. The ladder did
+                        NOT advance to a more expensive rung.
+      held            - a real generate→verify miss (content fail / storage down /
+                        ladder exhausted).
+      budget          - the per-run generation-call ceiling denied the first call.
+    """
+    outcome: str
+    url: Optional[str] = None        # stored product-image URL (ready OR verify_deferred)
     content_sha256: Optional[str] = None
     verify_score: float = 0.0
     cost_usd: float = 0.0
+    provider: Optional[str] = None   # which rung produced the image (observability)
 
 
 def generation_armed() -> bool:
@@ -156,7 +170,7 @@ def generate_from_reference_bytes(
             )
         )
         if result is None:
-            continue  # provider failure / unavailable -> next rung
+            continue  # provider failure / unavailable / gated-off -> next rung
         verdict = verify_generated_image(
             reference_bytes=reference_bytes,
             reference_content_type=reference_content_type,
@@ -169,8 +183,27 @@ def generate_from_reference_bytes(
             budget=verify_budget,
             usage=usage,
         )
-        # MANDATORY gate — a skipped/disabled verify is NOT a pass; person_present already
-        # folded into verdict.matches=False by verify_generated_image.
+        # VERIFY-SKIP vs CONTENT-FAIL (the ladder-advance fix). A skipped verify
+        # (429/error/disabled/budget) is NOT the image's fault — advancing to the next,
+        # more expensive rung on a transient verify outage is exactly what burned nano.
+        # Instead: STORE this already-paid off-cap image and return 'verify_deferred';
+        # the caller holds the item pending_retry (masked) and a later self-heal
+        # RE-VERIFIES the stored image (no second generation charge). Do NOT touch the
+        # next rung.
+        if getattr(verdict, "skipped", False):
+            url = _store(storage_client, user_id, result.image_bytes, result.content_type)
+            if not url:
+                break  # storage down -> plain hold (regenerate later)
+            return GenOutcome(
+                "verify_deferred",
+                url=url,
+                content_sha256=hashlib.sha256(result.image_bytes).hexdigest(),
+                verify_score=0.0,
+                cost_usd=float(result.cost_usd or 0.0),
+                provider=provider_name,
+            )
+        # A GENUINE content fail (verify ran; person/extra-garment/bg/framing/match bad)
+        # -> advance to the next rung (correct: the image really is unusable).
         if not verdict.matches:
             continue
         url = _store(storage_client, user_id, result.image_bytes, result.content_type)
@@ -182,6 +215,7 @@ def generate_from_reference_bytes(
             content_sha256=hashlib.sha256(result.image_bytes).hexdigest(),
             verify_score=float(verdict.score or 0.0),
             cost_usd=float(result.cost_usd or 0.0),
+            provider=provider_name,
         )
     # Budget denied before we could even attempt the first rung -> 'budget' (so callers
     # treat it as capped, not as a verify miss). Any call made but no pass -> 'held'.
@@ -207,6 +241,13 @@ def generate_from_text(
     usable source image at all. Because there is no reference to compare against, the gate
     is the single-image verify_image PLUS an explicit no-person requirement (person_present
     must be false). NEVER raises."""
+    # HARD NANO CEILING (second gate): t2i is nano-only and bypasses the
+    # get_generation_provider dispatch, so it is gated here with the SAME flag. Off ->
+    # no t2i generation happens at all (an imageless item simply stays pending rather
+    # than incurring an on-cap charge). No budget is consumed on the disabled path.
+    if not nano_fallback_enabled():
+        logger.info("t2i: nano_banana fallback DISABLED -> no t2i generation")
+        return GenOutcome("held")
     if not gen_budget.take():
         return GenOutcome("budget")
     from app.services.image_generation.nano_banana import generate_text_to_image
@@ -244,6 +285,7 @@ def generate_from_text(
         content_sha256=hashlib.sha256(result.image_bytes).hexdigest(),
         verify_score=float(verdict.score or 0.0),
         cost_usd=float(result.cost_usd or 0.0),
+        provider=getattr(result, "provider", "nano_banana"),
     )
 
 

@@ -56,6 +56,10 @@ def _configure(monkeypatch, **overrides):
         FAL_API_KEY="fal-test-key",
         GEMINI_API_KEY="gemini-test-key",
         GENERATION_TIMEOUT_SECONDS=5.0,
+        # These tests exercise the provider-REGISTRY dispatch (which class resolves for a
+        # name), not the nano cost-ceiling policy — so allow nano here. The ceiling gate
+        # (default OFF) has its own coverage in tests/test_nano_ceiling.py.
+        GENERATION_NANO_FALLBACK_ENABLED=True,
     )
     values.update(overrides)
     for key, value in values.items():

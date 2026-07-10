@@ -50,7 +50,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.gmail_closet.image_verify import VerifyBudget
+from app.gmail_closet.image_verify import VerifyBudget, verify_generated_image
 from app.gmail_closet.product_image_cache import lookup_verified, make_cache_key, promote_verified
 from app.platform.usage import UsageAccumulator, record_fill_usage
 from app.models import ClothingItem, IngestCandidate, IngestRun
@@ -175,7 +175,8 @@ def _maybe_promote_card(
 
 
 def _stamp_candidate_card_ready(
-    db: Session, cand: IngestCandidate, url: str, *, storage_client=None
+    db: Session, cand: IngestCandidate, url: str, *, storage_client=None,
+    provider: Optional[str] = None, cost_usd: Optional[float] = None,
 ) -> None:
     """Write a VERIFIED card onto the candidate and drive the SHARED state machine.
 
@@ -202,6 +203,9 @@ def _stamp_candidate_card_ready(
     cand.person_status = "person_free"
     # A post-P2 generated card passed the verify-v2 invariant gates by construction.
     cand.invariant_checked_at = datetime.now(timezone.utc)
+    if provider is not None:
+        cand.generation_provider = provider
+        cand.generation_cost_usd = cost_usd
     advance(cand, "image_generated")
     advance(cand, "verified_clean")
     if not cand.size:
@@ -212,6 +216,22 @@ def _stamp_candidate_card_ready(
     if tags_ready(cand):
         mark_candidate_ready(cand)
     _purge_crop_reference(cand, storage_client)
+
+
+def _stamp_verify_deferred(cand: IngestCandidate, g) -> None:
+    """Record an off-cap image whose verify could not run (verify_deferred).
+
+    The image is STORED (g.url) and kept as generated_image_url, but the row stays
+    generation_status='pending_retry' + masked (NOT 'ready') and the crop reference
+    (image_url) is deliberately KEPT so a later self-heal RE-VERIFIES the stored image
+    against it — no second generation charge. generation_attempts is NOT bumped (a
+    transient verify outage is not the image's fault). Caller commits."""
+    cand.generated_image_url = g.url
+    cand.generation_status = "pending_retry"
+    advance(cand, "image_pending")
+    if getattr(g, "provider", None) is not None:
+        cand.generation_provider = g.provider
+        cand.generation_cost_usd = g.cost_usd
 
 
 def _purge_crop_reference(cand: IngestCandidate, storage_client) -> None:
@@ -507,7 +527,10 @@ def _generate_candidate(
             # Candidate write + atomic counter increment in ONE transaction. The
             # `generation_ready = generation_ready + 1` runs as a single SQL UPDATE, so
             # concurrent workers can't lose an increment (row-level lock serializes them).
-            _stamp_candidate_card_ready(db, cand, g.url, storage_client=storage_client)
+            _stamp_candidate_card_ready(
+                db, cand, g.url, storage_client=storage_client,
+                provider=g.provider, cost_usd=g.cost_usd,
+            )
             db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
                 {IngestRun.generation_ready: IngestRun.generation_ready + 1},
                 synchronize_session=False,
@@ -519,6 +542,14 @@ def _generate_candidate(
                 verify_score=g.verify_score,
             )
             return _CandidateOutcome("ready", g.cost_usd)
+
+        if g.outcome == "verify_deferred" and g.url:
+            # Off-cap image generated + stored, but verify could not run. KEEP it
+            # (masked, pending_retry) + keep the crop; self-heal re-verifies later —
+            # no nano, no second generation charge. NOT an attempt-ceiling bump.
+            _stamp_verify_deferred(cand, g)
+            db.commit()
+            return _CandidateOutcome("held", g.cost_usd)
 
         if g.outcome == "budget":
             # Budget ran out before any generation call (race with concurrent workers).
@@ -630,17 +661,19 @@ class SelfHealStats:
     ready: int = 0             # verified + stored -> flipped to 'ready'
     held: int = 0             # still could not verify/store -> left 'pending_retry'
     download_errors: int = 0  # stored crop could not be re-fetched (left 'pending_retry')
+    reverified: int = 0        # verify_deferred cards re-verified this sweep (no regen)
     budget_stopped: bool = False
     cost_usd: float = 0.0
 
 
 @dataclass
 class _HealOutcome:
-    outcome: str                 # ready | held | download_error | budget
-    url: Optional[str] = None    # stored generated-card URL on success
+    outcome: str                 # ready | verify_deferred | held | download_error | budget
+    url: Optional[str] = None    # stored generated-card URL (ready OR verify_deferred)
     cost_usd: float = 0.0
     content_sha256: Optional[str] = None  # for the shared-cache promote
     verify_score: float = 0.0
+    provider: Optional[str] = None        # which rung produced the image (observability)
 
 
 def _generate_from_crop(
@@ -698,11 +731,54 @@ def _generate_from_crop(
     )
     # 'budget' = denied before any call (caller stops the sweep); 'held' = a real
     # attempt missed (caller bumps the item's attempt ceiling); 'ready' carries the
-    # stored URL + sha/score for the shared-cache promote.
+    # stored URL + sha/score for the shared-cache promote; 'verify_deferred' = an
+    # off-cap image was stored but verify couldn't run (caller holds it, re-verifies).
     return _HealOutcome(
         g.outcome, url=g.url, cost_usd=g.cost_usd,
         content_sha256=g.content_sha256, verify_score=g.verify_score,
+        provider=g.provider,
     )
+
+
+def _reverify_deferred_candidate(
+    db: Session, cand: IngestCandidate, storage_client,
+    verify_budget: VerifyBudget, usage: UsageAccumulator,
+) -> str:
+    """RE-VERIFY a verify_deferred candidate's ALREADY-STORED card — no regeneration.
+
+    The image (generated_image_url) was generated + paid for on an earlier pass but
+    verify couldn't run then. Re-run the pair verify (stored card vs the kept crop):
+      * PASS      -> stamp ready (crop purged); the item finally surfaces.
+      * SKIP      -> verify still unavailable; stays deferred (no charge, retry later).
+      * CONTENT-FAIL -> the image really is bad: drop the card (back to a normal
+                        regenerate target) + bump the attempt ceiling.
+    Returns 'ready' | 'deferred' | 'failed_content'. NEVER makes a generation call, so
+    a verify hiccup can never cost a second image."""
+    crop = _download_bytes(cand.image_url) if cand.image_url else None
+    card = _download_bytes(cand.generated_image_url)
+    if crop is None or card is None:
+        return "deferred"  # transient fetch miss — leave it for the next sweep
+    verdict = verify_generated_image(
+        reference_bytes=crop[0], reference_content_type=crop[1],
+        candidate_bytes=card[0], candidate_content_type=card[1],
+        category=cand.category, color=cand.color, pattern=None, name=cand.name,
+        budget=verify_budget, usage=usage,
+    )
+    if getattr(verdict, "skipped", False):
+        return "deferred"
+    if verdict.matches:
+        _stamp_candidate_card_ready(
+            db, cand, cand.generated_image_url, storage_client=storage_client,
+        )
+        db.commit()
+        return "ready"
+    # Genuine content fail: discard the bad card, become a normal regenerate target.
+    cand.generated_image_url = None
+    cand.generation_attempts = (cand.generation_attempts or 0) + 1
+    cand.generation_status = _next_failure_status(cand.generation_attempts)
+    cand.pipeline_state = "failed" if cand.generation_status == "failed" else "image_pending"
+    db.commit()
+    return "failed_content"
 
 
 def run_generation_self_heal(
@@ -770,9 +846,26 @@ def run_generation_self_heal(
                 .all()
             )
 
+        # verify_deferred candidates: pending_retry rows that DO already have a stored
+        # card + a crop — re-verify the stored card (NEVER regenerate; a verify hiccup
+        # must not cost a second image). Selected separately from cand_rows (which
+        # require generated_image_url IS NULL).
+        deferred_q = db.query(IngestCandidate).filter(
+            IngestCandidate.user_id == user_id,
+            IngestCandidate.source_type == "photo",
+            IngestCandidate.status == "pending",
+            IngestCandidate.generation_status == _SELF_HEAL_STATUS,
+            IngestCandidate.generated_image_url.isnot(None),
+            IngestCandidate.image_url.isnot(None),
+            IngestCandidate.generation_attempts < settings.GENERATION_MAX_ATTEMPTS,
+        )
+        if exclude_sync_id is not None:
+            deferred_q = deferred_q.filter(IngestCandidate.sync_id != exclude_sync_id)
+        deferred_rows = deferred_q.order_by(IngestCandidate.created_at.asc()).limit(limit).all()
+
         stats.candidates_seen = len(cand_rows)
         stats.items_seen = len(item_rows)
-        if not cand_rows and not item_rows:
+        if not cand_rows and not item_rows and not deferred_rows:
             return stats
 
         if storage_client is None:
@@ -792,6 +885,13 @@ def run_generation_self_heal(
                 gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
             )
 
+        # --- verify_deferred re-verify FIRST (no generation) ------------------------
+        for c in deferred_rows:
+            r = _reverify_deferred_candidate(db, c, storage_client, verify_budget, usage)
+            if r == "ready":
+                stats.reverified += 1
+                stats.ready += 1
+
         # --- pre-confirm candidates: write the card to generated_image_url ---------
         for c in cand_rows:
             # Shared cache-first (branded products only — see _cache_key_for).
@@ -809,10 +909,21 @@ def run_generation_self_heal(
                 stats.download_errors += 1
                 stats.held += 1
                 continue
+            if r.outcome == "verify_deferred" and r.url:
+                # Off-cap image stored but verify couldn't run: keep it masked +
+                # pending_retry, re-verify on a later sweep. No nano, no re-gen.
+                _stamp_verify_deferred(c, r)
+                db.commit()
+                stats.held += 1
+                stats.cost_usd += r.cost_usd
+                continue
             if r.url:
                 # Verified card + the SHARED state machine (ready only via the shared
                 # mark_candidate_ready invariant; incomplete tags rest at verified_clean).
-                _stamp_candidate_card_ready(db, c, r.url, storage_client=storage_client)
+                _stamp_candidate_card_ready(
+                    db, c, r.url, storage_client=storage_client,
+                    provider=r.provider, cost_usd=r.cost_usd,
+                )
                 db.commit()
                 _maybe_promote_card(
                     brand=c.brand, name=c.name, color=c.color, url=r.url,
@@ -851,6 +962,16 @@ def run_generation_self_heal(
                     stats.download_errors += 1
                     stats.held += 1
                     continue
+                if r.outcome == "verify_deferred":
+                    # Verify couldn't run for a confirmed item. A confirmed item keeps
+                    # its card IN image_url (no separate stash column) and its crop is
+                    # gone, so we can't re-verify a stored card the way candidates do —
+                    # just HOLD (masked, pending_retry), no attempt bump. With nano OFF
+                    # (default) a later sweep only re-runs the cheap off-cap flux rung;
+                    # the expensive on-cap double-charge is already impossible.
+                    stats.held += 1
+                    stats.cost_usd += r.cost_usd
+                    continue
                 if r.url:
                     it.image_url = r.url
                     it.generation_status = "ready"
@@ -858,6 +979,8 @@ def run_generation_self_heal(
                     # Ready-first: the verified card replacing the crop is person-free.
                     it.person_status = "person_free"
                     it.invariant_checked_at = _now_utc()
+                    it.generation_provider = r.provider
+                    it.generation_cost_usd = r.cost_usd
                     db.commit()
                     _maybe_promote_card(
                         brand=it.brand, name=it.name, color=it.color_primary, url=r.url,
@@ -967,7 +1090,7 @@ def run_item_regeneration(
                 steering=reason,
             )
             new_url, cost, miss = r.url, r.cost_usd, r.outcome
-            new_sha, new_score = r.content_sha256, r.verify_score
+            new_sha, new_score, new_provider = r.content_sha256, r.verify_score, r.provider
         else:
             # No reference at all -> text-to-image from attributes (verified + person-free).
             from app.services.image_generation.generate_core import generate_from_text
@@ -985,15 +1108,20 @@ def run_item_regeneration(
                 steering=reason,
             )
             new_url, cost, miss = g.url, g.cost_usd, g.outcome
-            new_sha, new_score = g.content_sha256, g.verify_score
+            new_sha, new_score, new_provider = g.content_sha256, g.verify_score, g.provider
 
-        if new_url:
+        # ONLY a genuine 'ready' pass replaces the image — a 'verify_deferred' (image
+        # stored but verify couldn't run) must NOT be shown; it falls through to the
+        # miss branch below (the existing image is kept, item left pending_retry).
+        if miss == "ready" and new_url:
             item.image_url = new_url
             item.generation_status = "ready"
             item.generation_attempts = 0  # verified success clears the failure ledger
             # Ready-first: regeneration output passed the verified person-free gate.
             item.person_status = "person_free"
             item.invariant_checked_at = _now_utc()
+            item.generation_provider = new_provider
+            item.generation_cost_usd = cost
             db.commit()
             # Shared-cache promote (branded products only): a freshly verified card for
             # this product identity serves future lookups across both pipelines.
@@ -1197,7 +1325,10 @@ def _generate_manual_candidate(
             )
 
         if g.outcome == "ready" and g.url:
-            _stamp_candidate_card_ready(db, cand, g.url, storage_client=storage_client)
+            _stamp_candidate_card_ready(
+                db, cand, g.url, storage_client=storage_client,
+                provider=g.provider, cost_usd=g.cost_usd,
+            )
             db.query(IngestRun).filter(IngestRun.sync_id == sync_id).update(
                 {IngestRun.generation_ready: IngestRun.generation_ready + 1},
                 synchronize_session=False,
@@ -1208,6 +1339,14 @@ def _generate_manual_candidate(
                 url=g.url, content_sha256=g.content_sha256, verify_score=g.verify_score,
             )
             return "ready"
+        if g.outcome == "verify_deferred" and g.url and cand.image_url:
+            # Off-cap image stored, verify couldn't run, AND a crop reference exists to
+            # re-verify against later: keep it masked + pending_retry — no nano, no
+            # second generation charge. (A no-reference t2i manual add has no crop, so
+            # it can't be re-verified; that falls through to the miss branch instead.)
+            _stamp_verify_deferred(cand, g)
+            db.commit()
+            return "held"
         if g.outcome == "budget":
             cand.generation_status = "pending_retry"
             db.commit()
