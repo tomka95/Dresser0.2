@@ -150,6 +150,9 @@ class SimRow:
     size: Optional[str]
     color: Optional[str]
     unit_price: Optional[float]
+    brand: Optional[str]
+    category: Optional[str]
+    qty: int
     admitted: bool
     reason: Optional[str]
     needs_enrichment: bool
@@ -170,6 +173,9 @@ def simulate_staging(decisions: List[MessageDecision]) -> Dict[str, SimRow]:
                     order_id=md.order_id if ld.admitted else None,
                     size=ld.line.size, color=ld.line.color,
                     unit_price=ld.line.unit_price,
+                    brand=ld.line.brand,
+                    category=ld.line.category.value if ld.line.category else None,
+                    qty=ld.line.qty or 1,
                     admitted=ld.admitted, reason=ld.reason,
                     needs_enrichment=ld.needs_enrichment, is_return=ld.is_return,
                 )
@@ -414,8 +420,8 @@ def apply_rewrite(db, user, rows: Dict[str, SimRow], outcomes: List[MsgOutcome])
         _upsert_candidate(db, dict(
             user_id=user.id, sync_id=sync_id, message_id=r.message_ids[0],
             source_line_key=r.content_key, source_message_ids=r.message_ids,
-            seen_count=len(r.message_ids), name=r.name, brand=None,
-            category=None, color=r.color, size=r.size, quantity=1,
+            seen_count=len(r.message_ids), name=r.name, brand=r.brand or r.merchant,
+            category=r.category, color=r.color, size=r.size, quantity=r.qty,
             unit_price=r.unit_price, currency=None, order_date=None,
             is_return=r.is_return, merchant=r.merchant, order_id=r.order_id,
             image_url=None, image_status="pending", confidence_overall=None,
