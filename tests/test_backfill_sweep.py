@@ -287,3 +287,156 @@ def test_verify_budget_exhaustion_leaves_resume_target(db, user, monkeypatch):
     assert report.verify_skipped == 1
     assert it.invariant_checked_at is None             # still a target next run
     assert it.generation_status == "ready"             # untouched — nothing demoted
+
+
+# ===========================================================================
+# Phase 6b — whole-table widening (the 12 pre-rebuild rows this bucket missed)
+# ===========================================================================
+
+def _legacy_gmail_item(db, user, **over):
+    """Shape of the 12 live rows: gmail, person_status='unknown',
+    generation_status=None — the exact combination the old B5 filter excluded."""
+    fields = dict(
+        user_id=user.id, name="Legacy Retailer Tee", category="top",
+        color_primary="black", source_type="gmail", image_url="https://cdn/retailer.jpg",
+        generation_status=None, person_status="unknown",
+    )
+    fields.update(over)
+    it = ClothingItem(**fields)
+    db.add(it); db.commit(); db.refresh(it)
+    return it
+
+
+def test_whole_table_selection_catches_uncohorted_legacy_rows(db, user):
+    """The old query required person_free/ready — a pre-rebuild row sitting at
+    unknown/None was invisible to B5 entirely. It must be selected now."""
+    legacy = _legacy_gmail_item(db, user)
+    assert legacy.id in {r.id for r in sweep._b5_items_query(db).all()}
+
+    report = sweep.classify(db)
+    assert report.b5_unvalidated_items == 1
+
+
+def test_dry_run_reports_no_image_and_non_clothing_subsets_without_mutating(db, user):
+    _legacy_gmail_item(db, user, image_url=None, name="SHEIN Halter Top")
+    _legacy_gmail_item(
+        db, user, image_url=None, category="accessory",
+        name="1pc Leopard Print Handbag Lunch Bag, Insulated Lunch Box",
+        source_line_key=None,
+    )
+    scarf = _legacy_gmail_item(
+        db, user, image_url=None, category="accessory",
+        name="1pc Simple Striped Tassel Plaid Scarf",
+    )
+
+    report = sweep.classify(db)
+
+    assert report.b5_unvalidated_items == 3
+    assert report.b5_items_no_image == 3
+    assert report.b5_items_suspected_non_clothing == 1   # the lunch bag only
+    # A wearable accessory (scarf) is NOT auto-flagged — narrow, literal keyword hit only.
+    assert not sweep._looks_like_non_clothing(scarf.name, scarf.category)
+    # Nothing mutated.
+    db.refresh(scarf)
+    assert scarf.invariant_checked_at is None and scarf.archived_at is None
+
+
+def test_no_image_item_generates_a_compliant_card(db, user, monkeypatch):
+    it = _legacy_gmail_item(db, user, image_url=None, name="MUSERA Denim Jacket",
+                            category="outerwear")
+    import app.services.image_generation.generate_core as gc
+    monkeypatch.setattr(
+        gc, "generate_from_text",
+        lambda **k: GenOutcome("ready", url="https://cdn/generated-jacket.png",
+                               content_sha256="ff" * 32, verify_score=0.92),
+    )
+    monkeypatch.setattr(sweep, "_storage_from_env", lambda: None)
+
+    report = sweep.run_sweep(db, execute=True, run_gmail_fill=False)
+
+    db.refresh(it)
+    assert report.regenerated == 1
+    assert it.image_url == "https://cdn/generated-jacket.png"
+    assert it.generation_status == "ready"
+    assert it.person_status == "person_free"
+    assert it.invariant_checked_at is not None
+
+
+def test_no_image_item_never_left_imageless_and_displayable_on_miss(db, user, monkeypatch):
+    """A no-image item that can't be generated goes terminal 'failed' — still
+    imageless, but generation_status='failed' keeps the display gate masked. It is
+    NEVER shown, and is reported (not silently vanished — stamped + terminal)."""
+    from app.core.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "GENERATION_MAX_ATTEMPTS", 1)
+    it = _legacy_gmail_item(db, user, image_url=None, name="SHEIN Halter Top")
+    import app.services.image_generation.generate_core as gc
+    monkeypatch.setattr(gc, "generate_from_text", lambda **k: GenOutcome("held"))
+    monkeypatch.setattr(sweep, "_storage_from_env", lambda: None)
+
+    report = sweep.run_sweep(db, execute=True, run_gmail_fill=False)
+
+    db.refresh(it)
+    assert report.terminal_failed == 1
+    assert it.image_url is None
+    assert it.generation_status == "failed"
+    assert it.invariant_checked_at is not None    # converged — never re-billed again
+    from app.models.closet import display_image_url
+    assert display_image_url(it) is None          # imageless AND masked — never shown
+
+
+def test_non_clothing_is_quarantined_never_imaged_never_auto_deleted(db, user, monkeypatch):
+    junk = _legacy_gmail_item(
+        db, user, image_url=None, category="accessory",
+        name="1pc Korean Style Metal Hair Clip, Elegant Hairpin Barrette",
+    )
+
+    def _boom(**k):
+        raise AssertionError("must never spend a generation call on quarantined junk")
+
+    import app.services.image_generation.generate_core as gc
+    monkeypatch.setattr(gc, "generate_from_text", _boom)
+    monkeypatch.setattr(sweep, "verify_image", lambda **k: (_ for _ in ()).throw(
+        AssertionError("must never verify quarantined junk")))
+
+    report = sweep.run_sweep(db, execute=True, run_gmail_fill=False)
+
+    db.refresh(junk)
+    assert report.quarantined == [
+        {"id": str(junk.id), "name": junk.name, "category": "accessory"}
+    ]
+    assert junk.archived_at is not None            # quarantined
+    assert junk.invariant_checked_at is not None   # converged
+    assert junk.image_url is None                  # STILL exists in the DB — not deleted
+    from app.services.closet_service import list_closet_items
+    assert junk.id not in {i.id for i in list_closet_items(db, user.id)}  # hidden from grid
+
+
+def test_quarantine_idempotent_second_run_zero_calls(db, user, monkeypatch):
+    _legacy_gmail_item(
+        db, user, image_url=None, category="accessory",
+        name="1pc Leopard Print Handbag Lunch Bag, Insulated",
+    )
+    calls = {"n": 0}
+    import app.services.image_generation.generate_core as gc
+    monkeypatch.setattr(gc, "generate_from_text", lambda **k: calls.__setitem__("n", calls["n"] + 1) or GenOutcome("held"))
+
+    sweep.run_sweep(db, execute=True, run_gmail_fill=False)
+    sweep.run_sweep(db, execute=True, run_gmail_fill=False)
+
+    assert calls["n"] == 0   # never touched generation — quarantined on first pass, forever
+
+
+def test_list_closet_items_excludes_archived(db, user):
+    from app.services.closet_service import list_closet_items
+
+    visible = ClothingItem(user_id=user.id, name="Visible Tee", category="top")
+    hidden = ClothingItem(
+        user_id=user.id, name="Archived Tee", category="top",
+        archived_at=sweep._now_utc(),
+    )
+    db.add_all([visible, hidden]); db.commit()
+
+    ids = {i.id for i in list_closet_items(db, user.id)}
+    assert visible.id in ids
+    assert hidden.id not in ids

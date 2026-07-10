@@ -24,22 +24,28 @@ def list_closet_items(
     include_tags: bool = False,  # Ignored for backward compatibility, no longer used
 ) -> List[ClothingItem]:
     """List all clothing items for a user with images eagerly loaded.
-    
+
     Uses selectinload to fetch all ItemImage relationships in a single query,
     avoiding N+1 queries when checking for primary images.
-    
+
+    Excludes archived_at rows — the same filter every other read path already
+    applies (ranking/features, ranking/feed, stylist retrieval, todays_look). This
+    was the one outlier: the closet grid was still listing archived/quarantined
+    items (Photo-seam Phase 6b: quarantined non-clothing rows must not surface
+    anywhere, including here).
+
     Args:
         db: Database session
         user_id: UUID of the user
         include_tags: Ignored (kept for backward compatibility)
-        
+
     Returns:
         List of ClothingItem SQLAlchemy models with images relationship loaded,
         ordered by created_at DESC (newest first)
     """
     items = (
         db.query(ClothingItem)
-        .filter(ClothingItem.user_id == user_id)
+        .filter(ClothingItem.user_id == user_id, ClothingItem.archived_at.is_(None))
         .options(selectinload(ClothingItem.images))  # Always load images
         .order_by(ClothingItem.created_at.desc())
         .all()

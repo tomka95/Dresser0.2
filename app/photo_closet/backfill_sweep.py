@@ -70,18 +70,21 @@ class SweepReport:
     b4_gmail_frozen: int = 0
     b5_unvalidated_candidates: int = 0
     b5_unvalidated_items: int = 0
+    b5_items_no_image: int = 0         # subset of b5_unvalidated_items: image_url NULL
+    b5_items_suspected_non_clothing: int = 0  # subset: name/category smells non-clothing
     projected_verify_calls: int = 0
-    projected_regens_upper: int = 0    # worst case: every unvalidated image fails
+    projected_regens_upper: int = 0    # worst case: every unvalidated image needs a regen
     # --- execution ------------------------------------------------------------
     executed: bool = False
     revalidated_pass: int = 0
     revalidated_fail: int = 0
-    regenerated: int = 0               # failing images replaced by a compliant card
+    regenerated: int = 0               # failing/missing images replaced by a compliant card
     demoted: int = 0                   # knocked out of display, left heal-eligible
     terminal_failed: int = 0           # attempt ceiling burned -> 'failed'
     verify_skipped: int = 0            # budget/error -> marker left NULL (resume target)
     residue_normalized: int = 0
     crops_purged: int = 0
+    quarantined: List[dict] = field(default_factory=list)  # [{id, name, category}, ...]
     budget_stopped: bool = False
     errors: int = 0
 
@@ -150,21 +153,39 @@ def _b5_candidates_query(db: Session):
 
 
 def _b5_items_query(db: Session):
+    """B5b (whole-table, Photo-seam Phase 6b): EVERY clothing_item lacking the
+    invariant marker — no displayability filter, no image_url filter. The original
+    query required the row to ALREADY be displayable (person_free / generation
+    'ready'), which silently excluded pre-rebuild rows stuck at person_status=
+    'unknown' / generation_status=NULL — exactly the rows most likely to violate the
+    invariant (imageless, or an unverified retailer photo). archived_at excludes
+    already-quarantined rows so quarantine is idempotent."""
     return db.query(ClothingItem).filter(
         ClothingItem.invariant_checked_at.is_(None),
-        ClothingItem.image_url.isnot(None),
-        or_(
-            # photo/manual: displayable ⟺ generation-ready card
-            ClothingItem.source_type.in_(_PHOTOISH)
-            & (ClothingItem.generation_status == "ready"),
-            # gmail: displayable ⟺ affirmative person_free (or a ready card)
-            (ClothingItem.source_type == "gmail")
-            & or_(
-                ClothingItem.person_status == "person_free",
-                ClothingItem.generation_status == "ready",
-            ),
-        ),
+        ClothingItem.archived_at.is_(None),
     )
+
+
+# Non-clothing name smell test (Phase 6b): category alone can't discriminate — a
+# lunch bag and a scarf are both filed under 'accessory'. Deliberately narrow and
+# conservative: only 'accessory'-categoried rows are checked (real clothing
+# categories — top/bottom/dress/outerwear/shoes — are never auto-quarantined), and
+# only on an explicit non-wearable keyword hit. A miss here just means a normal B5
+# regen attempt on a junk row (wasted cost, never wrong); a false positive would
+# hide a real accessory, which is why the keyword list stays narrow and literal.
+_NON_CLOTHING_KEYWORDS = (
+    "lunch bag", "lunch box", "handbag", "tote bag", "tableware", "food storage",
+    "hairpin", "hair clip", "hair accessory", "hair barrette", "claw clip",
+    "phone case", "water bottle", "yoga mat", "cutlery", "kitchen", "home decor",
+    "storage box", "makeup bag", "cosmetic bag", "pencil case", "stationery",
+)
+
+
+def _looks_like_non_clothing(name: Optional[str], category: Optional[str]) -> bool:
+    if (category or "").strip().lower() != "accessory":
+        return False
+    n = (name or "").lower()
+    return any(kw in n for kw in _NON_CLOTHING_KEYWORDS)
 
 
 def classify(db: Session) -> SweepReport:
@@ -175,11 +196,22 @@ def classify(db: Session) -> SweepReport:
     r.b3_ready_rows_holding_crops = _b3_query(db).count()
     r.b4_gmail_frozen = _b4_query(db).count()
     r.b5_unvalidated_candidates = _b5_candidates_query(db).count()
-    r.b5_unvalidated_items = _b5_items_query(db).count()
-    r.projected_verify_calls = r.b5_unvalidated_candidates + r.b5_unvalidated_items
-    # Worst case every unvalidated image fails and burns a full 2-rung ladder; B4's
-    # gmail fill adds its own (cache-first, budget-capped) generation on top.
-    r.projected_regens_upper = r.projected_verify_calls
+    item_rows = _b5_items_query(db).all()
+    r.b5_unvalidated_items = len(item_rows)
+    r.b5_items_no_image = sum(1 for it in item_rows if not it.image_url)
+    r.b5_items_suspected_non_clothing = sum(
+        1 for it in item_rows if _looks_like_non_clothing(it.name, it.category)
+    )
+    # Verify billing only applies to rows that HAVE an image to check; imageless
+    # rows skip straight to generation (no existing image to verify), and
+    # suspected-non-clothing rows are quarantined for free (no billing at all).
+    billable_items = r.b5_unvalidated_items - r.b5_items_no_image - r.b5_items_suspected_non_clothing
+    r.projected_verify_calls = r.b5_unvalidated_candidates + billable_items
+    # Worst case every unvalidated/imageless clothing row needs a regen (a full
+    # 2-rung ladder each); B4's gmail fill adds its own (cache-first, capped) work.
+    r.projected_regens_upper = (
+        r.b5_unvalidated_candidates + r.b5_unvalidated_items - r.b5_items_suspected_non_clothing
+    )
     return r
 
 
@@ -389,14 +421,81 @@ def _revalidate_candidates(
             db.commit()
 
 
+def _quarantine_item(db: Session, it: ClothingItem, report: SweepReport) -> None:
+    """Quarantine (never auto-delete): archived_at hides it from every read path
+    (ranking/features, ranking/feed, stylist retrieval, todays_look, and — as of the
+    Phase 6b list_closet_items fix — the closet grid itself). invariant_checked_at
+    is stamped too so the row converges out of every future sweep. Reversible: an
+    operator un-archives (archived_at=NULL) to restore a false positive."""
+    it.archived_at = _now_utc()
+    it.invariant_checked_at = _now_utc()
+    report.quarantined.append({
+        "id": str(it.id), "name": it.name, "category": it.category,
+    })
+    logger.info("quarantined non-clothing item=%s category=%s", it.id, it.category)
+    db.commit()
+
+
 def _revalidate_items(
     db: Session, report: SweepReport, storage_client, gen_budget, verify_budget, usage,
 ) -> None:
-    """B5 for confirmed items: same verify-v2 pass; a failing image is masked
-    (generation_status='pending_retry' hides it for every source) and regenerated
-    inline from its own bytes; ceiling -> terminal 'failed' (masked forever)."""
+    """B5 for confirmed items (Phase 6b: whole-table — see _b5_items_query).
+
+    Three branches per unvalidated row:
+      * suspected non-clothing (accessory + a junk-keyword name) -> QUARANTINE, no
+        billing, never imaged.
+      * image_url IS NULL (rule (1) violation: no image at all) -> t2i straight to
+        a compliant card (nothing existing to verify).
+      * has an image -> the original re-validate flow: verify-v2, pass -> stamp,
+        fail -> mask (generation_status='pending_retry', hides it for EVERY source)
+        + regenerate inline from its own bytes.
+    Ceiling burned in any generation path -> terminal 'failed' (masked forever,
+    never a violating/imageless-but-displayable row)."""
     rows: List[ClothingItem] = _b5_items_query(db).all()
     for it in rows:
+        if _looks_like_non_clothing(it.name, it.category):
+            _quarantine_item(db, it, report)
+            continue
+
+        if not it.image_url:
+            # Rule (1): no image at all. Nothing to verify — go straight to t2i.
+            if gen_budget.remaining <= 0:
+                report.budget_stopped = True
+                continue
+            from app.services.image_generation.generate_core import generate_from_text
+
+            g = generate_from_text(
+                name=it.name, category=it.category, color=it.color_primary,
+                brand=it.brand,
+                storage_client=storage_client, user_id=it.user_id,
+                gen_budget=gen_budget, verify_budget=verify_budget, usage=usage,
+            )
+            if g.outcome == "ready" and g.url:
+                it.image_url = g.url
+                it.generation_status = "ready"
+                it.generation_attempts = 0
+                it.person_status = "person_free"
+                it.invariant_checked_at = _now_utc()
+                db.commit()
+                _maybe_promote_card(
+                    brand=it.brand, name=it.name, color=it.color_primary,
+                    url=g.url, content_sha256=g.content_sha256, verify_score=g.verify_score,
+                )
+                report.regenerated += 1
+            elif g.outcome == "budget":
+                report.budget_stopped = True
+            else:
+                _bump_attempts(it)
+                if it.generation_status == "failed":
+                    # Fail-closed: still imageless, but generation_status='failed'
+                    # keeps display_image_url masked — never imageless-and-shown.
+                    # Stamped checked so this terminal row stops being re-selected;
+                    # it remains a real (masked) rule-(1) gap, reported separately.
+                    it.invariant_checked_at = _now_utc()
+                    report.terminal_failed += 1
+                db.commit()
+            continue
+
         dl = _download_bytes(it.image_url)
         if dl is None:
             report.verify_skipped += 1
