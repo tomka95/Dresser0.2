@@ -42,6 +42,8 @@ from app.core.config import settings
 from app.models import IngestCandidate, IngestRun, PhotoDetectSession, ProcessedUpload
 from app.photo_closet.cutout import build_cutout
 from app.photo_closet.dedup import dedup_check
+from app.services.closet_canonicalize import default_size_for_category, load_user_facts
+from app.services.readiness import TERMINAL_STATES, advance, mark_candidate_ready, tags_ready
 from app.photo_closet.detection import (
     DetectionResult,
     GarmentCategory,
@@ -117,9 +119,16 @@ class PhotoSelection:
 
 @dataclass
 class PhotoCommitResult:
+    """Per-zone accounting (Photo-seam Phase 3, G2): every selected zone is accounted
+    for — selected == staged + failed + zones inside duplicate photos. Nothing is ever
+    silently dropped: a zone that cannot proceed is staged as a TERMINAL 'failed'
+    candidate (visible in settle accounting), and a duplicate photo's zones are
+    reported via `duplicates` (explicit dedup, per photo)."""
     sync_id: str
     images_processed: int = 0   # photos whose selection was staged (dups excluded)
-    staged: int = 0             # candidates staged across all photos
+    selected: int = 0           # zones requested (detected regions + manual boxes)
+    staged: int = 0             # viable candidates staged across all photos
+    failed: int = 0             # zones staged as terminal 'failed' (cutout/generation unavailable)
     duplicates: int = 0         # photos skipped: already committed elsewhere
 
 
@@ -130,20 +139,29 @@ def store_cutout(storage_client, user_id: UUID, cut) -> Optional[str]:
 
     Module-level so tests can monkeypatch it without a real bucket. Mirrors
     image_resolver._upload: identical bytes (any run, any user) reuse one stored URL.
+
+    BEST-EFFORT: an upload failure (bucket down, bad credentials) returns None instead
+    of raising — the same degraded outcome as storage_client=None, so a mid-batch
+    storage outage stages the garment image-less rather than 500-ing the whole commit
+    (matching the route's documented stage-without-images fallback).
     """
     if storage_client is None:
         return None
     from app.utils.image_blob_store import get_or_upload
 
-    return get_or_upload(
-        cut.data,
-        lambda: storage_client.upload_bytes(
+    try:
+        return get_or_upload(
             cut.data,
-            folder=f"photo_items/{user_id}",
-            content_type=cut.content_type,
-            suffix=cut.suffix,
-        ),
-    )
+            lambda: storage_client.upload_bytes(
+                cut.data,
+                folder=f"photo_items/{user_id}",
+                content_type=cut.content_type,
+                suffix=cut.suffix,
+            ),
+        )
+    except Exception as exc:
+        logger.warning("store_cutout: upload failed (%s)", type(exc).__name__)
+        return None
 
 
 def _source_line_key(image_sha256: str, box_2d: List[int]) -> str:
@@ -193,7 +211,7 @@ def _is_duplicate_upload(db: Session, user_id: UUID, sanitized: SanitizedImage) 
 
 def _stage_candidate(
     db: Session, user_id: UUID, sync_id: UUID, garment, image_url: Optional[str],
-    source_line_key: str, *, on_model: bool = False,
+    source_line_key: str, *, on_model: bool = False, facts: Optional[dict] = None,
 ) -> IngestCandidate:
     """Upsert one garment as a pending photo candidate on UNIQUE(user_id, source_line_key).
 
@@ -204,6 +222,11 @@ def _stage_candidate(
     ``on_model`` (G6): the source photo had a person (person_count>=1), so this cutout
     contains a person. It's kept only as the generation reference; the display layer masks
     it until a verified person-free card lands.
+
+    ``facts`` (Photo-seam Phase 1, stage-time canonicalize-lite): the user's onboarding
+    facts — a photo can't reveal a size, so the size defaults from facts.sizes exactly
+    like the Gmail fill pass does. The shared readiness invariant requires size
+    present-or-sizeless before a candidate may go 'ready'.
     """
     conf = garment.confidence
     confidence_json = {
@@ -214,6 +237,7 @@ def _stage_candidate(
             "color": conf.color,
         }
     }
+    category = garment.category.value
     fields = dict(
         sync_id=sync_id,
         message_id=None,
@@ -221,9 +245,10 @@ def _stage_candidate(
         seen_count=1,
         name=garment.name,
         brand=garment.brand,
-        category=garment.category.value,
+        category=category,
         color=garment.color,
-        size=None,
+        # Stage-time canonicalize-lite (same lookup the Gmail fill + confirm use).
+        size=default_size_for_category((facts or {}).get("sizes"), category),
         image_url=image_url,
         image_status="user_uploaded",
         source_type="photo",
@@ -247,13 +272,26 @@ def _stage_candidate(
         .first()
     )
     if existing is not None:
+        was_ready = existing.pipeline_state == "ready"
         for k, v in fields.items():
             setattr(existing, k, v)
         # A re-staged candidate that already carries a VERIFIED generated card stays
-        # 'ready' — resetting it to 'staged' would hide it from the ready-gated deck
-        # forever (generation never re-selects generation_status='ready' rows).
+        # visible — resetting it to 'staged' would hide it from the ready-gated deck
+        # forever (generation never re-selects generation_status='ready' rows). Restored
+        # through the SHARED readiness machine: the retained card is verified person-free
+        # by construction (so person_status goes affirmative WITH it — previously this
+        # re-set 'ready' while the fields overwrite left person_status='person_present',
+        # resurrecting a ready+person_present row, the exact inconsistency the shared
+        # invariant forbids), and 'ready' via mark_candidate_ready. A row that was
+        # ALREADY terminal-ready keeps 'ready' even if its tags are legacy-incomplete —
+        # terminal states never regress on a re-upload of the same photo.
         if existing.generation_status == "ready" and existing.generated_image_url:
-            existing.pipeline_state = "ready"
+            existing.person_status = "person_free"
+            advance(existing, "verified_clean")
+            if tags_ready(existing):
+                mark_candidate_ready(existing)
+            elif was_ready:
+                existing.pipeline_state = "ready"  # terminal immutability
         return existing
 
     cand = IngestCandidate(
@@ -529,6 +567,7 @@ def run_photo_commit(
     provider=None,
     describe=None,
     defer_completion: bool = False,
+    generation_available: bool = True,
 ) -> PhotoCommitResult:
     """Stage the user's SELECTED regions (+ manual boxes) from re-uploaded photos.
 
@@ -538,6 +577,18 @@ def run_photo_commit(
     a 4xx never leaves partial state. This is the step that writes ingest_runs and
     (for photos that staged >= 1 item) processed_uploads; a zero-selection photo
     skips the ledger so it stays re-detectable.
+
+    G2 PER-ZONE ACCOUNTING (Photo-seam Phase 3): every selected zone deterministically
+    becomes a candidate or an explicit count — selected == staged + failed + zones in
+    duplicate photos. A zone whose cutout can't be built is staged as a TERMINAL
+    'failed' candidate (traceable by source_line_key, visible in settle accounting) —
+    never silently dropped.
+
+    ``generation_available=False`` (generation unarmed / storage down): a compliant
+    product card can NEVER be produced, so zones are staged terminal-'failed' rather
+    than left permanently unsettled — the batch settles immediately and honestly.
+    Their photos skip the processed_uploads ledger, so re-uploading after generation
+    is configured re-stages the same source_line_keys cleanly.
     """
     if describe is None:
         describe = describe_garment_crop
@@ -563,9 +614,15 @@ def run_photo_commit(
     db.commit()
 
     result = PhotoCommitResult(sync_id=str(sync_id))
+    # Stage-time canonicalize-lite: one facts load per commit feeds every staged
+    # candidate's size default (the shared readiness invariant needs size-or-sizeless).
+    facts = load_user_facts(db, user_id)
     try:
         for selection, session in loaded:
             sanitized = sanitized_by_sha[session.image_sha256]
+            # G2 accounting: EVERY requested zone is counted up front, so
+            # selected == staged + failed + zones inside duplicate photos, always.
+            result.selected += len(selection.selected_region_ids) + len(selection.manual_boxes)
 
             # Exact-dup re-check: the same photo may have been committed by another
             # request since detect ran. Count it, retire the session, stage nothing.
@@ -588,28 +645,54 @@ def run_photo_commit(
                 r.get("region_id"): r for r in (session.regions or [])
             }
             staged_here = 0
+            on_model = session.person_count >= 1
 
-            # (a) Selected detected regions — cutout with the session's stored mask.
-            for rid in selection.selected_region_ids:
-                garment = GarmentRegion.model_validate(regions_by_id[rid])
-                cut = build_cutout(
-                    original=original, box_2d=garment.box_2d, mask_b64=garment.mask,
-                )
-                if cut is None:
-                    continue  # unusable box -> skip this garment
-                image_url = store_cutout(storage_client, user_id, cut)
-                slk = _source_line_key(session.image_sha256, garment.box_2d)
-                # G6: an on-model source photo (person visible) yields cutouts that contain a
-                # person — flag them so the crop is never displayed, only used as the gen ref.
+            def _stage_zone(garment_like, image_url, slk) -> None:
+                """Stage ONE zone with full G2 accounting — a candidate ALWAYS exists.
+
+                Terminal-'failed' (visible, traceable by source_line_key, settles the
+                batch) when the cutout is unusable (image_url None) or generation is
+                unavailable (a compliant card can never be produced). Otherwise a
+                viable pending candidate. A re-staged zone whose prior candidate holds
+                a verified ready card keeps it (terminal states never regress)."""
+                nonlocal staged_here
                 cand = _stage_candidate(
-                    db, user_id, sync_id, garment, image_url, slk,
-                    on_model=session.person_count >= 1,
+                    db, user_id, sync_id, garment_like, image_url, slk,
+                    on_model=on_model, facts=facts,
                 )
                 db.flush()  # assign cand.id before the dedup seam inspects it
                 # Wired dedup seam (currently a no-op 'unique' stub). The real matcher
                 # and any generation gating hang off this without a pipeline change.
                 dedup_check(db, user_id, cand)
+                if cand.pipeline_state in TERMINAL_STATES:
+                    staged_here += 1  # re-staged, already-ready card stays viable
+                    return
+                if image_url is None or not generation_available:
+                    cand.pipeline_state = "failed"
+                    cand.generation_status = "failed"
+                    cand.image_status = "placeholder"
+                    result.failed += 1
+                    logger.info(
+                        "photo commit: zone terminal-failed user=%s sync=%s reason=%s",
+                        user_id, sync_id,
+                        "no_cutout" if image_url is None else "generation_unavailable",
+                    )
+                    return
                 staged_here += 1
+
+            # (a) Selected detected regions — cutout with the session's stored mask.
+            for rid in selection.selected_region_ids:
+                garment = GarmentRegion.model_validate(regions_by_id[rid])
+                slk = _source_line_key(session.image_sha256, garment.box_2d)
+                cut = build_cutout(
+                    original=original, box_2d=garment.box_2d, mask_b64=garment.mask,
+                )
+                # G6: an on-model source photo (person visible) yields cutouts that contain a
+                # person — flag them so the crop is never displayed, only used as the gen ref.
+                # G2: an unusable box stages a TERMINAL 'failed' candidate (image_url None)
+                # instead of silently dropping the zone.
+                image_url = store_cutout(storage_client, user_id, cut) if cut else None
+                _stage_zone(garment, image_url, slk)
 
             # (b) User-drawn manual boxes — box crop, then describe the crop. A user-typed
             #     name is fed to the SAME single-crop extraction as a HINT (not used
@@ -620,30 +703,24 @@ def run_photo_commit(
             #     call already runs for unnamed boxes.
             for raw_box in selection.manual_boxes:
                 box, manual_name = _parse_manual_box(raw_box)
+                slk = _source_line_key(session.image_sha256, box)
                 cut = build_cutout(original=original, box_2d=box, mask_b64=None)
-                if cut is None:
-                    continue
-                described = describe(
-                    cut.data, cut.content_type, hint=manual_name, provider=provider
+                described = (
+                    describe(cut.data, cut.content_type, hint=manual_name, provider=provider)
+                    if cut is not None
+                    else None
                 )
                 if described is None:
-                    # Model failed. If the user typed a name, keep it (low confidence) so
-                    # their input is never lost; otherwise a neutral placeholder. Editable
-                    # in the deck either way.
+                    # Model failed (or no cutout to describe). If the user typed a name,
+                    # keep it (low confidence) so their input is never lost; otherwise a
+                    # neutral placeholder. Editable in the deck either way.
                     described = GarmentDescription(
                         name=manual_name or "Item",
                         category=GarmentCategory.other,
                         confidence_overall=0.3 if manual_name else 0.2,
                     )
-                image_url = store_cutout(storage_client, user_id, cut)
-                slk = _source_line_key(session.image_sha256, box)
-                cand = _stage_candidate(
-                    db, user_id, sync_id, described, image_url, slk,
-                    on_model=session.person_count >= 1,
-                )
-                db.flush()
-                dedup_check(db, user_id, cand)
-                staged_here += 1
+                image_url = store_cutout(storage_client, user_id, cut) if cut else None
+                _stage_zone(described, image_url, slk)
 
             # Ledger only when something was staged: a zero-selection photo leaves
             # no processed_uploads row, so the user can re-detect it later.
@@ -676,7 +753,8 @@ def run_photo_commit(
         raise
 
     logger.info(
-        "photo commit user=%s sync=%s: processed=%d dup=%d staged=%d",
-        user_id, sync_id, result.images_processed, result.duplicates, result.staged,
+        "photo commit user=%s sync=%s: processed=%d dup=%d selected=%d staged=%d failed=%d",
+        user_id, sync_id, result.images_processed, result.duplicates,
+        result.selected, result.staged, result.failed,
     )
     return result

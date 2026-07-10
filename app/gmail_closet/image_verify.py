@@ -63,6 +63,15 @@ class _VerdictSchema(BaseModel):
     # on-model shot through generation. GENERATED pair pass: a true value FAILS the
     # candidate outright (the structural "no person in the closet" guarantee).
     person_present: bool = False
+    # Photo-seam Phase 2 — the UNIVERSAL IMAGE INVARIANT flags. Defaults are the
+    # non-violating values so older prompts/parses keep working; strictness comes from
+    # the model ACTIVELY flagging a violation (same convention as the logo sub-flags).
+    # GENERATED pass: each is a HARD gate (folded into the decision in code). EMAIL
+    # single-image pass: surfaced only — real retailer images are judged by different
+    # rules; only generated cards must meet the invariant.
+    extra_items_present: bool = False   # anything beyond the single intended item
+    background_offwhite_ok: bool = True  # seamless white-to-off-white studio backdrop
+    framing_ok: bool = True              # whole garment, catalog margin, not a closeup
     matches: bool
     score: float          # 0..1 confidence the image IS the expected item
     reason: str           # <= 12 words, no text copied from the image
@@ -88,6 +97,13 @@ class VerifyVerdict:
     # resolver can route an on-model shot through generation; GENERATED (pair) pass
     # already folded `not person_present` into ``matches`` before this is returned.
     person_present: bool = False
+    # Photo-seam Phase 2 — universal-image-invariant flags. GENERATED pass folds all
+    # three into ``matches`` (hard gates); the single-image pass surfaces them so the
+    # t2i caller can enforce them (email tiers ignore them — retailer images are not
+    # generated cards). Defaults = non-violating, matching _VerdictSchema.
+    extra_items_present: bool = False
+    background_offwhite_ok: bool = True
+    framing_ok: bool = True
     skipped: bool = False
 
 
@@ -142,6 +158,22 @@ _SYSTEM_INSTRUCTION = (
     "product/packshot, a ghost-mannequin/invisible-mannequin shot, or a laid-flat "
     "garment has NO person: person_present=false. This does NOT affect matches (an "
     "on-model shot of the right garment still matches); it is reported separately.\n"
+    "Also REPORT these product-card flags (they do NOT affect matches — they are "
+    "acted on separately for generated images):\n"
+    "- extra_items_present: true if anything beyond the single expected garment is in "
+    "frame — a second garment, a separate accessory, hangers, props, packaging, "
+    "furniture, a text overlay or watermark block. Parts of the garment itself and a "
+    "subtle natural shadow are NOT extra items.\n"
+    "- background_offwhite_ok: true when the background is a seamless plain white-to-"
+    "off-white studio backdrop (white, off-white, ivory, cream, very light warm grey; "
+    "a soft product shadow is fine). Judge the color FAMILY, not an exact shade. "
+    "FALSE only when CLEARLY not off-white: a distinct color, dark tone, strong "
+    "gradient, textured surface, or a real scene/environment.\n"
+    "- framing_ok: true when the ENTIRE garment is visible and centered with a "
+    "comfortable catalog margin — recognizable as a small feed thumbnail. FALSE only "
+    "when CLEARLY violated: garment cut off at the frame edge, an extreme close-up of "
+    "fabric/detail, or the garment tiny in a mostly empty frame. Do NOT fail modest "
+    "margin or aspect variation.\n"
     "- score: your 0..1 confidence that the image is the expected item.\n"
     "- reason: at most 12 words; do NOT copy any text seen in the image.\n"
     "\n"
@@ -194,10 +226,35 @@ _PAIR_SYSTEM_INSTRUCTION = (
     "mannequin, or a worn body part (hand, arm, leg, torso, foot). A clean product "
     "image has NONE. This is judged ONLY on the candidate, never the reference — the "
     "reference may legitimately be an on-model or worn photo.\n"
+    "THE PRODUCT-CARD INVARIANT — judged ONLY on the CANDIDATE (Image 2). These three "
+    "flags decide whether the candidate looks like a clean catalog product card:\n"
+    "- extra_items_present: true if the candidate shows ANYTHING beyond the single "
+    "expected garment — a second garment, a separate accessory, hangers, props, "
+    "packaging, furniture, a text overlay or watermark block. Parts OF the garment "
+    "itself (its own buttons, belt, hood, printed graphic) and a subtle natural "
+    "product shadow are NOT extra items. A clean single-garment card has "
+    "extra_items_present=false.\n"
+    "- background_offwhite_ok: true when the candidate's background is a seamless, "
+    "plain, white-to-off-white studio backdrop — white, off-white, ivory, cream, or a "
+    "very light warm grey all qualify, and a soft product shadow is fine. Judge the "
+    "COLOR FAMILY, not an exact shade: near-white passes. Set it FALSE only when the "
+    "background is CLEARLY not off-white — a distinct color, a dark tone, a strong "
+    "gradient, a textured surface (wood, fabric, concrete), or a real scene/"
+    "environment behind the garment.\n"
+    "- framing_ok: true when the ENTIRE garment is visible and centered with a "
+    "comfortable margin on every side, like a product-catalog photo — it would be "
+    "instantly recognizable as a small thumbnail in a scrolling feed. Set it FALSE "
+    "only when CLEARLY violated: part of the garment is cut off by the frame edge, "
+    "the image is an extreme close-up of fabric or a detail instead of the whole "
+    "garment, or the garment occupies only a tiny fraction of a mostly empty frame. "
+    "Do NOT fail modest variation in margins or aspect ratio.\n"
     "- matches: true ONLY if garment_ok AND color_ok AND pattern_ok AND logo_text_ok "
     "AND logo_present_parity AND logo_count_ok AND logo_placement_ok AND "
-    "logo_identity_ok AND NOT person_present. A candidate with any person/model in "
-    "frame is NEVER a match — the closet shows product-only images.\n"
+    "logo_identity_ok AND NOT person_present AND NOT extra_items_present AND "
+    "background_offwhite_ok AND framing_ok. A candidate with any person/model in "
+    "frame is NEVER a match — the closet shows product-only images — and a candidate "
+    "that breaks the product-card invariant (extra items, wrong background, bad "
+    "framing) is NEVER a match either.\n"
     "- score: your 0..1 confidence that the candidate faithfully depicts the "
     "reference garment.\n"
     "- reason: at most 12 words; do NOT copy any text seen in the images.\n"
@@ -373,6 +430,11 @@ def verify_image(
         # Surfaced (does NOT gate matches here) so the email resolver can route an
         # on-model shot through generation instead of storing a person in the closet.
         person_present=bool(v.person_present),
+        # Invariant flags — surfaced only (email tiers judge real retailer images);
+        # the t2i caller enforces them as hard gates on its GENERATED output.
+        extra_items_present=bool(v.extra_items_present),
+        background_offwhite_ok=bool(v.background_offwhite_ok),
+        framing_ok=bool(v.framing_ok),
     )
 
 
@@ -394,8 +456,11 @@ def verify_generated_image(
     Sends TWO images — reference (real garment) FIRST, candidate (generated)
     SECOND — and asks the model whether the candidate faithfully depicts the SAME
     garment: same type, color, pattern, and (the critical gate) no added/removed/
-    altered logo or text. ``matches`` is true ONLY when the model says matches AND
-    all four ok-flags AND score >= GMAIL_VERIFY_SCORE_THRESHOLD.
+    altered logo or text. Photo-seam Phase 2 additionally hard-gates the UNIVERSAL
+    IMAGE INVARIANT on the candidate: single item only (no extra garments/objects),
+    off-white background, catalog framing. ``matches`` is true ONLY when the model
+    says matches AND every fidelity flag AND no person AND the invariant holds AND
+    score >= GMAIL_VERIFY_SCORE_THRESHOLD.
 
     Same semantics as verify_image: gated by GMAIL_VERIFY_ENABLED, VerifyBudget
     compatible, NEVER raises — any disabled/budget/error condition returns
@@ -494,6 +559,14 @@ def verify_generated_image(
     # backstop. Folded into `trusted` here so no generated image with a person can
     # ever be stored, regardless of how good the fidelity is.
     person = bool(v.person_present)
+    # Photo-seam Phase 2 — the UNIVERSAL IMAGE INVARIANT as HARD gates: a generated
+    # card is storable ONLY when it is the single intended item (no extra garments/
+    # objects), on an off-white backdrop, with catalog framing. Any violation fails
+    # the candidate outright — the ladder falls to the next rung / regenerates.
+    extra_items = bool(v.extra_items_present)
+    invariant_ok = bool(
+        not extra_items and v.background_offwhite_ok and v.framing_ok
+    )
     trusted = bool(
         v.matches
         and v.garment_ok
@@ -501,13 +574,15 @@ def verify_generated_image(
         and v.pattern_ok
         and logo_ok
         and not person
+        and invariant_ok
         and score >= threshold
     )
     logger.info(
         "generated-verify category=%s -> trusted=%s garment_ok=%s color_ok=%s "
-        "pattern_ok=%s logo_ok=%s person=%s (parity=%s count=%s place=%s ident=%s "
-        "raw_logo=%s) score=%.2f",
+        "pattern_ok=%s logo_ok=%s person=%s extra_items=%s bg_offwhite=%s framing=%s "
+        "(parity=%s count=%s place=%s ident=%s raw_logo=%s) score=%.2f",
         category, trusted, v.garment_ok, v.color_ok, v.pattern_ok, logo_ok, person,
+        extra_items, v.background_offwhite_ok, v.framing_ok,
         v.logo_present_parity, v.logo_count_ok, v.logo_placement_ok,
         v.logo_identity_ok, v.logo_text_ok, score,
     )
@@ -523,6 +598,9 @@ def verify_generated_image(
         # flag) so downstream + the bake-off's logo_violations reflect fidelity.
         logo_text_ok=logo_ok,
         person_present=person,
+        extra_items_present=extra_items,
+        background_offwhite_ok=bool(v.background_offwhite_ok),
+        framing_ok=bool(v.framing_ok),
     )
 
 

@@ -461,10 +461,7 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
       // Leave the RegionSelector the INSTANT Add is tapped — flip to the lightweight
       // "Preparing…" screen (genRun null → indeterminate spinner + a "Tailor in the
       // background" escape) and run the commit in the background. commitPhotoIngest cuts out
-      // + stages every region server-side (~10s) before it returns the run id; we do NOT
-      // block the deck on it, and we NEVER block on product-image generation — that's a
-      // background job (photo_generation / self-heal) and the review deck streams each card
-      // in as it verifies. As soon as commit stages, we route straight to the run deck.
+      // + stages every region server-side (~10s) before it returns the run id.
       setStep('preparing');
 
       try {
@@ -481,9 +478,11 @@ export function PhotoIngestUpload({ onPhaseChange }: PhotoIngestUploadProps = {}
           // If the user already tapped "Tailor in the background" they're on /home now —
           // don't yank them back; the global notice carries the (now real) run.
           if (backgroundedRef.current) return;
-          // Route immediately — the deck shows each card's state at once and swaps in the
-          // verified product image live. No waiting on generation.
-          router.push(`/review?sync_id=${encodeURIComponent(res.sync_id)}`);
+          // READY-FIRST (Photo-seam Phase 3): do NOT route into the deck yet — stay on
+          // the progress screen. GenerationProgressPill polls the run and auto-advances
+          // to /review only when the WHOLE batch settles (every item's card ready or
+          // terminally failed) — the review never opens on a half-tailored batch.
+          setGenRun({ syncId: res.sync_id, staged: res.staged });
           return;
         }
         // Nothing staged — surface why and reset to pick. Drop any provisional background

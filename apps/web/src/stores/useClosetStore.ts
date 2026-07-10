@@ -60,11 +60,12 @@ export const useClosetStore = create<ClosetState>((set, get) => ({
     set({ isLoading: true, error: undefined });
 
     try {
-      const newItem = await apiAddClosetItem(input);
-      set((state) => ({
-        items: [...state.items, newItem],
-        isLoading: false,
-      }));
+      // Photo-seam Phase 4: manual add is asynchronous — the server stages a
+      // candidate, tailors an invariant-compliant product card through the shared
+      // generation seam, and the item is born (confirm chokepoint) when ready. No
+      // item to append yet; drop the cache so the next closet read picks it up.
+      await apiAddClosetItem(input);
+      set({ isLoading: false, hasFetchedItems: false });
     } catch (error) {
       set({
         isLoading: false,

@@ -43,6 +43,7 @@ from app.core.config import settings
 from app.services.image_generation.base import (
     GenerationRequest,
     GenerationResult,
+    error_detail,
     sniff_generated_image,
 )
 from app.services.image_generation.prompt import build_generation_prompt
@@ -103,7 +104,7 @@ class Flux2ProProvider:
         except Exception as exc:
             logger.warning(
                 "generation [flux2_pro] error (%s) latency=%.1fs",
-                type(exc).__name__, time.monotonic() - started,
+                error_detail(exc), time.monotonic() - started,
             )
             return None
         if image_bytes is None or content_type is None:

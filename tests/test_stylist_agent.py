@@ -300,8 +300,11 @@ def _real_image_attachment(color=(120, 30, 30)):
 
 
 def _stub_detect(monkeypatch, garments):
-    """Point the ingest spine's detector at a fixed result; force storage off so
-    no real upload runs and generation stays disarmed (no background thread)."""
+    """Point the ingest spine's detector at a fixed result. Photo-seam Phase 3: a
+    storage-less/disarmed commit now terminal-fails its zones (a compliant card can
+    never be produced), so to exercise VIABLE staging we fake storage + arming and
+    no-op the background generation thread instead."""
+    import app.photo_closet.generation_service as gen_service
     import app.photo_closet.ingest_service as ingest_service
     import app.services.stylist.chat_ingest as bridge
     from app.photo_closet.detection import DetectionResult, GarmentRegion
@@ -313,7 +316,13 @@ def _stub_detect(monkeypatch, garments):
     monkeypatch.setattr(
         ingest_service, "detect_garments_with_regions", lambda **kw: result
     )
-    monkeypatch.setattr(bridge, "_storage_client", lambda: None)
+    monkeypatch.setattr(
+        ingest_service, "store_cutout",
+        lambda sc, uid, cut: "https://blob.example/cutout.jpg" if cut else None,
+    )
+    monkeypatch.setattr(bridge, "_storage_client", lambda: object())
+    monkeypatch.setattr(gen_service, "generation_armed", lambda: True)
+    monkeypatch.setattr(gen_service, "generate_background", lambda *a, **k: None)
 
 
 def test_add_photo_to_closet_stages_candidates_and_returns_sync(db, user1, monkeypatch):

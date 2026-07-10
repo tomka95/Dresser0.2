@@ -121,42 +121,47 @@ def test_get_closet_query_count(
     This test creates items with ItemImages and verifies the endpoint
     doesn't make excessive queries.
     """
-    # Create 10 items, each with a primary ItemImage (no image_url set)
+    # Photo-seam Phase 5: the ItemImage fallback is GONE (display purity — the gate
+    # is the only image source, and no pipeline ever wrote item_images rows). Items
+    # carry their displayable image on image_url; an ItemImage row must NOT surface.
     items = []
     for i in range(10):
         item = ClothingItem(
             user_id=test_user.id,
             name=f"Test Item {i}",
             category="top",
-            person_status="person_free",  # ready-first: fail-closed ItemImage fallback
+            person_status="person_free",  # gmail-source affirmative verdict
+            image_url=f"https://example.com/img_{i}.jpg",
         )
         db.add(item)
         db.flush()
+        # A stray ItemImage row is ignored by the display gate (side-channel closed).
         image = ItemImage(
             clothing_item_id=item.id,
-            image_url=f"https://example.com/img_{i}.jpg",
+            image_url=f"https://example.com/SIDE-CHANNEL_{i}.jpg",
             is_primary=True,
         )
         db.add(image)
         items.append(item)
     db.commit()
-    
+
     token = mint_supabase_token(sub=str(test_user.id))
-    
+
     # Make request
     response = client.get(
         "/closet",
         headers={"Authorization": f"Bearer {token}"}
     )
-    
+
     assert response.status_code == 200
     result_items = response.json()
     assert len(result_items) == 10
-    
-    # Verify all items have imageUrl from ItemImage
+
+    # imageUrl comes from the gate (image_url), NEVER the ItemImage side-channel.
     for item in result_items:
         assert item["imageUrl"] is not None
         assert "img_" in item["imageUrl"]
+        assert "SIDE-CHANNEL" not in item["imageUrl"]
 
 
 # Note: For more detailed query counting, you could use SQLAlchemy's

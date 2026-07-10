@@ -177,8 +177,10 @@ class IngestCandidate(Base):
             "('generating','ready','failed','pending_retry')",
             name='generation_status'),
         # Ingestion source (Wave 1). Mirrors clothing_items.source_type; confirm copies
-        # it onto the closet row. Default 'gmail'; the photo pipeline stages 'photo'.
-        CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
+        # it onto the closet row. Default 'gmail'; the photo pipeline stages 'photo';
+        # 'manual' (Photo-seam Phase 4, migration 0036) = a typed manual add routed
+        # through the SAME candidate -> generation -> confirm chokepoint.
+        CheckConstraint("source_type IN ('gmail','photo','manual')", name='source_type'),
         # READY-FIRST Phase 1 (migration 0035): the authoritative per-candidate readiness
         # state machine. The review deck and the Home banner settle gate STRICTLY on
         # 'ready' — no computed/inferred readiness anywhere else.
@@ -296,6 +298,18 @@ class IngestCandidate(Base):
     # MASKED) | 'person_present' (masked; generation reference only) | 'person_free'
     # (affirmatively clean; the ONLY state whose raw image may be displayed).
     person_status = Column(Text, nullable=False, default="unknown", server_default="unknown")
+
+    # Photo-seam Phase 6 (migration 0037): when this row's image was validated against
+    # the verify-v2 invariant gates. NULL = a backfill-sweep target; the card writers
+    # stamp it at creation (a post-P2 generated card is v2-compliant by construction).
+    invariant_checked_at = Column(_tstz(), nullable=True)
+
+    # Generation observability (migration 0039): WHICH provider produced this row's
+    # card and its per-image USD cost — so nano-vs-flux volume + spend is queryable in
+    # Postgres, not reconstructable from two separate invoices. NULL until a card is
+    # generated. Redaction-safe (a provider name + a number, no bytes/PII).
+    generation_provider = Column(Text, nullable=True)
+    generation_cost_usd = Column(Numeric, nullable=True)
 
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
@@ -452,8 +466,10 @@ class IngestRun(Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('running','completed','error')", name="status"),
-        # Which ingestion source this run belongs to: 'gmail' | 'photo' (Wave 1).
-        CheckConstraint("source_type IN ('gmail','photo')", name="source_type"),
+        # Which ingestion source this run belongs to: 'gmail' | 'photo' | 'manual'
+        # (Photo-seam Phase 4, migration 0036 — manual adds get a 1-candidate run so
+        # the shared settle/status/heal machinery covers them too).
+        CheckConstraint("source_type IN ('gmail','photo','manual')", name="source_type"),
         # What kicked this run (Wave C / Fix 1): 'onboarding' (the connect auto-scan) |
         # 'manual' (the explicit "Scan my inbox" CTA). NULL for pre-0031 runs. Named CHECK
         # (not diffed by autogenerate); owned by migration 0031.

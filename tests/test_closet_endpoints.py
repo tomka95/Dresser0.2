@@ -151,94 +151,74 @@ def test_get_closet_returns_only_user_items(
     assert "updated_at" not in first_item  # no snake_case
 
 
-def test_post_closet_creates_item(
+def test_post_closet_stages_manual_candidate(
     client: TestClient,
     db: Session,
     test_user1: User,
     user1_token: str,
+    monkeypatch,
 ):
-    """Test that POST /closet creates item and returns camelCase response."""
+    """Photo-seam Phase 4: POST /closet no longer inserts an item — it stages a
+    source_type='manual' candidate + run and returns 202; the item is born through
+    the confirm chokepoint once the shared seam produces its verified card."""
+    import app.photo_closet.generation_service as gen
+    from app.models import IngestCandidate, IngestRun
+
+    monkeypatch.setattr(gen, "generation_armed", lambda: True)
+    monkeypatch.setattr(gen, "_storage_from_env", lambda: object())
+    monkeypatch.setattr(gen, "manual_generate_background", lambda *a: None)
+
     payload = {
         "name": "New Test Item",
         "category": "top",
         "brand": "Test Brand",
         "color": "blue",
+        # Not our storage -> ignored as a generation reference (SSRF guard).
         "imageUrl": "https://example.com/image.jpg",
     }
-    
     response = client.post(
-        "/closet",
-        json=payload,
-        headers={"Authorization": f"Bearer {user1_token}"}
+        "/closet", json=payload, headers={"Authorization": f"Bearer {user1_token}"}
     )
-    
-    assert response.status_code == 201
-    item = response.json()
-    
-    # Verify response structure (camelCase)
-    assert item["name"] == "New Test Item"
-    assert item["category"] == "top"
-    assert item["brand"] == "Test Brand"
-    assert item["color"] == "blue"
-    assert item["imageUrl"] == "https://example.com/image.jpg"
-    assert item["userId"] == str(test_user1.id)  # camelCase
-    assert "id" in item
-    assert "createdAt" in item  # camelCase
-    assert "updatedAt" in item  # camelCase
-    
-    # Verify no snake_case fields
-    assert "user_id" not in item
-    assert "image_url" not in item
-    assert "created_at" not in item
-    assert "updated_at" not in item
-    
-    # Verify item was created in database
-    db_item = db.query(ClothingItem).filter(ClothingItem.id == item["id"]).first()
-    assert db_item is not None
-    assert db_item.name == "New Test Item"
-    assert db_item.user_id == test_user1.id
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "tailoring"
+
+    # NO clothing_item exists yet — birth happens only at the confirm chokepoint.
+    assert db.query(ClothingItem).filter(
+        ClothingItem.user_id == test_user1.id, ClothingItem.name == "New Test Item"
+    ).first() is None
+
+    cand = db.query(IngestCandidate).filter(
+        IngestCandidate.id == body["candidateId"]
+    ).one()
+    assert cand.source_type == "manual" and cand.pipeline_state == "staged"
+    assert cand.name == "New Test Item" and cand.brand == "Test Brand"
+    assert cand.image_url is None            # foreign URL never fetched as a reference
+    run = db.query(IngestRun).filter(IngestRun.sync_id == body["syncId"]).one()
+    assert run.source_type == "manual" and run.status == "running"
 
 
-def test_post_then_get_includes_item(
+def test_post_closet_refused_when_generation_unavailable(
     client: TestClient,
     db: Session,
     test_user1: User,
     user1_token: str,
+    monkeypatch,
 ):
-    """Test that POST then GET includes the created item."""
-    # Create item via POST
-    payload = {
-        "name": "Created Item",
-        "category": "outerwear",
-    }
-    
-    post_response = client.post(
-        "/closet",
-        json=payload,
-        headers={"Authorization": f"Bearer {user1_token}"}
+    """Without the generation seam a compliant card can never be produced — the add
+    is refused rather than creating an invariant-violating (imageless) item."""
+    import app.photo_closet.generation_service as gen
+
+    monkeypatch.setattr(gen, "generation_armed", lambda: False)
+    response = client.post(
+        "/closet", json={"name": "Created Item", "category": "outerwear"},
+        headers={"Authorization": f"Bearer {user1_token}"},
     )
-    
-    assert post_response.status_code == 201
-    created_item = post_response.json()
-    created_id = created_item["id"]
-    
-    # Get items via GET
-    get_response = client.get(
-        "/closet",
-        headers={"Authorization": f"Bearer {user1_token}"}
-    )
-    
-    assert get_response.status_code == 200
-    items = get_response.json()
-    
-    # Verify created item is in the list
-    item_ids = [item["id"] for item in items]
-    assert created_id in item_ids
-    
-    # Find the created item in the list
-    found_item = next(item for item in items if item["id"] == created_id)
-    assert found_item["name"] == "Created Item"
-    assert found_item["category"] == "outerwear"
+    assert response.status_code == 503
+    assert db.query(ClothingItem).filter(
+        ClothingItem.user_id == test_user1.id
+    ).count() == 0
 
 
 def test_post_closet_validates_category_enum(

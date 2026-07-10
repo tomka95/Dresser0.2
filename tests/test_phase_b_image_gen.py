@@ -181,6 +181,8 @@ def test_generate_from_text_requires_person_free(monkeypatch):
     import app.services.image_generation.nano_banana as nb
 
     gb, vb, usage = _budgets()
+    # t2i is nano-only + gated OFF by default — opt in to test the person-free gate.
+    monkeypatch.setattr(settings, "GENERATION_NANO_FALLBACK_ENABLED", True)
     monkeypatch.setattr(nb, "generate_text_to_image", lambda prompt, **k: _gen_result())
     monkeypatch.setattr(gc, "_store", lambda *a, **k: "https://cdn/t2i.png")
     # matches but a person present -> held (t2i enforces no-person explicitly)

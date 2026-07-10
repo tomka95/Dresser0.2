@@ -193,12 +193,18 @@ def test_view_shows_only_affirmative_person_free(db, user):
     assert _candidate_to_view(c, None)["image_url"] == "https://cdn/img.jpg"
 
 
-def test_view_mask_identical_across_sources(db, user):
+def test_view_mask_source_aware(db, user):
+    """'unknown' masks everywhere. person_free surfaces image_url only for GMAIL
+    (their verified resolved image IS the card); a PHOTO candidate's image_url is a
+    raw source crop — Photo-seam Phase 5 never emits it (the card is
+    generated_image_url)."""
     for src in ("gmail", "photo"):
         unknown = _cand(db, user, str(uuid.uuid4()), person="unknown", src=src)
-        free = _cand(db, user, str(uuid.uuid4()), person="person_free", src=src)
         assert _candidate_to_view(unknown, None)["image_url"] is None
-        assert _candidate_to_view(free, None)["image_url"] == "https://cdn/img.jpg"
+    gmail_free = _cand(db, user, str(uuid.uuid4()), person="person_free", src="gmail")
+    assert _candidate_to_view(gmail_free, None)["image_url"] == "https://cdn/img.jpg"
+    photo_free = _cand(db, user, str(uuid.uuid4()), person="person_free", src="photo")
+    assert _candidate_to_view(photo_free, None)["image_url"] is None
 
 
 # ===========================================================================

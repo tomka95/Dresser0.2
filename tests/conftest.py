@@ -22,6 +22,51 @@ from tests._authutil import (
 )
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "live_keys: opt this test in to the REAL provider keys from the local .env "
+        "(billable calls possible). Without this marker every test runs with fake keys.",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_live_keys(request, monkeypatch):
+    """KEY-GUARD: no test may make live billable provider calls (Photo-seam Phase 2).
+
+    The local .env carries REAL GEMINI/BFL/Supabase keys and pydantic-settings reads
+    it, so without this guard any test that reaches a provider/verify/storage seam
+    (e.g. via TestClient's synchronous BackgroundTasks) silently makes LIVE calls —
+    billable and nondeterministic (a live verify verdict once flipped an e2e
+    assertion).
+
+    Every settings key that could authorize a paid or externally-mutating call is
+    replaced with a FAKE value that is still TRUTHY — arming logic (generation_armed,
+    provider availability) behaves exactly as in a configured environment, while any
+    accidental live call fails authentication instead of billing. Generation/verify/
+    storage remain mocked at their seams by the individual suites; this fixture is the
+    backstop for the ones that forget.
+
+    A test that genuinely needs live keys opts in with @pytest.mark.live_keys.
+    """
+    if request.node.get_closest_marker("live_keys"):
+        yield
+        return
+    from app.core.config import settings
+
+    for field in (
+        "GEMINI_API_KEY",
+        "BFL_API_KEY",
+        "FAL_API_KEY",
+        "OPENAI_API_KEY",
+        "SERPER_API_KEY",
+        "SUPABASE_S3_ACCESS_KEY",
+        "SUPABASE_S3_SECRET_KEY",
+    ):
+        monkeypatch.setattr(settings, field, "test-key-not-real", raising=False)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _supabase_auth_env(monkeypatch):
     """Enable Supabase Auth (the only accepted identity path) for every test.

@@ -557,18 +557,29 @@ def test_commit_identical_boxes_collapse_to_one_candidate(db, user):
     assert res.staged == 2
 
 
-def test_commit_unusable_box_skipped(db, user):
+def test_commit_unusable_box_stages_terminal_failed(db, user):
+    """Photo-seam Phase 3 (G2): an unusable zone is NO LONGER silently dropped — it
+    stages a TERMINAL 'failed' candidate, visible in the accounting, so every selected
+    zone is accounted for and the batch settle stays reachable."""
     img = _sanitized()
     detection = DetectionResult(person_count=1, garments=[
         _garment("Good", box=(0, 0, 1000, 1000)),
-        _garment("Bad", box=(0, 0, 1, 1)),  # sub-2px crop -> skipped by build_cutout
+        _garment("Bad", box=(0, 0, 1, 1)),  # sub-2px crop -> unusable cutout
     ])
     out = _detect_one(db, user, img, detection)
     res = _commit(db, user, [img], [
         PhotoSelection(session_id=out.session_id, selected_region_ids=[0, 1]),
     ])
+    assert res.selected == 2
     assert res.staged == 1
-    assert db.query(IngestCandidate).count() == 1
+    assert res.failed == 1
+    cands = db.query(IngestCandidate).all()
+    assert len(cands) == 2  # N zones -> N candidates, none dropped
+    failed = [c for c in cands if c.pipeline_state == "failed"]
+    assert len(failed) == 1
+    assert failed[0].name == "Bad"
+    assert failed[0].generation_status == "failed"
+    assert failed[0].image_url is None
 
 
 def test_commit_duplicate_sessions_in_selections_rejected(db, user):

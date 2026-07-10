@@ -35,6 +35,13 @@ from sqlalchemy.orm import Session
 from app.gmail_closet.extraction_schema import normalize_currency, normalize_order_date
 from app.gmail_closet.product_image_cache import make_cache_key
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
+from app.services.readiness import (
+    TERMINAL_STATES,
+    has_verified_card,
+    mark_candidate_ready,
+    needs_size,
+    tags_ready,
+)
 from app.services.closet_canonicalize import (
     CanonFields,
     canonicalize_fields,
@@ -113,13 +120,19 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         "currency": c.currency,
         "order_date": c.order_date.isoformat() if c.order_date else None,
         "is_return": bool(c.is_return),
-        # FAIL-CLOSED person mask (ready-first Phase 1). On a CANDIDATE image_url is ALWAYS
-        # the raw source image (the verified card lives separately in generated_image_url),
-        # so it is sent ONLY on an AFFIRMATIVE person_free verdict. 'unknown' (no detector
-        # ever ran — every legacy Gmail row) and 'person_present' are masked identically:
-        # the deck shows the generated card once ready, a neutral placeholder until then.
-        # "Unchecked" can never again read as "clean".
-        "image_url": c.image_url if c.person_status == "person_free" else None,
+        # DISPLAY PURITY (Photo-seam Phase 5). On a photo/manual CANDIDATE image_url is
+        # ALWAYS the raw source crop / uploaded reference — a GENERATION REFERENCE,
+        # never a display source — so it is NEVER emitted for those sources (this also
+        # closes the old leak where a person-containing crop URL rode along in the
+        # payload after generation flipped person_status to person_free). The deck
+        # shows generated_image_url once ready, a neutral panel until then. A gmail
+        # candidate's image_url IS its verified resolved product image: sent only on
+        # an AFFIRMATIVE person_free verdict; 'unknown'/'person_present' stay masked.
+        "image_url": (
+            c.image_url
+            if (c.source_type or "gmail") == "gmail" and c.person_status == "person_free"
+            else None
+        ),
         "on_model": bool(c.on_model),
         "person_status": c.person_status,
         "pipeline_state": c.pipeline_state,
@@ -131,6 +144,10 @@ def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> 
         # it keeps polling. image_url stays the raw crop (verify reference + fallback).
         "generated_image_url": c.generated_image_url,
         "generation_status": c.generation_status,
+        # Photo-seam Phase 3: the card is verified + person-free but held from 'ready'
+        # ONLY by a missing size (no onboarding default). The deck shows an "add size"
+        # affordance; supplying a size at confirm completes it.
+        "needs_size": needs_size(c),
         "confidence_overall": _to_float(c.confidence_overall),
         "low_confidence_fields": _low_confidence_fields(c),
         "seen_count": c.seen_count or 1,
@@ -178,12 +195,33 @@ def list_pending_candidates(
         IngestCandidate.user_id == user_id,
         IngestCandidate.status == "pending",
         # READY-FIRST (Phase 1): the deck serves ONLY candidates the state machine has
-        # advanced to 'ready' — tag-complete with a verified, person-free image. No other
-        # state ever reaches the swipe deck; an in-flight batch surfaces nothing.
-        IngestCandidate.pipeline_state == "ready",
+        # advanced to 'ready' — tag-complete with a verified, person-free image.
+        # Photo-seam Phase 3 adds ONE more admissible state: 'verified_clean' rows held
+        # ONLY by a missing size (needs_size — verified card, person-free, name+category
+        # complete). They surface WITH their card and a needs-size affordance so a user
+        # without an onboarding size default is never silently stuck. The python-side
+        # readiness.needs_size filter below drops every other verified_clean row.
+        IngestCandidate.pipeline_state.in_(("ready", "verified_clean")),
     )
     if sync_id is not None:
         q = q.filter(IngestCandidate.sync_id == sync_id)
+
+    # Observability (Phase 3): terminally-failed candidates are silently EXCLUDED from
+    # the deck (no user-facing error) — log their count so a quietly shrinking batch is
+    # visible in ops. ids+counts only, never names/content.
+    failed_q = db.query(func.count(IngestCandidate.id)).filter(
+        IngestCandidate.user_id == user_id,
+        IngestCandidate.status == "pending",
+        IngestCandidate.pipeline_state == "failed",
+    )
+    if sync_id is not None:
+        failed_q = failed_q.filter(IngestCandidate.sync_id == sync_id)
+    failed_count = failed_q.scalar() or 0
+    if failed_count:
+        logger.info(
+            "deck user=%s sync=%s: %d terminally-failed candidate(s) excluded",
+            user_id, sync_id or "*", failed_count,
+        )
 
     rows = (
         q
@@ -197,7 +235,66 @@ def list_pending_candidates(
         )
         .all()
     )
+    # 'ready' passes verbatim; 'verified_clean' passes ONLY as a needs-size card.
+    rows = [c for c in rows if c.pipeline_state == "ready" or needs_size(c)]
     return [_candidate_to_view(c, ga_id) for c in rows]
+
+
+# ---------------------------------------------------------------------------
+# THE whole-batch settle (Photo-seam Phase 3) — shared by the Home banner and
+# the photo status poll. ONE authoritative condition, per batch (sync_id).
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SettleCounts:
+    """Per-batch readiness accounting (ids+counts only, redaction-safe).
+
+    settled ⟺ zero pending candidates are still mid-pipeline. A batch member counts as
+    settled when it is TERMINAL ('ready' — verified invariant-compliant card, or
+    'failed' — logged, excluded from the deck) OR when it is a needs_size card
+    (verified card held ONLY by a missing size — surfaced in the deck with an
+    affordance; it must not block the batch forever and must not vanish).
+    reviewable = what the deck will actually serve (ready + needs_size)."""
+    ready: int = 0
+    failed: int = 0
+    needs_size: int = 0
+    unsettled: int = 0
+
+    @property
+    def settled(self) -> bool:
+        return self.unsettled == 0
+
+    @property
+    def reviewable(self) -> int:
+        return self.ready + self.needs_size
+
+
+def settle_counts(db: Session, user_id: UUID, sync_id: str) -> SettleCounts:
+    """Classify a batch's pending candidates into the settle buckets.
+
+    Loaded + classified in python via the SAME readiness predicates the deck and the
+    ready-writer use (needs_size / terminal states) — one truth, no SQL/py drift.
+    Batches are small (photo: zones of one upload; gmail: one scan's staging)."""
+    rows = (
+        db.query(IngestCandidate)
+        .filter(
+            IngestCandidate.user_id == user_id,
+            IngestCandidate.sync_id == str(sync_id),
+            IngestCandidate.status == "pending",
+        )
+        .all()
+    )
+    out = SettleCounts()
+    for c in rows:
+        if c.pipeline_state == "ready":
+            out.ready += 1
+        elif c.pipeline_state == "failed":
+            out.failed += 1
+        elif needs_size(c):
+            out.needs_size += 1
+        else:
+            out.unsettled += 1
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +504,12 @@ def _upsert_clothing_item(
         person_status=(
             "person_free" if _used_generated_card(cand) else (cand.person_status or "unknown")
         ),
+        # Photo-seam Phase 6: the candidate's verify-v2 validation marker travels with
+        # the item (a card born v2-compliant needs no backfill re-check).
+        invariant_checked_at=cand.invariant_checked_at,
+        # Generation observability (0039): carry which provider produced the card + cost.
+        generation_provider=getattr(cand, "generation_provider", None),
+        generation_cost_usd=getattr(cand, "generation_cost_usd", None),
         # provenance='extracted' seed. INSERT-only: NOT in the on_conflict set_ below, so
         # a re-confirm preserves any 'inferred'/'user_edited' attributes already present.
         attributes_json=extracted_attrs,
@@ -438,6 +541,9 @@ def _upsert_clothing_item(
             "source_type": ex.source_type,
             "on_model": ex.on_model,
             "person_status": ex.person_status,
+            "invariant_checked_at": ex.invariant_checked_at,
+            "generation_provider": ex.generation_provider,
+            "generation_cost_usd": ex.generation_cost_usd,
             "updated_at": func.now(),
         },
     ).returning(tbl.c.id, literal_column("(xmax = 0)").label("inserted"))
@@ -532,6 +638,29 @@ def confirm_candidates(
         if not cand.name or not str(cand.name).strip():
             # clothing_items.name is NOT NULL; refuse rather than write a blank item.
             raise ConfirmError(f"candidate {cid}: name is required to accept")
+
+        # Photo-seam Phase 3: a needs-size card whose edit just supplied the size is
+        # now tag-complete — complete the state machine through THE shared ready
+        # writer.
+        if (
+            cand.pipeline_state not in TERMINAL_STATES
+            and cand.person_status == "person_free"
+            and has_verified_card(cand)
+            and tags_ready(cand)
+        ):
+            mark_candidate_ready(cand)
+
+        # THE CONFIRM CHOKEPOINT (Photo-seam Phase 4): a closet item may ONLY be born
+        # from a 'ready' candidate — verified, person-free, invariant-compliant image
+        # + complete tags, asserted by the single ready-writer above. Every entry
+        # point (photo deck, gmail deck, manual add, chat add) funnels through here;
+        # there is no other clothing_items insert path (tests enumerate this).
+        if cand.pipeline_state != "ready":
+            hint = " — add a size to finish it" if needs_size(cand) else ""
+            raise ConfirmError(
+                f"candidate {cid}: not ready for the closet "
+                f"(state={cand.pipeline_state}){hint}"
+            )
 
         written = _upsert_clothing_item(db, user_id, cand, ga_id, user_facts)
         result.written.append(written)

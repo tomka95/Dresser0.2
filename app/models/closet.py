@@ -19,20 +19,38 @@ from app.models._shared import _jsonb, _text_array, _tstz
 
 
 def display_image_url(item) -> Optional[str]:
-    """The clothing item's image_url that is SAFE TO DISPLAY, or None.
+    """The clothing item's image_url that is SAFE TO DISPLAY, or None (placeholder).
 
-    THE single person-safety mask every display surface must go through — closet
-    list/detail, the stylist retrieval serialization, and the Today's-Look / lookbook
-    collages. FAIL-CLOSED (ready-first Phase 1): an image is shown ONLY when one of two
-    AFFIRMATIVE signals holds —
-      * generation_status='ready': image_url IS the verified generated card (the pair
-        verify hard-fails person_present, so a ready card is person-free by construction);
-      * person_status='person_free': a detector affirmatively determined no person.
-    Everything else — person_status='unknown' (detector never ran; ALL legacy Gmail rows),
-    'person_present', or any non-ready generation state — returns None. "Unchecked" can
-    never again read as "clean"."""
-    if getattr(item, "generation_status", None) == "ready":
+    THE single display gate every surface must go through — closet list/detail, the
+    stylist retrieval serialization, and the Today's-Look / lookbook collages.
+    FAIL-CLOSED, and since Photo-seam Phase 5 GENERATED-CARD-ONLY for the photo/manual
+    sources:
+
+      * source_type 'photo'/'manual': the image shows ONLY when generation_status=
+        'ready' — image_url then IS the verified, invariant-compliant generated card
+        (the writers replace the crop with the card in the same transaction; the pair
+        verify hard-fails person_present/extra-items/background/framing). Any other
+        state (pending_retry, failed, generating, legacy person_free RAW CROPS) →
+        None. A raw source crop is a GENERATION REFERENCE, never a display source.
+
+      * source_type 'gmail' (default): the resolved, verified retailer/email product
+        image is the card; it shows only on an AFFIRMATIVE person_free verdict (or a
+        ready generated card from the on-model routing). 'unknown' (no verify ever
+        ran) and 'person_present' stay masked — "unchecked" never reads as "clean".
+    """
+    if (getattr(item, "source_type", None) or "gmail") in ("photo", "manual"):
+        if getattr(item, "generation_status", None) == "ready":
+            return item.image_url
+        return None
+    gen_status = getattr(item, "generation_status", None)
+    if gen_status == "ready":
         return item.image_url
+    if gen_status in ("pending_retry", "generating", "failed"):
+        # Photo-seam Phase 6: a gmail item put INTO the generation pipeline (e.g. the
+        # backfill sweep found its resolved image non-compliant and demoted it for
+        # regeneration) is masked until a compliant card lands — person_free alone no
+        # longer overrides an explicit "this image needs replacing" verdict.
+        return None
     if getattr(item, "person_status", None) == "person_free":
         return item.image_url
     return None
@@ -77,10 +95,11 @@ class ClothingItem(Base):
             "('generating','ready','failed','pending_retry')",
             name='generation_status'),
         # Ingestion source provenance (Wave 1 photo ingest). 'gmail' (default, the
-        # receipt pipeline) or 'photo' (a garment detected from a user-uploaded
-        # photo). Named CHECK (not diffed by autogenerate); server default 'gmail'
-        # owned by migration 0014 backfills every legacy row.
-        CheckConstraint("source_type IN ('gmail','photo')", name='source_type'),
+        # receipt pipeline), 'photo' (a garment detected from a user-uploaded photo),
+        # or 'manual' (Photo-seam Phase 4, migration 0036 — a typed manual add routed
+        # through the candidate -> generation -> confirm chokepoint). Named CHECK (not
+        # diffed by autogenerate); server default 'gmail' owned by migration 0014.
+        CheckConstraint("source_type IN ('gmail','photo','manual')", name='source_type'),
         # Fail-closed person tri-state (ready-first Phase 1, migration 0035). Named CHECK
         # (not diffed by autogenerate); mirrors ingest_candidates.person_status.
         CheckConstraint(
@@ -216,6 +235,28 @@ class ClothingItem(Base):
     # 'person_free'. display_image_url shows a raw image ONLY on 'person_free' (or a
     # verified 'ready' generated card). Carried from the candidate at confirm.
     person_status = Column(Text, nullable=False, default="unknown", server_default="unknown")
+
+    # Photo-seam Phase 6 (migration 0037): when this item's image was validated against
+    # the verify-v2 invariant gates. NULL = a backfill-sweep target; carried from the
+    # candidate at confirm, stamped by the regeneration/self-heal writers.
+    invariant_checked_at = Column(_tstz(), nullable=True)
+
+    # Generation observability (migration 0039): WHICH provider produced this item's
+    # card + its per-image USD cost (carried from the candidate at confirm / stamped by
+    # regen + self-heal). Makes nano-vs-flux volume queryable in Postgres. NULL for a
+    # non-generated (e.g. gmail retailer-image) item. Redaction-safe.
+    generation_provider = Column(Text, nullable=True)
+    generation_cost_usd = Column(Numeric, nullable=True)
+
+    # Photo-seam Phase 6b (migration 0038): EXPLICIT, provable quarantine — a row
+    # the backfill sweep judged non-wearable (junk mis-filed as a closet item, e.g.
+    # a lunch bag or hair clip). archived_at is what actually hides it from every
+    # read path (reused, not new); this column is the auditable WHY, distinct from
+    # a user's own archive action. NOT auto-delete-eligible — a human confirms
+    # removal separately. quarantine_reason is a short free-text note (e.g. the
+    # matched keyword) for review, never displayed to the user.
+    is_non_clothing = Column(Boolean, nullable=False, default=False, server_default="false")
+    quarantine_reason = Column(Text, nullable=True)
 
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 

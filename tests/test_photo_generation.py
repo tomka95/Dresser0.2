@@ -1,9 +1,13 @@
 """Wave 2 background product-image generation for photo candidates.
 
 SQLite DB; the provider seam, the verify gate, cutout download and blob storage are all
-faked so these tests exercise ONLY the orchestration: the nano->flux ladder, the
+faked so these tests exercise ONLY the orchestration: the flux2->nano ladder, the
 mandatory fidelity gate, per-candidate lifecycle writes, run counters + deferred
-finalization, budget cap, and idempotency."""
+finalization, budget cap, and idempotency.
+
+Photo-seam Phase 1: generation/verify/store now run inside the ONE shared core
+(app.services.image_generation.generate_core), so the provider + verify + store fakes
+patch THAT module; only the cutout download stays a photo-module seam."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -15,6 +19,7 @@ from app.db import Base, SessionLocal, engine
 from app.models import ClothingItem, IngestCandidate, IngestRun, User
 from app.gmail_closet.image_verify import VerifyVerdict
 from app.photo_closet import generation_service as gen
+from app.services.image_generation import generate_core as core
 from app.services.image_generation.base import GenerationResult
 
 
@@ -74,16 +79,17 @@ def _skipped() -> VerifyVerdict:
 
 
 def _providers(monkeypatch, mapping):
-    monkeypatch.setattr(gen, "get_generation_provider", lambda name=None: mapping[name])
+    # Shared seam: the rung loop lives in generate_core now.
+    monkeypatch.setattr(core, "get_generation_provider", lambda name=None: mapping[name])
     return mapping
 
 
 def _verify(monkeypatch, fn):
-    monkeypatch.setattr(gen, "verify_generated_image", fn)
+    monkeypatch.setattr(core, "verify_generated_image", fn)
 
 
 def _seams(monkeypatch, download=(b"cut", "image/jpeg"), store="https://blob/gen.png"):
-    """Fake cutout download + blob store; return a call-count dict for the store."""
+    """Fake cutout download (photo module) + blob store (shared core)."""
     monkeypatch.setattr(gen, "_download_bytes", lambda url: download)
     calls = {"store": 0}
 
@@ -91,15 +97,18 @@ def _seams(monkeypatch, download=(b"cut", "image/jpeg"), store="https://blob/gen
         calls["store"] += 1
         return store
 
-    monkeypatch.setattr(gen, "_store_generated", _store)
+    monkeypatch.setattr(core, "_store", _store)
     return calls
 
 
 def _stage(db, user, sync_id, **over):
+    # size present by default: the shared readiness invariant (mark_candidate_ready)
+    # requires size present-or-sizeless for 'ready'; staging normally defaults it from
+    # the user's onboarding facts. Sizeless-hold behavior has its own dedicated test.
     fields = dict(
         user_id=user.id, sync_id=sync_id, source_type="photo", status="pending",
         image_url="https://blob/cut.jpg", image_status="user_uploaded",
-        name="Tee", category="top", color="red", generation_status=None,
+        name="Tee", category="top", color="red", size="M", generation_status=None,
     )
     fields.update(over)
     c = IngestCandidate(**fields)
@@ -132,8 +141,9 @@ def test_flux2_pass_stores_ready(db, user, monkeypatch):
     db.refresh(c)
     assert c.generation_status == "ready"
     assert c.generated_image_url == "https://blob/gen.png"
-    assert c.image_url == "https://blob/cut.jpg"       # crop never overwritten
-    assert c.image_status == "user_uploaded"           # image_status untouched
+    # Photo-seam Phase 5 (raw-crop purge): the card replaced the crop's only purpose —
+    # the reference pointer is nulled so no query can ever resolve to the raw crop.
+    assert c.image_url is None
     assert flux2.calls == 1 and nano.calls == 0        # flux2 (rung-1) passed -> no fallback
     run = _run(db, sync)
     assert run.status == "completed" and run.finished_at is not None
@@ -201,22 +211,29 @@ def test_provider_unavailable_holds_without_verify(db, user, monkeypatch):
     assert store["store"] == 0         # nothing stored
 
 
-def test_verify_skipped_is_not_stored(db, user, monkeypatch):
-    """The fidelity gate is mandatory: a skipped/disabled verify must NOT store."""
+def test_verify_skipped_defers_keeps_flux_image_no_nano(db, user, monkeypatch):
+    """Nano-ceiling fix: a SKIPPED verify (429/error) on the FLUX.2 image must NOT
+    advance to nano and must NOT discard the already-paid FLUX.2 image. Instead the
+    FLUX.2 image is STORED, the row is held 'pending_retry' + masked (verify_deferred),
+    and self-heal re-verifies later. flux2 is called ONCE; nano is NEVER called."""
     store = _seams(monkeypatch)
     sync = uuid4(); _run_row(db, user, sync); c = _stage(db, user, sync)
-    _providers(monkeypatch, {
-        "flux2_pro": _FakeProvider("flux2_pro", _result("flux2_pro")),
-        "nano_banana": _FakeProvider("nano_banana", _result("nano_banana")),
-    })
+    flux2 = _FakeProvider("flux2_pro", _result("flux2_pro", cost=0.045))
+    nano = _FakeProvider("nano_banana", _result("nano_banana"))
+    _providers(monkeypatch, {"flux2_pro": flux2, "nano_banana": nano})
     _verify(monkeypatch, lambda **k: _skipped())
 
     gen.run_photo_generation(user.id, db, sync)
 
     db.refresh(c)
-    assert c.generation_status == "pending_retry"
-    assert c.generated_image_url is None
-    assert store["store"] == 0
+    assert flux2.calls == 1 and nano.calls == 0        # ladder did NOT advance to nano
+    assert store["store"] == 1                         # flux image kept (stored), not discarded
+    assert c.generated_image_url == "https://blob/gen.png"
+    assert c.generation_status == "pending_retry"      # deferred, masked
+    assert c.pipeline_state == "image_pending"
+    assert (c.generation_attempts or 0) == 0           # a verify hiccup is not the image's fault
+    assert c.image_url == "https://blob/cut.jpg"       # crop KEPT for re-verify
+    assert c.generation_provider == "flux2_pro"        # observability
 
 
 def test_download_error_holds_before_generate(db, user, monkeypatch):
@@ -273,7 +290,11 @@ def test_budget_cap_leaves_residue(db, user, monkeypatch):
     db.refresh(c)
     assert stats.budget_stopped is True
     assert flux2.calls == 0
-    assert c.generation_status is None          # untouched -> a later sweep retries it
+    # Phase 3 strand-kill: budget-denied residue is HEAL-ELIGIBLE ('pending_retry' +
+    # 'image_pending'), never a bare staged/NULL row nothing re-selects.
+    assert c.generation_status == "pending_retry"
+    assert c.pipeline_state == "image_pending"
+    assert (c.generation_attempts or 0) == 0    # nothing generated -> no ceiling burn
     run = _run(db, sync)
     assert run.status == "completed" and run.generation_total == 1 and run.generation_ready == 0
 
@@ -319,7 +340,7 @@ def test_concurrent_all_ready_counts_are_race_safe(db, user, monkeypatch):
         db.refresh(c)
         assert c.generation_status == "ready"
         assert c.generated_image_url == "https://blob/gen.png"
-        assert c.image_url == "https://blob/cut.jpg"   # crop never overwritten
+        assert c.image_url is None                     # Phase 5: crop purged with the card
     assert nano.calls == 0                              # flux2 (rung-1) passed every one
     run = _run(db, sync)
     assert run.status == "completed"
@@ -343,8 +364,10 @@ def test_concurrent_budget_is_shared_across_workers(db, user, monkeypatch):
     for c in cands:
         db.refresh(c)
     ready = [c for c in cands if c.generation_status == "ready"]
-    residue = [c for c in cands if c.generation_status is None]
-    assert len(ready) == 2 and len(residue) == 2       # budget-denied left for a later run
+    # Phase 3 strand-kill: budget-denied residue is heal-eligible 'pending_retry'.
+    residue = [c for c in cands if c.generation_status == "pending_retry"]
+    assert len(ready) == 2 and len(residue) == 2       # budget-denied left for the sweep
+    assert all((c.generation_attempts or 0) == 0 for c in residue)
     run = _run(db, sync)
     assert run.generation_ready == 2 and run.generation_total == 4
 
@@ -399,7 +422,7 @@ def test_self_heal_candidate_regenerates(db, user, monkeypatch):
     db.refresh(c)
     assert c.generation_status == "ready"
     assert c.generated_image_url == "https://blob/gen.png"
-    assert c.image_url == "https://blob/cut.jpg"        # crop (source) untouched
+    assert c.image_url is None                          # Phase 5: crop purged with the card
     assert stats.candidates_seen == 1 and stats.ready == 1 and stats.held == 0
 
 

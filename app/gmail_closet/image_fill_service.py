@@ -61,10 +61,14 @@ from app.gmail_closet.image_verify import VerifyBudget, verify_image
 from app.gmail_closet.product_image_cache import lookup_verified, make_cache_key, promote_verified
 from app.gmail_closet.shopping_search import SearchBudget
 from app.platform.usage import UsageAccumulator, record_fill_usage
-from app.services.closet_canonicalize import (
-    _CATEGORY_SIZE_KEY,
-    default_size_for_category,
-    load_user_facts,
+from app.services.closet_canonicalize import load_user_facts
+from app.services.readiness import (
+    TERMINAL_STATES as _TERMINAL_STATES,
+    STORED_IMAGE_STATUSES as _STORED_IMAGE_STATUSES,
+    advance as _advance,
+    apply_canonicalized as _apply_canonicalized,
+    mark_candidate_ready,
+    tags_ready as _tags_ready,
 )
 from app.services.image_generation.base import GenerationBudget
 from app.models import ClothingItem, GoogleAccount, IngestCandidate
@@ -79,6 +83,12 @@ _SOURCELESS_TIERS = frozenset({"feed", "search"})
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
+
+def _now_utc():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
 
 @dataclass
 class ImageFillStats:
@@ -156,69 +166,11 @@ def _resolver_item(t: _Target) -> ResolverItem:
 # ---------------------------------------------------------------------------
 # Ready-first Phase 2: the candidate state machine driver
 # ---------------------------------------------------------------------------
-# Forward-only ordering of the non-terminal pipeline states. _advance never regresses
-# a candidate and never touches the terminal states ('ready'/'failed' are written only
-# by mark_candidate_ready / _stamp_final).
-_STATE_ORDER = {
-    "staged": 0, "canonicalized": 1, "image_pending": 2,
-    "image_generated": 3, "verified_clean": 4,
-}
-_TERMINAL_STATES = ("ready", "failed")
-# image_status values that count as a stored, displayable image for readiness.
-_STORED_IMAGE_STATUSES = ("resolved", "user_uploaded")
-
-
-def _advance(cand: IngestCandidate, state: str) -> None:
-    """Move the candidate FORWARD to ``state``; never regress, never leave a terminal."""
-    if cand.pipeline_state in _TERMINAL_STATES:
-        return
-    if _STATE_ORDER.get(state, -1) > _STATE_ORDER.get(cand.pipeline_state, -1):
-        cand.pipeline_state = state
-
-
-def _size_ok(category: Optional[str], size: Optional[str]) -> bool:
-    """Size readiness: present, or the category has no size concept (no default key)."""
-    if size:
-        return True
-    return (category or "").strip().lower() not in _CATEGORY_SIZE_KEY
-
-
-def _tags_ready(cand: IngestCandidate) -> bool:
-    """Gate-3 tag completeness: category + name mandatory, size present-or-sizeless."""
-    return bool((cand.name or "").strip()) and bool((cand.category or "").strip()) and _size_ok(
-        cand.category, cand.size
-    )
-
-
-def _apply_canonicalized(cand: IngestCandidate, facts: Optional[dict]) -> None:
-    """Stage-time canonicalize-lite: default a missing size from the user's onboarding
-    sizes (facts.sizes, same lookup confirm uses), then advance to 'canonicalized'."""
-    if cand.pipeline_state in _TERMINAL_STATES:
-        return
-    if not cand.size:
-        default = default_size_for_category((facts or {}).get("sizes"), cand.category)
-        if default:
-            cand.size = default
-    _advance(cand, "canonicalized")
-
-
-def mark_candidate_ready(cand: IngestCandidate) -> None:
-    """THE single writer of pipeline_state='ready' for Gmail candidates.
-
-    Enforces the Phase-2 invariant in code: ready ⟺ an AFFIRMATIVE person_free verdict
-    AND a stored, verified image AND complete tags. Anything else is a bug — raise so
-    the (already fail-safe) caller surfaces it instead of leaking an unready card."""
-    if (
-        cand.person_status != "person_free"
-        or not cand.image_url
-        or (cand.image_status or "") not in _STORED_IMAGE_STATUSES
-        or not _tags_ready(cand)
-    ):
-        raise AssertionError(
-            "ready invariant violated: person=%s image=%s status=%s"
-            % (cand.person_status, bool(cand.image_url), cand.image_status)
-        )
-    cand.pipeline_state = "ready"
+# Photo-seam Phase 1: the machine itself (advance / tags_ready / apply_canonicalized /
+# mark_candidate_ready and the state constants) moved to the NEUTRAL shared module
+# app.services.readiness — ONE definition for both pipelines. This module keeps only
+# its gmail-specific terminal stamper (_stamp_final) and imports the rest (aliased
+# above so existing tests/callers keep their names).
 
 
 def _stamp_final(cand: IngestCandidate, stats: ImageFillStats) -> None:
@@ -352,6 +304,10 @@ def _reconcile_person(
             cand.image_url = g.url          # the verified person-free card REPLACES it
             cand.image_status = "resolved"
             cand.person_status = "person_free"
+            cand.invariant_checked_at = _now_utc()  # v2-gated card by construction
+            if hasattr(cand, "generation_provider"):
+                cand.generation_provider = g.provider
+                cand.generation_cost_usd = g.cost_usd
             promote_verified(
                 brand=cand.brand, name=cand.name, color=cand.color,
                 image_url=g.url, content_sha256=g.content_sha256 or "",
@@ -508,6 +464,9 @@ def _resolve_targets(
                     t.row.person_status = r.person
                     stats.person_checked += 1
                 if r.tier == "generated":
+                    # A generated card passed the verify-v2 invariant gates by construction.
+                    if hasattr(t.row, "invariant_checked_at"):
+                        t.row.invariant_checked_at = _now_utc()
                     stats.generated += 1
                 else:
                     stats.slow_filled += 1
@@ -524,6 +483,8 @@ def _resolve_targets(
                     # hard-requires person_present=false on its verify).
                     t.row.person_status = "person_free"
                     stats.person_checked += 1
+                if hasattr(t.row, "invariant_checked_at"):
+                    t.row.invariant_checked_at = _now_utc()
                 stats.generated += 1
                 stats.tier_counts["generated"] += 1
             else:
@@ -561,6 +522,9 @@ def _resolve_targets(
                     t.row.person_status = r.person
                     stats.person_checked += 1
                 if r.tier == "generated":
+                    # A generated card passed the verify-v2 invariant gates by construction.
+                    if hasattr(t.row, "invariant_checked_at"):
+                        t.row.invariant_checked_at = _now_utc()
                     stats.generated += 1
                 else:
                     stats.slow_filled += 1
@@ -575,6 +539,8 @@ def _resolve_targets(
                 if hasattr(t.row, "person_status"):
                     t.row.person_status = "person_free"  # t2i is person-free by construction
                     stats.person_checked += 1
+                if hasattr(t.row, "invariant_checked_at"):
+                    t.row.invariant_checked_at = _now_utc()
                 stats.generated += 1
                 stats.tier_counts["generated"] += 1
             else:

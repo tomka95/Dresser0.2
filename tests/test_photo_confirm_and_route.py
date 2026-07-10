@@ -193,6 +193,18 @@ def test_confirm_ready_without_stored_card_falls_back_to_crop():
     assert params["image_url"] == "https://blob.example/cut.jpg"
 
 
+def test_confirm_carries_generation_provider_and_cost_to_item():
+    """Observability (0039): the candidate's generation_provider + cost travel to the
+    clothing_item at confirm, so a generated item's provider is never null just because
+    it was born through the confirm chokepoint."""
+    cand = _gen_candidate("ready", generated="https://blob.example/gen.png")
+    cand.generation_provider = "flux2_pro"
+    cand.generation_cost_usd = 0.045
+    params = _upsert_params(cand)
+    assert params["generation_provider"] == "flux2_pro"
+    assert float(params["generation_cost_usd"]) == 0.045
+
+
 def test_confirm_gmail_candidate_uses_crop_and_null_generation():
     import uuid
     cand = IngestCandidate(
@@ -302,8 +314,17 @@ def test_route_detect_requires_auth(client):
 def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     """Full Wave-1.5 loop: detect -> select region -> commit -> the staged candidate
     appears via the SHARED deck endpoint, scoped to the commit's sync_id (stale
-    candidates from other runs excluded) — the confirm spine is untouched."""
+    candidates from other runs excluded) — the confirm spine is untouched.
+
+    Generation is DISARMED for determinism: with real provider keys in the local .env,
+    TestClient's synchronous BackgroundTasks would otherwise make live generation +
+    verify + storage calls whose verdicts (and therefore the candidate's final
+    pipeline_state) are nondeterministic. This test covers the COMMIT contract; the
+    generation state machine has its own fully-faked suites."""
     import uuid
+    from app.photo_closet import generation_service as gen_service
+
+    monkeypatch.setattr(gen_service, "generation_armed", lambda: False)
     user, headers = _auth(db, "scope@example.com")
 
     # A stale, image-less pending Gmail candidate from an earlier run.
@@ -325,27 +346,35 @@ def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["images_processed"] == 1
-    assert body["staged"] == 1
     assert body["duplicates"] == 0
     assert body["held_multi_person"] == 0  # kept for client compat, always 0
+    # Photo-seam Phase 3 (G2 accounting): generation is DISARMED in this test, so a
+    # compliant card can never be produced — the zone is staged as a TERMINAL 'failed'
+    # candidate (visible accounting, never a silent drop or a permanent strand).
+    assert body["selected"] == 1
+    assert body["staged"] == 0
+    assert body["failed"] == 1
     sync_id = body["sync_id"]
 
-    # READY-FIRST Phase 1: a freshly committed candidate is 'staged' — the deck serves
-    # ONLY 'ready', so it is invisible until generation completes. Assert the gate, then
-    # stamp readiness (simulating the generation pass) and assert the scoped deck.
+    # READY-FIRST: the deck serves only 'ready' (+ needs-size) — the failed candidate
+    # is excluded, and the batch is immediately SETTLED (terminal), never stuck.
     assert client.get(
         f"/gmail/ingest/candidates?sync_id={sync_id}", headers=headers).json() == []
+    st = client.get(f"/gmail/ingest/status?sync_id={sync_id}", headers=headers).json()
+    assert st["progress"]["settled"] is True
     photo_cand = (
         db.query(IngestCandidate)
         .filter(IngestCandidate.sync_id == sync_id, IngestCandidate.source_type == "photo")
         .one()
     )
-    # Server-written state: 'staged' at commit, or 'image_pending' when the background
-    # generation task already started (TestClient runs BackgroundTasks synchronously).
-    # Either way NOT 'ready' — which is exactly why the deck above was empty.
-    assert photo_cand.pipeline_state in ("staged", "image_pending")
+    assert photo_cand.pipeline_state == "failed"
+    assert photo_cand.generation_status == "failed"
+
+    # Simulate a successful generation pass (verified card), then assert the scoped deck.
     photo_cand.pipeline_state = "ready"
     photo_cand.person_status = "person_free"
+    photo_cand.generation_status = "ready"
+    photo_cand.generated_image_url = "https://cdn/card.png"
     db.commit()
 
     # Scoped to the photo run: ONLY the photo candidate (stale Gmail one excluded).
@@ -354,7 +383,7 @@ def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     assert len(scoped) == 1
     assert scoped[0]["source_type"] == "photo"
     assert scoped[0]["name"] == "Photo Shirt"
-    assert scoped[0]["image_status"] == "user_uploaded"
+    assert scoped[0]["generated_image_url"] == "https://cdn/card.png"
 
     # Unscoped: the stale STAGED Gmail candidate stays hidden (ready-first) — only the
     # ready photo candidate is served.
