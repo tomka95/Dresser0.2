@@ -67,10 +67,14 @@ def size_ok(category: Optional[str], size: Optional[str]) -> bool:
 
 
 def tags_ready(cand) -> bool:
-    """Gate-3 tag completeness: category + name mandatory, size present-or-sizeless."""
-    return bool((cand.name or "").strip()) and bool((cand.category or "").strip()) and size_ok(
-        cand.category, cand.size
-    )
+    """Gate-3 tag completeness: category + name mandatory. SIZE IS OPTIONAL.
+
+    Product decision (2026-07-10): size attaches when derivable (onboarding default /
+    extraction) but must NEVER block an item from reaching 'ready' / the closet, for
+    ANY category. A verified person-free card + name + category is enough. The
+    'add size' affordance (needs_size below) is a soft, optional nicety on the card,
+    not a gate."""
+    return bool((cand.name or "").strip()) and bool((cand.category or "").strip())
 
 
 def apply_canonicalized(cand, facts: Optional[dict]) -> None:
@@ -100,18 +104,12 @@ def has_verified_card(cand) -> bool:
 
 
 def needs_size(cand) -> bool:
-    """True when a candidate is held at 'verified_clean' ONLY by a missing size.
-
-    Photo-seam Phase 3: these candidates have a verified, person-free, invariant-
-    compliant card and complete name/category — the one thing the pipeline cannot
-    supply is a size (no onboarding default for the category). They SURFACE in the
-    review deck with a needs-size affordance and count as settled-but-actionable in
-    the whole-batch settle — never silently stuck, never blocking the batch forever."""
+    """SOFT display flag (size is OPTIONAL, never a gate): the card has no size on a
+    category that has a size concept, so the deck can offer an OPTIONAL 'add size ✎'
+    affordance. This is true even for a fully-'ready' card — it never blocks 'ready'
+    and never withholds an item from the closet (product decision 2026-07-10)."""
     return (
-        cand.pipeline_state == "verified_clean"
-        and cand.person_status == "person_free"
-        and has_verified_card(cand)
-        and bool((cand.name or "").strip())
+        has_verified_card(cand)
         and bool((cand.category or "").strip())
         and not size_ok(cand.category, cand.size)
     )

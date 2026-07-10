@@ -18,9 +18,11 @@ import { useClosetStore } from '@/stores/useClosetStore';
 import { useGenerationStore } from '@/stores/useGenerationStore';
 import {
   confirmCandidates,
+  dismissCandidate,
   fetchGmailConnectionStatus,
   getIngestCandidates,
   getIngestStatus,
+  retryCandidate,
   startGmailConnect,
   startIngest,
   type IngestCandidate,
@@ -139,6 +141,8 @@ export default function ReviewPage() {
   const [index, setIndex] = useState(0);
   const [accepted, setAccepted] = useState<string[]>([]);
   const [rejected, setRejected] = useState<string[]>([]);
+  // Fix 2 — failed entries the user has Retried or Dismissed leave the local deck.
+  const [dismissed, setDismissed] = useState<string[]>([]);
   const [edits, setEdits] = useState<CardEdits>({});
 
   // Inline editor state for the current card.
@@ -389,6 +393,25 @@ export default function ReviewPage() {
   function handleReject() {
     if (!current) return;
     setRejected((r) => [...r, current.candidate_id]);
+    advance();
+  }
+
+  // Fix 2 — failed-entry actions. Both remove the entry from the local deck (advance)
+  // and fire the server call best-effort; a network hiccup never strands the user on
+  // the failed card.
+  function handleRetryFailed() {
+    if (!current) return;
+    const id = current.candidate_id;
+    retryCandidate(id).catch(() => {});
+    setDismissed((d) => [...d, id]);
+    advance();
+  }
+
+  function handleDismissFailed() {
+    if (!current) return;
+    const id = current.candidate_id;
+    dismissCandidate(id).catch(() => {});
+    setDismissed((d) => [...d, id]);
     advance();
   }
 
@@ -703,7 +726,11 @@ export default function ReviewPage() {
   const genStatus = current.generation_status;
   const isPhotoCard = current.source_type === 'photo';
   const generatedReady = genStatus === 'ready' && !!current.generated_image_url;
+  // Fix 2 — a 'couldn't process' entry: no image (may contain a person), a reason,
+  // Retry/Dismiss instead of the normal keep/skip/edit.
+  const isFailed = current.review_state === 'failed';
   const showGenerating =
+    !isFailed &&
     isPhotoCard &&
     (genStatus === 'generating' ||
       (genStatus == null && runGenerating) ||
@@ -720,7 +747,7 @@ export default function ReviewPage() {
   const rejectHint = Math.max(0, Math.min(1, -drag.x / SWIPE_COMMIT));
 
   function onSwipeDown(e: React.PointerEvent) {
-    if (editing) return; // don't hijack drags on the inline-edit inputs
+    if (editing || isFailed) return; // no swipe-keep/skip on a failed entry (Retry/Dismiss only)
     dragStartRef.current = e.clientX;
     dragXRef.current = 0;
     setDrag({ x: 0, dragging: true });
@@ -844,7 +871,35 @@ export default function ReviewPage() {
                 main→min-h-full→h-full ancestor chain. The image region can never collapse
                 to 0px regardless of ancestors (the bug that hid loaded cutouts). */}
             <div className="relative w-full aspect-[1/1]">
-              {showGenerating ? (
+              {isFailed ? (
+                // Fix 2 — 'couldn't process this item'. NEVER an image (the source may
+                // contain a person the generator couldn't remove); a neutral panel +
+                // an honest reason only. The invariant holds: no raw/person crop ever.
+                <div
+                  className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-7 text-center"
+                  style={{ background: '#33343a' }}
+                  role="status"
+                  aria-label="Couldn't process this item"
+                >
+                  <div
+                    className="flex items-center justify-center rounded-full"
+                    style={{
+                      width: 46, height: 46,
+                      background: 'rgba(255,255,255,0.08)',
+                      border: '1px solid var(--tr-20)',
+                    }}
+                  >
+                    <X size={22} style={{ color: 'rgba(255,255,255,0.7)' }} />
+                  </div>
+                  <span className="text-[13.5px] font-semibold" style={{ color: 'rgba(255,255,255,0.92)' }}>
+                    Couldn&rsquo;t process this item
+                  </span>
+                  <span className="text-[12px] leading-snug" style={{ color: M.faint }}>
+                    {current.failure_reason ||
+                      'We couldn’t create a clean product image for this one.'}
+                  </span>
+                </div>
+              ) : showGenerating ? (
                 // Photo card mid-generation: a clearly-visible "tailoring" loading state —
                 // a LIFTED neutral panel (distinct from the card) with a moving sheen, a
                 // bright spinner and copy on top. Never the raw full-scene crop, never a
@@ -1049,39 +1104,68 @@ export default function ReviewPage() {
           </div>
         </div>
 
-        {/* Action buttons — skip · edit · add. */}
-        <div className="mt-6 flex items-center justify-center gap-5">
-          <RoundBtn size={56} onClick={handleReject} aria-label="Skip" icon={<X size={23} />} />
-          <RoundBtn
-            size={44}
-            on={editing}
-            onClick={() => setEditing((e) => !e)}
-            aria-label="Edit"
-            icon={<Pencil size={18} />}
-          />
-          <button
-            type="button"
-            onClick={handleAccept}
-            aria-label="Add"
-            className="flex items-center justify-center transition-transform active:scale-90"
-            style={{
-              width: 56,
-              height: 56,
-              borderRadius: '50%',
-              background: 'linear-gradient(165deg, #52e8dc, #2cc9bc)',
-              border: '1px solid rgba(255,255,255,0.3)',
-              color: '#06302d',
-              boxShadow: '0 12px 30px -8px rgba(75,226,214,0.5)',
-            }}
-          >
-            <Check size={24} strokeWidth={2.5} />
-          </button>
-        </div>
+        {/* Action buttons. Fix 2: a failed entry gets Dismiss + Retry (not keep/skip/
+            edit) — the user still acts on every zone they selected. */}
+        {isFailed ? (
+          <div className="mt-6 flex items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={handleDismissFailed}
+              className="rounded-full px-5 py-3 text-[13.5px] font-semibold transition-transform active:scale-95"
+              style={{ background: 'var(--tr-10)', border: '1px solid var(--tr-20)', color: M.soft }}
+            >
+              Dismiss
+            </button>
+            <button
+              type="button"
+              onClick={handleRetryFailed}
+              className="rounded-full px-6 py-3 text-[13.5px] font-semibold transition-transform active:scale-95"
+              style={{
+                background: 'linear-gradient(165deg, #52e8dc, #2cc9bc)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                color: '#06302d',
+                boxShadow: '0 12px 30px -8px rgba(75,226,214,0.5)',
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="mt-6 flex items-center justify-center gap-5">
+            <RoundBtn size={56} onClick={handleReject} aria-label="Skip" icon={<X size={23} />} />
+            <RoundBtn
+              size={44}
+              on={editing}
+              onClick={() => setEditing((e) => !e)}
+              aria-label="Edit"
+              icon={<Pencil size={18} />}
+            />
+            <button
+              type="button"
+              onClick={handleAccept}
+              aria-label="Add"
+              className="flex items-center justify-center transition-transform active:scale-90"
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: '50%',
+                background: 'linear-gradient(165deg, #52e8dc, #2cc9bc)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                color: '#06302d',
+                boxShadow: '0 12px 30px -8px rgba(75,226,214,0.5)',
+              }}
+            >
+              <Check size={24} strokeWidth={2.5} />
+            </button>
+          </div>
+        )}
 
-        {/* 24h auto-hang reassurance. */}
-        <p className="mt-4 text-center text-[11.5px]" style={{ color: M.ghost }}>
-          Unreviewed high-confidence finds hang themselves in 24h — you can always edit later.
-        </p>
+        {/* 24h auto-hang reassurance — only for keepable cards. */}
+        {!isFailed && (
+          <p className="mt-4 text-center text-[11.5px]" style={{ color: M.ghost }}>
+            Unreviewed high-confidence finds hang themselves in 24h — you can always edit later.
+          </p>
+        )}
       </div>
     </AppShell>
   );

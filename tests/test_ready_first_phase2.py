@@ -228,7 +228,14 @@ def test_retry_exhausted_person_image_goes_failed(db, user, monkeypatch):
     db.commit()
     assert c.pipeline_state == "failed"
     assert stats.failed == 1
-    assert list_pending_candidates(db, user.id) == []    # excluded from the deck
+    # Fix 2: a failed candidate is NO LONGER silently excluded — it surfaces as a
+    # 'couldn't process' entry (no image, a reason), never the person crop.
+    deck = list_pending_candidates(db, user.id)
+    assert len(deck) == 1
+    entry = deck[0]
+    assert entry["review_state"] == "failed"
+    assert entry["failure_reason"]                        # a human reason present
+    assert entry["image_url"] is None and entry["generated_image_url"] is None
 
 
 def test_placeholder_terminal_goes_failed(db, user):
@@ -278,12 +285,15 @@ def test_size_defaulted_from_facts(db, user):
     assert c.pipeline_state == "canonicalized"
 
 
-def test_sized_category_without_default_blocks_ready(db, user):
+def test_sized_category_without_default_reaches_ready(db, user):
+    # Fix 1: SIZE IS OPTIONAL — a sized category with no size default still reaches
+    # 'ready' (image + name + category is enough). No category blocks on size.
     c = _cand(db, user, size=None, category="top", person="person_free")
     F._apply_canonicalized(c, {})                        # no facts -> no default
     stats = F.ImageFillStats(user_id=user.id)
     F._stamp_final(c, stats)
-    assert c.pipeline_state == "verified_clean"          # image fine; tags incomplete
+    assert c.pipeline_state == "ready"
+    assert c.size is None                                 # size genuinely optional
 
 
 def test_sizeless_category_reaches_ready_without_size(db, user):

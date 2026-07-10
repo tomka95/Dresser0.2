@@ -107,19 +107,17 @@ def test_confirm_refuses_staged_gmail_candidate(db, user, monkeypatch):
     assert births == []
 
 
-def test_confirm_refuses_needs_size_without_a_size(db, user, monkeypatch):
+def test_confirm_accepts_verified_clean_without_size(db, user, monkeypatch):
+    # Fix 1: SIZE OPTIONAL — a verified_clean card with no size is now ready-eligible;
+    # confirm completes it through the shared ready-writer and the item is born. No
+    # more "add a size to finish it" dead-end.
     births = _stub_upsert(monkeypatch)
     c = _cand(db, user, size=None, pipeline_state="verified_clean",
               generation_status="ready", generated_image_url="https://cdn/card.png")
-    with pytest.raises(ConfirmError, match="add a size"):
-        confirm_candidates(db, user.id, accepted=[str(c.id)])
-    assert births == []
-    # WITH the size edit the same candidate completes and is born.
-    result = confirm_candidates(
-        db, user.id, accepted=[str(c.id)], edits={str(c.id): {"size": "M"}},
-    )
+    result = confirm_candidates(db, user.id, accepted=[str(c.id)])
     db.refresh(c)
     assert c.pipeline_state == "ready" and c.status == "accepted"
+    assert c.size is None                            # size never required
     assert len(births) == 1 and result.accepted_count == 1
 
 
@@ -176,18 +174,20 @@ def test_manual_add_generates_card_and_is_born_via_chokepoint(db, user, monkeypa
     assert settle_counts(db, user.id, str(run.sync_id)).settled
 
 
-def test_manual_missing_size_rests_as_needs_size_not_item(db, user, monkeypatch):
+def test_manual_missing_size_still_born_size_optional(db, user, monkeypatch):
+    # Fix 1: a manual add with no derivable size is NOT held — it reaches 'ready' and
+    # auto-confirms into the closet (size optional). The 'add size' flag rides along
+    # as a soft nicety on the resulting card.
     births = _stub_upsert(monkeypatch)
     run, cand, stats = _run_manual(db, user, monkeypatch)  # no facts -> no default
 
     assert cand.generated_image_url == "https://cdn/manual-card.png"
-    assert cand.pipeline_state == "verified_clean"   # held ONLY by the size
-    assert cand.status == "pending"                  # NOT auto-confirmed
-    assert births == []                              # no item born
-    counts = settle_counts(db, user.id, str(run.sync_id))
-    assert counts.settled and counts.needs_size == 1  # reviewable, never stuck
-    deck = review_service.list_pending_candidates(db, user.id, sync_id=str(run.sync_id))
-    assert len(deck) == 1 and deck[0]["needs_size"] is True
+    assert cand.pipeline_state == "ready"            # size optional -> ready
+    assert cand.size is None
+    assert cand.status == "accepted"                 # auto-confirmed -> item born
+    assert len(births) == 1
+    from app.services.readiness import needs_size
+    assert needs_size(cand) is True                  # soft affordance still true
 
 
 def test_manual_generation_exhausted_is_terminal_failed_no_item(db, user, monkeypatch):

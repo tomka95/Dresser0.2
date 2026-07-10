@@ -150,10 +150,10 @@ def test_pending_review_surfaces_once_generation_settled(client, db, user):
     # Settled = every pending candidate is 'ready' or terminally 'failed' (excluded).
     run = _run(db, user, generation_total=2, generation_ready=1, generation_failed=1)
     _cand(db, user, run)                                  # ready
-    _cand(db, user, run, state="failed", person="person_present")  # excluded, not blocking
+    _cand(db, user, run, state="failed", person="person_present")  # Fix 2: reviewable too
     body = client.get("/gmail/ingest/pending-review", headers=_auth(user)).json()
     assert body["pending"] is True
-    assert body["ready_count"] == 1                       # counts ONLY the ready one
+    assert body["ready_count"] == 2                       # 1 ready + 1 failed to review
 
 
 def test_pending_review_silent_for_running_run(client, db, user):

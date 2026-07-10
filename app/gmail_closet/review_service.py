@@ -106,9 +106,63 @@ def _low_confidence_fields(c: IngestCandidate) -> List[str]:
     return weak
 
 
+def _failure_reason(c: IngestCandidate) -> str:
+    """A short, honest, redaction-safe reason a candidate went terminal 'failed'.
+
+    Never leaks image content — derived purely from the row's state. A person-in-frame
+    failure (generation couldn't produce a person-free card after the attempt ceiling)
+    is the common case for photo uploads."""
+    if (c.person_status or "") == "person_present":
+        return "We couldn't create a clean product image without the person in it."
+    return "We couldn't create a clean product image for this one."
+
+
 def _candidate_to_view(c: IngestCandidate, google_account_id: Optional[int]) -> Dict[str, Any]:
-    """Serialize one candidate into the swipe-deck shape (JSON-ready dict)."""
+    """Serialize one candidate into the swipe-deck shape (JSON-ready dict).
+
+    A 'failed' candidate is surfaced HONESTLY (Fix 2, 2026-07-10): review_state='failed'
+    with a reason + name/category, and EVERY image field forced to None — the terminal
+    failure is often a person-in-frame the generator couldn't remove, and the universal
+    invariant forbids ever displaying that crop. The FE renders a 'couldn't process'
+    entry (placeholder + reason + Retry/Dismiss), never a card."""
+    is_failed = c.pipeline_state == "failed"
+    if is_failed:
+        return {
+            "candidate_id": str(c.id),
+            "name": c.name,
+            "brand": c.brand,
+            "category": c.category,
+            "color": c.color,
+            "size": c.size,
+            "qty": c.quantity or 1,
+            "unit_price": _to_float(c.unit_price),
+            "currency": c.currency,
+            "order_date": c.order_date.isoformat() if c.order_date else None,
+            "is_return": bool(c.is_return),
+            # INVARIANT: a failed candidate NEVER emits any image (may contain a person).
+            "image_url": None,
+            "generated_image_url": None,
+            "on_model": bool(c.on_model),
+            "person_status": c.person_status,
+            "pipeline_state": c.pipeline_state,
+            "image_status": c.image_status,
+            "generation_status": c.generation_status,
+            "needs_size": False,
+            "review_state": "failed",
+            "failure_reason": _failure_reason(c),
+            "confidence_overall": _to_float(c.confidence_overall),
+            "low_confidence_fields": _low_confidence_fields(c),
+            "seen_count": c.seen_count or 1,
+            "source_type": c.source_type or "gmail",
+            "source": {
+                "merchant": c.merchant, "order_id": c.order_id,
+                "message_id": c.message_id, "google_account_id": google_account_id,
+                "email_date": None,
+            },
+        }
     return {
+        "review_state": "ready",
+        "failure_reason": None,
         "candidate_id": str(c.id),
         "name": c.name,
         "brand": c.brand,
@@ -194,34 +248,14 @@ def list_pending_candidates(
     q = db.query(IngestCandidate).filter(
         IngestCandidate.user_id == user_id,
         IngestCandidate.status == "pending",
-        # READY-FIRST (Phase 1): the deck serves ONLY candidates the state machine has
-        # advanced to 'ready' — tag-complete with a verified, person-free image.
-        # Photo-seam Phase 3 adds ONE more admissible state: 'verified_clean' rows held
-        # ONLY by a missing size (needs_size — verified card, person-free, name+category
-        # complete). They surface WITH their card and a needs-size affordance so a user
-        # without an onboarding size default is never silently stuck. The python-side
-        # readiness.needs_size filter below drops every other verified_clean row.
-        IngestCandidate.pipeline_state.in_(("ready", "verified_clean")),
+        # The deck serves: 'ready' (verified person-free card, tag-complete), any
+        # 'verified_clean' row that HOLDS a verified card (size is now OPTIONAL, so
+        # these are ready-eligible normal cards — Fix 1), AND 'failed' rows so a user
+        # who selected a zone always SEES it accounted for (Fix 2, no silent drops).
+        IngestCandidate.pipeline_state.in_(("ready", "verified_clean", "failed")),
     )
     if sync_id is not None:
         q = q.filter(IngestCandidate.sync_id == sync_id)
-
-    # Observability (Phase 3): terminally-failed candidates are silently EXCLUDED from
-    # the deck (no user-facing error) — log their count so a quietly shrinking batch is
-    # visible in ops. ids+counts only, never names/content.
-    failed_q = db.query(func.count(IngestCandidate.id)).filter(
-        IngestCandidate.user_id == user_id,
-        IngestCandidate.status == "pending",
-        IngestCandidate.pipeline_state == "failed",
-    )
-    if sync_id is not None:
-        failed_q = failed_q.filter(IngestCandidate.sync_id == sync_id)
-    failed_count = failed_q.scalar() or 0
-    if failed_count:
-        logger.info(
-            "deck user=%s sync=%s: %d terminally-failed candidate(s) excluded",
-            user_id, sync_id or "*", failed_count,
-        )
 
     rows = (
         q
@@ -235,8 +269,18 @@ def list_pending_candidates(
         )
         .all()
     )
-    # 'ready' passes verbatim; 'verified_clean' passes ONLY as a needs-size card.
-    rows = [c for c in rows if c.pipeline_state == "ready" or needs_size(c)]
+    # 'ready' + 'failed' pass verbatim; 'verified_clean' passes ONLY when it holds a
+    # verified card (a card-less verified_clean is still in flight, not reviewable).
+    rows = [
+        c for c in rows
+        if c.pipeline_state in ("ready", "failed") or has_verified_card(c)
+    ]
+    failed_count = sum(1 for c in rows if c.pipeline_state == "failed")
+    if failed_count:
+        logger.info(
+            "deck user=%s sync=%s: %d failed candidate(s) surfaced for review",
+            user_id, sync_id or "*", failed_count,
+        )
     return [_candidate_to_view(c, ga_id) for c in rows]
 
 
@@ -250,11 +294,10 @@ class SettleCounts:
     """Per-batch readiness accounting (ids+counts only, redaction-safe).
 
     settled ⟺ zero pending candidates are still mid-pipeline. A batch member counts as
-    settled when it is TERMINAL ('ready' — verified invariant-compliant card, or
-    'failed' — logged, excluded from the deck) OR when it is a needs_size card
-    (verified card held ONLY by a missing size — surfaced in the deck with an
-    affordance; it must not block the batch forever and must not vanish).
-    reviewable = what the deck will actually serve (ready + needs_size)."""
+    settled when it is TERMINAL: 'ready' (verified invariant-compliant card) or 'failed'
+    (surfaced in the deck as a 'couldn't process' entry with Retry/Dismiss — Fix 2, no
+    longer silently excluded). reviewable = everything the deck serves for the user to
+    act on: ready cards + failed entries (both are shown; failed needs Retry/Dismiss)."""
     ready: int = 0
     failed: int = 0
     needs_size: int = 0
@@ -266,7 +309,9 @@ class SettleCounts:
 
     @property
     def reviewable(self) -> int:
-        return self.ready + self.needs_size
+        # Fix 2: failed items ARE reviewable (the user must see + Retry/Dismiss them),
+        # so an all-failed batch still surfaces rather than vanishing.
+        return self.ready + self.failed
 
 
 def settle_counts(db: Session, user_id: UUID, sync_id: str) -> SettleCounts:
@@ -286,15 +331,66 @@ def settle_counts(db: Session, user_id: UUID, sync_id: str) -> SettleCounts:
     )
     out = SettleCounts()
     for c in rows:
-        if c.pipeline_state == "ready":
+        # ready, or verified_clean holding a verified card (ready-eligible now that size
+        # is optional — the deck serves it as a normal card) both count as reviewable.
+        if c.pipeline_state == "ready" or (
+            c.pipeline_state == "verified_clean" and has_verified_card(c)
+        ):
             out.ready += 1
+            if needs_size(c):
+                out.needs_size += 1   # soft: a card that could still take a size
         elif c.pipeline_state == "failed":
             out.failed += 1
-        elif needs_size(c):
-            out.needs_size += 1
         else:
             out.unsettled += 1
     return out
+
+
+def retry_candidate(db: Session, user_id: UUID, candidate_id: str) -> bool:
+    """Re-queue a terminal-'failed' candidate through the shared generation seam (Fix 2).
+
+    Resets the attempt ledger + returns it to heal-eligible 'pending_retry' /
+    'image_pending' so the self-heal sweep re-runs it through flux2->nano->verify. Only
+    a 'failed' row the caller owns is eligible; anything else is a no-op False. The
+    caller dispatches the background self-heal. Never raises image content into logs."""
+    try:
+        cid = UUID(str(candidate_id))
+    except (ValueError, TypeError):
+        return False
+    cand = (
+        db.query(IngestCandidate)
+        .filter(IngestCandidate.id == cid, IngestCandidate.user_id == user_id)
+        .first()
+    )
+    if cand is None or cand.pipeline_state != "failed":
+        return False
+    cand.generation_attempts = 0
+    cand.generation_status = "pending_retry"
+    cand.pipeline_state = "image_pending"
+    db.commit()
+    logger.info("candidate retry user=%s cand=%s -> pending_retry", user_id, cid)
+    return True
+
+
+def dismiss_candidate(db: Session, user_id: UUID, candidate_id: str) -> bool:
+    """Dismiss a candidate from review (Fix 2). Marks status='rejected' so it leaves the
+    pending deck for good — same terminal outcome as a swipe-reject, nothing written to
+    the closet. Owner-scoped; a foreign/unknown id is a no-op False."""
+    try:
+        cid = UUID(str(candidate_id))
+    except (ValueError, TypeError):
+        return False
+    cand = (
+        db.query(IngestCandidate)
+        .filter(IngestCandidate.id == cid, IngestCandidate.user_id == user_id)
+        .first()
+    )
+    if cand is None:
+        return False
+    cand.status = "rejected"
+    db.commit()
+    logger.info("candidate dismissed user=%s cand=%s", user_id, cid)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -639,9 +735,10 @@ def confirm_candidates(
             # clothing_items.name is NOT NULL; refuse rather than write a blank item.
             raise ConfirmError(f"candidate {cid}: name is required to accept")
 
-        # Photo-seam Phase 3: a needs-size card whose edit just supplied the size is
-        # now tag-complete — complete the state machine through THE shared ready
-        # writer.
+        # A verified_clean card (verified person-free image + name + category) is now
+        # ready-eligible — size is OPTIONAL (Fix 1), so tags_ready no longer needs it.
+        # Complete the state machine through THE shared ready writer. (A user-supplied
+        # size edit still attaches; it just isn't required.)
         if (
             cand.pipeline_state not in TERMINAL_STATES
             and cand.person_status == "person_free"
@@ -651,15 +748,15 @@ def confirm_candidates(
             mark_candidate_ready(cand)
 
         # THE CONFIRM CHOKEPOINT (Photo-seam Phase 4): a closet item may ONLY be born
-        # from a 'ready' candidate — verified, person-free, invariant-compliant image
-        # + complete tags, asserted by the single ready-writer above. Every entry
-        # point (photo deck, gmail deck, manual add, chat add) funnels through here;
-        # there is no other clothing_items insert path (tests enumerate this).
+        # from a 'ready' candidate — verified, person-free, invariant-compliant image +
+        # complete tags (name + category; size optional), asserted by the single
+        # ready-writer above. Every entry point (photo deck, gmail deck, manual add,
+        # chat add) funnels through here; there is no other clothing_items insert path
+        # (tests enumerate this). A 'failed' candidate is never accepted — it is
+        # Retried or Dismissed instead (Fix 2), never silently written.
         if cand.pipeline_state != "ready":
-            hint = " — add a size to finish it" if needs_size(cand) else ""
             raise ConfirmError(
-                f"candidate {cid}: not ready for the closet "
-                f"(state={cand.pipeline_state}){hint}"
+                f"candidate {cid}: not ready for the closet (state={cand.pipeline_state})"
             )
 
         written = _upsert_clothing_item(db, user_id, cand, ga_id, user_facts)

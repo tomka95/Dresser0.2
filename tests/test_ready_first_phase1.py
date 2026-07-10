@@ -152,16 +152,19 @@ def test_restage_preserves_ready_candidate(db, user):
 # Deck — STRICT ready gate
 # ===========================================================================
 
-def test_deck_serves_only_ready_candidates(db, user):
+def test_deck_serves_ready_and_failed_not_in_flight(db, user):
     sync = str(uuid.uuid4())
     _cand(db, user, sync, state="staged")
     _cand(db, user, sync, state="image_pending", src="photo", person="person_present")
-    _cand(db, user, sync, state="failed", src="photo", person="person_present")
+    failed = _cand(db, user, sync, state="failed", src="photo", person="person_present")
     ready = _cand(db, user, sync, state="ready", person="person_free",
                   gen_status="ready", gen_url="https://cdn/card.jpg")
 
     rows = list_pending_candidates(db, user.id)
-    assert [r["candidate_id"] for r in rows] == [str(ready.id)]
+    # Fix 2: ready card + failed entry surface; staged/in-flight do not.
+    assert {r["candidate_id"] for r in rows} == {str(ready.id), str(failed.id)}
+    fe = next(r for r in rows if r["candidate_id"] == str(failed.id))
+    assert fe["review_state"] == "failed" and fe["image_url"] is None
 
 
 def test_deck_empty_while_gmail_batch_in_flight(db, user):
@@ -290,20 +293,22 @@ def test_banner_surfaces_when_whole_batch_ready(client, db, user):
     assert body["ready_count"] == 3
 
 
-def test_banner_failed_candidates_excluded_not_blocking(client, db, user):
+def test_banner_counts_ready_and_failed_as_reviewable(client, db, user):
     r = _run(db, user)
     _cand(db, user, str(r.sync_id), state="ready", person="person_free")
-    _cand(db, user, str(r.sync_id), state="failed")           # excluded, doesn't block
+    _cand(db, user, str(r.sync_id), state="failed")           # Fix 2: reviewable, not hidden
     body = client.get("/gmail/ingest/pending-review", headers=_auth(user)).json()
     assert body["pending"] is True
-    assert body["ready_count"] == 1                            # counts ONLY ready
+    assert body["ready_count"] == 2                            # 1 ready + 1 failed to review
 
 
-def test_banner_silent_when_only_failed(client, db, user):
+def test_banner_surfaces_when_only_failed(client, db, user):
+    # Fix 2: an all-failed batch surfaces so the user can Retry/Dismiss (was silent).
     r = _run(db, user)
     _cand(db, user, str(r.sync_id), state="failed")
     body = client.get("/gmail/ingest/pending-review", headers=_auth(user)).json()
-    assert body["pending"] is False
+    assert body["pending"] is True
+    assert body["ready_count"] == 1
 
 
 def test_banner_silent_for_fresh_gmail_batch(client, db, user):

@@ -62,9 +62,13 @@ export interface IngestCandidate {
   // the raw crop), and keeps polling until it settles. image_url stays the raw crop.
   generated_image_url: string | null;
   generation_status: 'generating' | 'ready' | 'failed' | 'pending_retry' | null;
-  // Photo-seam Phase 3: the card is verified + person-free but held from 'ready' only
-  // by a missing size — the deck shows an "add size" affordance (inline editor).
+  // Soft, OPTIONAL 'add size ✎' affordance (size is never a gate — Fix 1). May be true
+  // on a fully-ready card; supplying a size is enrichment, never required.
   needs_size?: boolean;
+  // Fix 2 — what the deck shows this entry as: 'ready' (a normal card) | 'failed' (a
+  // 'couldn't process this item' entry: no image, a reason, Retry/Dismiss).
+  review_state?: 'ready' | 'failed';
+  failure_reason?: string | null;
   confidence_overall: number | null;
   low_confidence_fields: string[];
   seen_count: number;
@@ -341,6 +345,29 @@ export async function getIngestCandidates(syncId?: string): Promise<IngestCandid
 
   if (!response.ok) throw new Error('Failed to load candidates.');
   return response.json();
+}
+
+/** Fix 2 — retry a terminal 'failed' candidate through the shared generation seam.
+ *  Server resets it to pending_retry + kicks the background self-heal. */
+export async function retryCandidate(candidateId: string): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+  const res = await fetch(
+    `${API_BASE_URL}/gmail/ingest/candidates/${encodeURIComponent(candidateId)}/retry`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error('Could not retry this item.');
+}
+
+/** Fix 2 — dismiss a candidate from review (nothing written to the closet). */
+export async function dismissCandidate(candidateId: string): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+  const res = await fetch(
+    `${API_BASE_URL}/gmail/ingest/candidates/${encodeURIComponent(candidateId)}/dismiss`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error('Could not dismiss this item.');
 }
 
 // ─── Photo ingest (Wave 1.5: detect → select → commit) ──────────────────────

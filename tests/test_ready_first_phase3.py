@@ -106,15 +106,21 @@ def test_banner_fires_when_all_terminal_and_one_ready(client, db, user):
     body = _banner(client, user)
     assert body["pending"] is True
     assert body["sync_id"] == str(r.sync_id)
-    assert body["ready_count"] == 2                       # failed excluded from the count
+    # Fix 2: reviewable now counts ready + failed (2 ready + 1 failed = 3).
+    assert body["ready_count"] == 3
 
 
-def test_all_failed_batch_is_silent_like_empty_inbox(client, db, user):
+def test_all_failed_batch_now_surfaces_for_review(client, db, user):
+    # Fix 2: an all-failed batch is NO LONGER silent — the user selected those zones and
+    # must see them (to Retry/Dismiss). The banner surfaces; ready_count reflects the
+    # reviewable entries (the failed count).
     r = _run(db, user)
     for _ in range(3):
         _cand(db, user, str(r.sync_id), state="failed", person="person_present", image=None)
     body = _banner(client, user)
-    assert body == {"pending": False, "sync_id": None, "ready_count": 0}
+    assert body["pending"] is True
+    assert body["sync_id"] == str(r.sync_id)
+    assert body["ready_count"] == 3                        # 3 failed entries to review
 
 
 def test_banner_withheld_while_run_still_running(client, db, user):
@@ -139,20 +145,26 @@ def test_settled_older_run_surfaces_when_newest_still_in_flight(client, db, user
 # 2. Deck: only 'ready', failed silently excluded (logged)
 # ===========================================================================
 
-def test_deck_returns_only_ready_never_failed_or_in_flight(db, user, caplog):
+def test_deck_returns_ready_and_failed_never_in_flight(db, user, caplog):
     import logging
     sync = str(uuid.uuid4())
     ready = _cand(db, user, sync)
-    _cand(db, user, sync, state="failed", person="person_present", image=None)
+    failed = _cand(db, user, sync, state="failed", person="person_present", image=None)
     for st in _IN_FLIGHT:
         _cand(db, user, sync, state=st, person="unknown", image=None)
 
     with caplog.at_level(logging.INFO, logger="app.gmail_closet.review_service"):
         rows = list_pending_candidates(db, user.id, sync_id=sync)
 
-    assert [row["candidate_id"] for row in rows] == [str(ready.id)]
-    # failed candidates: no user-facing error, but an ops-visible count in the log.
-    assert any("terminally-failed" in rec.message for rec in caplog.records)
+    by_id = {row["candidate_id"]: row for row in rows}
+    # Fix 2: the deck now serves BOTH the ready card AND the failed entry (never the
+    # in-flight rows). The failed one carries no image + a reason.
+    assert set(by_id) == {str(ready.id), str(failed.id)}
+    assert by_id[str(ready.id)]["review_state"] == "ready"
+    fe = by_id[str(failed.id)]
+    assert fe["review_state"] == "failed" and fe["failure_reason"]
+    assert fe["image_url"] is None and fe["generated_image_url"] is None
+    assert any("failed candidate(s) surfaced" in rec.message for rec in caplog.records)
 
 
 def test_deck_card_is_complete_and_person_free(db, user):
@@ -239,11 +251,11 @@ def test_ready_cannot_be_written_on_incomplete_row(db, user):
     assert incomplete.pipeline_state == "verified_clean"  # unchanged -> banner withheld
 
 
-def test_settle_counts_only_committed_ready(client, db, user):
-    # A candidate that has its image + person verdict but has NOT been stamped 'ready'
-    # (e.g. crash between the field writes and the stamp pass) withholds the banner —
-    # the settle condition reads pipeline_state, never infers readiness from fields.
+def test_settle_withholds_cardless_verified_clean(client, db, user):
+    # A verified_clean candidate with NO card yet (crash between staging and the card
+    # write) is genuinely in flight -> withholds the banner. (A verified_clean row that
+    # DOES hold a card is ready-eligible now that size is optional and surfaces — Fix 1.)
     r = _run(db, user)
-    _cand(db, user, str(r.sync_id))                       # ready
-    _cand(db, user, str(r.sync_id), state="verified_clean")  # fields fine, not stamped
+    _cand(db, user, str(r.sync_id))                                 # ready
+    _cand(db, user, str(r.sync_id), state="verified_clean", image=None)  # no card -> in flight
     assert _banner(client, user)["pending"] is False

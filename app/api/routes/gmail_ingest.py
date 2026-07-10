@@ -30,7 +30,9 @@ from app.gmail_closet.fetch_service import ingest_background
 from app.gmail_closet.review_service import (
     ConfirmError,
     confirm_candidates,
+    dismiss_candidate,
     list_pending_candidates,
+    retry_candidate,
     settle_counts,
 )
 from app.platform.jobs import enqueue
@@ -239,6 +241,12 @@ class CandidateOut(BaseModel):
     on_model: bool = False
     person_status: str = "unknown"
     pipeline_state: str = "staged"
+    # Soft, OPTIONAL 'add size' affordance (size is never a gate — Fix 1).
+    needs_size: bool = False
+    # Fix 2 — a candidate the deck shows: 'ready' (a normal card) | 'failed' (a
+    # 'couldn't process this item' entry: no image, a reason, Retry/Dismiss).
+    review_state: str = "ready"
+    failure_reason: Optional[str] = None
     source: CandidateSource
 
 
@@ -540,6 +548,46 @@ def get_ingest_candidates(
     unchanged).
     """
     return list_pending_candidates(db, current_user.id, sync_id=sync_id)
+
+
+class CandidateActionResponse(BaseModel):
+    ok: bool
+
+
+@router.post("/candidates/{candidate_id}/retry", response_model=CandidateActionResponse)
+def retry_ingest_candidate(
+    candidate_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CandidateActionResponse:
+    """Retry a terminal-'failed' candidate through the shared generation seam (Fix 2).
+
+    Resets the attempt ledger to heal-eligible 'pending_retry' and dispatches the
+    background self-heal, which re-runs it through flux2->nano->verify. Owner-scoped; a
+    foreign/unknown/non-failed id -> 404. The user sees the entry return to a
+    generating/ready state on the next poll (or fail again with the same honest entry)."""
+    ok = retry_candidate(db, current_user.id, candidate_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No failed candidate to retry.")
+    from app.photo_closet.generation_service import self_heal_background
+
+    background_tasks.add_task(self_heal_background, str(current_user.id))
+    return CandidateActionResponse(ok=True)
+
+
+@router.post("/candidates/{candidate_id}/dismiss", response_model=CandidateActionResponse)
+def dismiss_ingest_candidate(
+    candidate_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CandidateActionResponse:
+    """Dismiss a candidate from review (Fix 2) — status='rejected', nothing written to
+    the closet, leaves the pending deck for good. Owner-scoped; unknown id -> 404."""
+    ok = dismiss_candidate(db, current_user.id, candidate_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No such candidate.")
+    return CandidateActionResponse(ok=True)
 
 
 @router.get("/usage")

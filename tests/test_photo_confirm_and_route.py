@@ -356,10 +356,14 @@ def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     assert body["failed"] == 1
     sync_id = body["sync_id"]
 
-    # READY-FIRST: the deck serves only 'ready' (+ needs-size) — the failed candidate
-    # is excluded, and the batch is immediately SETTLED (terminal), never stuck.
-    assert client.get(
-        f"/gmail/ingest/candidates?sync_id={sync_id}", headers=headers).json() == []
+    # Fix 2: the deck SURFACES the failed candidate as a 'couldn't process' entry (no
+    # image, a reason) — never silently excluded — and the batch is SETTLED (terminal).
+    failed_deck = client.get(
+        f"/gmail/ingest/candidates?sync_id={sync_id}", headers=headers).json()
+    assert len(failed_deck) == 1
+    assert failed_deck[0]["review_state"] == "failed"
+    assert failed_deck[0]["failure_reason"]
+    assert failed_deck[0]["image_url"] is None and failed_deck[0]["generated_image_url"] is None
     st = client.get(f"/gmail/ingest/status?sync_id={sync_id}", headers=headers).json()
     assert st["progress"]["settled"] is True
     photo_cand = (

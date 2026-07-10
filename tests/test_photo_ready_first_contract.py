@@ -169,9 +169,11 @@ def test_disarmed_commit_fails_zones_and_settles_immediately(db, user):
 
     assert res.selected == 2 and res.staged == 0 and res.failed == 2
     counts = settle_counts(db, user.id, res.sync_id)
-    assert counts.settled and counts.failed == 2 and counts.reviewable == 0
-    # All-failed batch: deck empty, run completed (defer skipped on staged=0).
-    assert list_pending_candidates(db, user.id, sync_id=res.sync_id) == []
+    # Fix 2: the 2 failed zones ARE reviewable (surfaced for Retry/Dismiss), not hidden.
+    assert counts.settled and counts.failed == 2 and counts.reviewable == 2
+    deck = list_pending_candidates(db, user.id, sync_id=res.sync_id)
+    assert len(deck) == 2 and all(d["review_state"] == "failed" for d in deck)
+    assert all(d["image_url"] is None and d["generated_image_url"] is None for d in deck)
     run = db.query(IngestRun).filter(IngestRun.sync_id == res.sync_id).one()
     assert run.status == "completed"
 
@@ -180,30 +182,31 @@ def test_disarmed_commit_fails_zones_and_settles_immediately(db, user):
 # G3 — whole-batch settle + deck admission
 # ===========================================================================
 
-def test_settle_requires_all_terminal_and_deck_serves_only_ready(db, user):
+def test_settle_requires_all_terminal_and_deck_serves_ready_and_failed(db, user):
     sync = str(uuid4())
     ready = _stage_row(db, user, sync, pipeline_state="ready",
                        generation_status="ready",
                        generated_image_url="https://cdn/card.png",
                        source_line_key="z-ready")
-    _stage_row(db, user, sync, pipeline_state="failed",
-               generation_status="failed", source_line_key="z-failed")
+    failed = _stage_row(db, user, sync, pipeline_state="failed",
+                        generation_status="failed", source_line_key="z-failed")
     inflight = _stage_row(db, user, sync, pipeline_state="image_pending",
                           generation_status="generating", source_line_key="z-flight")
 
     counts = settle_counts(db, user.id, sync)
     assert not counts.settled and counts.unsettled == 1
 
+    # Fix 2: the deck serves the ready card AND the failed entry (not the in-flight one).
     deck = list_pending_candidates(db, user.id, sync_id=sync)
-    assert [d["candidate_id"] for d in deck] == [str(ready.id)]  # only 'ready'
+    assert {d["candidate_id"] for d in deck} == {str(ready.id), str(failed.id)}
 
-    # The straggler goes terminal -> the batch settles; failed neither blocks nor counts.
+    # The straggler goes terminal -> the batch settles; failed IS reviewable now.
     inflight.pipeline_state = "failed"
     inflight.generation_status = "failed"
     db.commit()
     counts = settle_counts(db, user.id, sync)
     assert counts.settled and counts.ready == 1 and counts.failed == 2
-    assert counts.reviewable == 1
+    assert counts.reviewable == 3       # 1 ready + 2 failed all surfaced
 
 
 # ===========================================================================

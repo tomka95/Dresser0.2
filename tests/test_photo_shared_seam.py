@@ -193,9 +193,10 @@ def test_branded_verified_card_promotes_to_shared_cache(db, user, monkeypatch):
 # 3. The SHARED readiness invariant on the photo path
 # ===========================================================================
 
-def test_verified_card_with_missing_size_rests_at_verified_clean(db, user, monkeypatch):
-    """No size, no onboarding facts -> the card lands but 'ready' is withheld (masked),
-    exactly the Gmail rule. generation_status='ready' keeps it out of re-selection."""
+def test_verified_card_with_missing_size_reaches_ready(db, user, monkeypatch):
+    """Fix 1: SIZE OPTIONAL — a card + name + category reaches 'ready' with size=null;
+    a sized category no longer withholds it. The 'add size' affordance stays available
+    as a soft nicety (needs_size), never a gate."""
     sync = uuid4(); _run_row(db, user, sync)
     c = _stage(db, user, sync, size=None)  # 'top' is a sized category
     monkeypatch.setattr(gen, "_download_bytes", lambda url: (b"cut", "image/jpeg"))
@@ -210,8 +211,11 @@ def test_verified_card_with_missing_size_rests_at_verified_clean(db, user, monke
     db.refresh(c)
     assert c.generated_image_url == "https://blob/card.png"
     assert c.generation_status == "ready"
-    assert c.pipeline_state == "verified_clean"  # NOT ready — tags incomplete
+    assert c.pipeline_state == "ready"           # Fix 1: size optional -> ready
+    assert c.size is None
     assert c.person_status == "person_free"
+    from app.services.readiness import needs_size
+    assert needs_size(c) is True                 # soft 'add size' affordance still offered
 
 
 def test_missing_size_defaults_from_facts_at_generation(db, user, monkeypatch):
