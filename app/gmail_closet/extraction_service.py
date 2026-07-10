@@ -40,12 +40,14 @@ from app.gmail_closet.extraction_schema import (
     normalize_currency,
     normalize_order_date,
 )
+from app.gmail_closet.email_type_classifier import classify_is_order_confirmation
 from app.gmail_closet.extractor import ExtractionOutcome, extract_receipt
 from app.gmail_closet.fetch_service import (
     _extract_body,
     _fetch_one,
 )
 from app.gmail_closet.gmail_oauth_service import ensure_fresh_token
+from app.gmail_closet.receipt_filter import is_ambiguous_type
 from app.gmail_closet.retailers import match_retailer
 from app.platform.usage import record_extraction_usage
 from app.models import GoogleAccount, IngestCandidate, IngestRun, ProcessedMessage
@@ -104,6 +106,11 @@ class _MsgExtraction:
     # Known-retailer display name resolved from the sender domain (retailers.py),
     # used as a strong brand/merchant prior when the model leaves them null.
     retailer: Optional[str] = None
+    # Layer C: the cheap TYPE classifier judged this ambiguous email marketing/abandoned-
+    # cart (not an order confirmation), so it was dropped BEFORE the full extraction call.
+    # Distinct from outcome=None (a fetch error to retry): a type-reject is DONE — the
+    # service marks it 'extracted' and never re-runs it.
+    type_rejected: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +175,19 @@ def _fetch_and_extract(
     body = _extract_body(payload)
     sent_at = _internal_date(raw)
     retailer = match_retailer(sender)  # known-retailer brand/merchant prior
+    labels = raw.get("labelIds", [])   # Gmail category (top-level field)
+
+    # Layer C: for the AMBIGUOUS residue only (known retailer + order-ish subject + price
+    # but no order number, e.g. "Your order is waiting"), ask the cheap TYPE classifier
+    # BEFORE the full extraction. A marketing/abandoned-cart verdict drops the email
+    # without paying for extraction; fail-open keeps it (never drops a genuine receipt).
+    if is_ambiguous_type(sender, subject, body, labels):
+        snippet = raw.get("snippet", "")
+        if not classify_is_order_confirmation(sender, subject, snippet):
+            return _MsgExtraction(
+                message_id=msg_id, outcome=None, sent_at=sent_at,
+                retailer=retailer, type_rejected=True,
+            )
 
     outcome = extract_receipt(
         sender=sender,
@@ -257,8 +277,12 @@ def _stage_message(
     """
     receipt = res.outcome.receipt if res.outcome else None
 
-    # CLOTHING GATE: non-clothing (or no items) stages NOTHING.
-    if not receipt or not receipt.is_clothing or not receipt.items:
+    # PURCHASE-TYPE GATE (Layer D) + CLOTHING GATE: stage NOTHING unless this is a genuine
+    # purchase (is_purchase) that contains wearable clothing (is_clothing) with items.
+    # is_purchase was already in the schema but never consulted — gating on it here is the
+    # LLM backstop: a promotional / abandoned-cart email that names a garment + price and
+    # slips past the earlier layers still stages nothing once the model marks is_purchase=false.
+    if not receipt or not receipt.is_purchase or not receipt.is_clothing or not receipt.items:
         return []
 
     order_date = normalize_order_date(receipt.order_date)
@@ -467,6 +491,14 @@ def run_extraction_sync(
                             logger.warning(
                                 "sync_id=%s message_id=%s: extract worker error", sync_id, mid,
                             )
+                            continue
+
+                        if res.type_rejected:
+                            # Layer C dropped this ambiguous email as marketing/abandoned-cart
+                            # BEFORE any extraction call — it's DONE (no LLM spend). Count it
+                            # rejected and mark extracted; the batch-end commit persists it.
+                            stats.rejected_msgs += 1
+                            _mark_extracted(db, user_id, res.message_id)
                             continue
 
                         if res.outcome is None:

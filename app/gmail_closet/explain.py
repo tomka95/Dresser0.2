@@ -147,8 +147,9 @@ def _explain_one(
     sender = headers.get("from", "")
     subject = headers.get("subject", "")
     body_text = _extract_body(payload)   # used only for Tier-1; never logged/shown
+    labels = raw.get("labelIds", [])     # Gmail category for the email-TYPE gate
 
-    kept, reason = passes_tier1_filter(sender, subject, body_text)
+    kept, reason = passes_tier1_filter(sender, subject, body_text, labels)
 
     return ExplainRow(
         message_id=msg_id,

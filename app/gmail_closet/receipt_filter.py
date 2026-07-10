@@ -203,34 +203,148 @@ _PRICE_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# EMAIL-TYPE signals (Layer B) — classify TYPE (order vs ad), not just CONTENT.
+# ---------------------------------------------------------------------------
+# Gmail's own category labels, read from a message's labelIds. Promotions is where
+# Gmail already files marketing / price-drop / abandoned-cart mail; Purchases is its
+# order/receipt bucket. Used as a HARD type signal in the filter below.
+_PROMOTIONS_LABEL = "CATEGORY_PROMOTIONS"
+_PURCHASES_LABEL = "CATEGORY_PURCHASES"
+
+# Ad-specific SUBJECT phrases. Matched against the normalized SUBJECT ONLY (never the
+# body — a real receipt's body legitimately contains "20% off" on a discount line).
+# Deliberately TIGHT: every phrase is language a genuine receipt SUBJECT does not use.
+# Bare "sale" / bare "deal" are intentionally EXCLUDED (a real outlet receipt says
+# "Sale order #123"), which is why the list keys on multi-word ad phrases.
+_AD_SUBJECT_PHRASES: Tuple[str, ...] = _norm_phrases((
+    "price drop",
+    "just dropped",
+    "carted items",
+    "your cart",
+    "in your cart",
+    "last chance",
+    "advertisement",
+    "recommended for you",
+    "forgot something",
+    "back in stock",
+    "trending",
+    "new arrivals",
+    "deal of",          # "deal of the day/week" — NOT bare "deal"
+    "flash sale",
+    "don't miss",
+    "dont miss",
+    "ends tonight",
+    "ends soon",
+    "limited time",
+))
+
+# "40% off", "up to 40% off", "save 40%" — percentage-discount subject patterns a genuine
+# receipt subject almost never carries (the discount lives in the receipt BODY, not subject).
+_AD_SUBJECT_RE = re.compile(
+    r"\d{1,3}\s*%\s*off"
+    r"|up to\b[^.]*\boff\b"
+    r"|save\s*\d{1,3}\s*%",
+    re.IGNORECASE,
+)
+
+# Order-number token WITH a value: "order #12345", "order number 12345", "invoice #12",
+# bare "#12345", Hebrew "מספר הזמנה 123". A STRONG POSITIVE (a receipt has one; an ad has a
+# "SHOP NOW" CTA instead) — NEVER a hard require (real receipts phrase it variably, so its
+# ABSENCE must not drop a genuine receipt). Its PRESENCE in a subject also OVERRIDES the
+# ad-subject reject, so a receipt that mentions a discount ("Order #123 — 20% off") is kept.
+_ORDER_NUMBER_RE = re.compile(
+    r"(?:order|confirmation|conf|invoice|receipt)\s*(?:#|no\.?|number|num|id)?\s*[:#-]?\s*#?\s*\d{3,}"
+    r"|#\s*\d{4,}"
+    r"|מספר\s*(?:הזמנה|חשבונית|קבלה)\s*[:#-]?\s*\d{2,}",
+    re.IGNORECASE,
+)
+
+# Order-ish SUBJECT tokens — used ONLY to detect the AMBIGUOUS residue (a subject that looks
+# order-like but may be retargeting, e.g. "Your order is waiting"). NOT itself a keep signal.
+_ORDER_ISH_SUBJECT: Tuple[str, ...] = _norm_phrases((
+    "your order", "order", "purchase", "receipt", "invoice", "checkout",
+    "הזמנה", "הזמנתך", "רכישה", "חשבונית", "קבלה",
+))
+
+
+def _is_promotions(labels) -> bool:
+    """True when Gmail tabbed this Promotions and NOT Purchases — a hard ad TYPE signal.
+
+    Rejecting only 'promotions AND NOT purchases' protects the rare genuine receipt Gmail
+    dual-labels: a real order also tabbed Purchases is never dropped by this rule.
+    """
+    if not labels:
+        return False
+    labs = set(labels)
+    return _PROMOTIONS_LABEL in labs and _PURCHASES_LABEL not in labs
+
+
+def _has_ad_subject(subject_norm: str) -> bool:
+    """True when the SUBJECT carries an ad-specific phrase or a %-off discount pattern."""
+    if any(p in subject_norm for p in _AD_SUBJECT_PHRASES):
+        return True
+    return bool(_AD_SUBJECT_RE.search(subject_norm))
+
+
+def _has_order_number(text: str) -> bool:
+    """True when an order / confirmation / invoice NUMBER with a value is present."""
+    return bool(_ORDER_NUMBER_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
 # Public filter
 # ---------------------------------------------------------------------------
 
-def passes_tier1_filter(sender: str, subject: str, body: str) -> Tuple[bool, str]:
+def passes_tier1_filter(
+    sender: str, subject: str, body: str, labels=None
+) -> Tuple[bool, str]:
     """Return (keep: bool, reason: str) — deterministic, no LLM, multilingual.
 
-    Positive signals → keep (unless a negative override applies):
-      - is_known_retailer(sender)
-      - price/currency pattern in subject or body
-      - any locale pack's receipt phrase found in subject or body
+    EMAIL-TYPE rejects (Layer B) run FIRST, before any positive signal, and fire
+    REGARDLESS of price — this is the fix for the abandoned-cart inversion, where an ad
+    that carried a price used to DISABLE its own marketing filter:
+      - promotions_category: Gmail labeled it Promotions and not Purchases
+      - ad_subject: an ad-specific subject phrase / %-off pattern (unless the subject also
+        carries an order number, which protects a genuine receipt that mentions a discount)
 
-    Negative overrides (only fire when NO positive receipt signal exists):
-      - shipping_only: shipping phrase present, no price, no receipt keywords
-      - marketing_newsletter: marketing or newsletter phrase present, no price, no receipt
+    Legacy negative overrides (only fire when NO price and NO receipt keyword):
+      - shipping_only / marketing_newsletter (unchanged — the price-carrying ads are now
+        caught above, so these stay conservative for the price-less case)
+
+    Positive signals → keep:
+      - order_number (STRONGEST — a receipt has one, an ad does not)
+      - is_known_retailer(sender) — now a WEAK positive: reached only AFTER the type
+        rejects, so a promotional retailer email is no longer auto-kept on sender alone
+      - price/currency pattern; any locale pack's receipt phrase
 
     To add a new language: define a LocalePack and append to _LOCALE_PACKS above.
     """
+    labels = labels or []
     combined_raw = subject + " " + body
     combined = _normalize(combined_raw)
+    subject_norm = _normalize(subject)
 
+    # === EMAIL-TYPE REJECTS (run before positives; fire even WITH a price) ============
+    # (1) Gmail Promotions category — belt-and-suspenders with the Tier-0
+    #     -category:promotions exclusion; catches anything a looser query lets through.
+    if _is_promotions(labels):
+        return False, "promotions_category"
+
+    # (2) Ad-specific subject — reject EVEN WITH a price (the inversion fix). An order
+    #     NUMBER in the subject overrides: the inversion we fix is price-carrying, not
+    #     order-number-carrying, so a genuine "Order #123 — 20% off" receipt is kept.
+    if _has_ad_subject(subject_norm) and not _has_order_number(subject):
+        return False, "ad_subject"
+
+    # === CONTENT signals ==============================================================
     has_price = bool(_PRICE_RE.search(combined_raw))
     is_retailer = is_known_retailer(sender)
-
     has_receipt = any(
         phrase in combined
         for pack in _LOCALE_PACKS
         for phrase in pack.receipt_phrases
     )
+    has_order_number = _has_order_number(combined_raw)
 
     # --- Negative: shipping-only ---------------------------------------------
     is_shipping_only = (
@@ -260,6 +374,11 @@ def passes_tier1_filter(sender: str, subject: str, body: str) -> Tuple[bool, str
         return False, "marketing_newsletter"
 
     # --- Positive signals ----------------------------------------------------
+    # Order NUMBER is the strongest positive (a receipt has one; an ad has a CTA).
+    if has_order_number:
+        return True, "order_number"
+    # WEAK positive: only reached AFTER the type rejects, so a promotional retailer email
+    # was already dropped above and is never auto-kept on its sender domain alone.
     if is_retailer:
         return True, "known_retailer"
     if has_price:
@@ -268,6 +387,27 @@ def passes_tier1_filter(sender: str, subject: str, body: str) -> Tuple[bool, str
         return True, "receipt_keywords"
 
     return False, "no_signals"
+
+
+def is_ambiguous_type(
+    sender: str, subject: str, body: str, labels=None
+) -> bool:
+    """True for the CONFLICTING residue handed to the cheap-LLM classifier (Layer C).
+
+    Conflict = a known-retailer email with an order-ish subject and a price but NO order
+    number. These look like orders yet may be retargeting ("Your order is waiting"); they
+    are the ONLY emails that reach the LLM type classifier. Everything else is decided
+    deterministically here, so the classifier runs on a thin slice, never the whole inbox.
+    """
+    subject_norm = _normalize(subject)
+    combined_raw = subject + " " + body
+    order_ish = any(p in subject_norm for p in _ORDER_ISH_SUBJECT)
+    return (
+        is_known_retailer(sender)
+        and order_ish
+        and bool(_PRICE_RE.search(combined_raw))
+        and not _has_order_number(combined_raw)
+    )
 
 
 # ---------------------------------------------------------------------------

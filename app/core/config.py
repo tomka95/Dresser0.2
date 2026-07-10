@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     GMAIL_EXTRACT_MAX_CONCURRENCY: int = 8
     # Hard cap on the email body chars sent to the model (token/cost guard).
     GMAIL_EXTRACT_MAX_BODY_CHARS: int = 12000
+    # Layer C email-TYPE classifier: a cheap yes/no ("order confirmation vs marketing/
+    # abandoned-cart") on subject+sender+snippet, run ONLY for the ambiguous residue
+    # (known retailer + order-ish subject + price but no order number). Fail-open — if
+    # disabled or the call errors, the email is KEPT so a genuine receipt is never dropped.
+    GMAIL_TYPE_CLASSIFIER_ENABLED: bool = True
+    GMAIL_TYPE_CLASSIFIER_MODEL: str = "gemini-2.5-flash-lite"
     
     # --- Photo -> closet garment detection (Wave 1) ------------------------
     # The schema-first detector behind /photo/ingest/detect. Returns per-garment
