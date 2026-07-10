@@ -78,6 +78,9 @@ class _MsgResult(NamedTuple):
     message_id: str
     kept: bool
     content_hash: str
+    # Tier-1 keep/drop reason — persisted to processed_messages.filter_reason (0040)
+    # so leak forensics never again require re-deriving why a message was kept.
+    reason: str
     # Cheap pre-LLM clothing-likeliness rank (0 = likely → extract first, 1 = other),
     # persisted to processed_messages.extract_priority so the extraction phase can order
     # probable-clothing emails to the front of the LLM queue.
@@ -121,7 +124,7 @@ def _build_query(since: datetime) -> str:
     # purchases-only query would DROP real receipts. Exclusion is the low-false-negative
     # lever; the purchases / retailer / subject OR-branches still gather everything else.
     return (
-        f"after:{since_date} -category:promotions ("
+        f"after:{since_date} -category:promotions -in:sent ("
         "category:purchases "
         f"OR from:({top_domains}) "
         f"OR subject:({subject_terms})"
@@ -268,12 +271,20 @@ def _process_message(
     labels = raw.get("labelIds", [])
 
     content_hash = hashlib.sha256(body_text.encode()).hexdigest()[:32]
-    kept, _reason = passes_tier1_filter(sender, subject, body_text, labels)
+    # Belt-and-suspenders with the -in:sent query term: the user's own sent/forwarded
+    # copies duplicate their inbox originals and must never stage rows of their own.
+    if "SENT" in (labels or []):
+        kept, reason = False, "sent_mail"
+    else:
+        kept, reason = passes_tier1_filter(sender, subject, body_text, labels)
     # Clothing-likeliness is cheap here (headers already parsed) — recorded so the
     # extraction queue can put probable-clothing emails first.
     priority = clothing_priority(sender, subject)
 
-    return _MsgResult(message_id=msg_id, kept=kept, content_hash=content_hash, priority=priority)
+    return _MsgResult(
+        message_id=msg_id, kept=kept, content_hash=content_hash,
+        priority=priority, reason=reason,
+    )
 
 
 def _upsert_processed(
@@ -284,6 +295,7 @@ def _upsert_processed(
     content_hash: str,
     status: str,
     extract_priority: int = 1,
+    filter_reason: Optional[str] = None,
 ) -> None:
     """INSERT … ON CONFLICT DO UPDATE for the processed_messages idempotency ledger."""
     stmt = (
@@ -295,6 +307,7 @@ def _upsert_processed(
             content_hash=content_hash,
             status=status,
             extract_priority=extract_priority,
+            filter_reason=filter_reason,
             processed_at=datetime.now(timezone.utc),
         )
         .on_conflict_do_update(
@@ -302,6 +315,7 @@ def _upsert_processed(
             set_={
                 "status": status,
                 "extract_priority": extract_priority,
+                "filter_reason": filter_reason,
                 "processed_at": datetime.now(timezone.utc),
             },
         )
@@ -476,7 +490,7 @@ def _run_ingest_core(
                     status = "fetched" if r.kept else "filtered_out"
                     _upsert_processed(
                         db, user_id, ga_id, r.message_id, r.content_hash, status,
-                        extract_priority=r.priority,
+                        extract_priority=r.priority, filter_reason=r.reason,
                     )
                     if r.kept:
                         fetched_count += 1

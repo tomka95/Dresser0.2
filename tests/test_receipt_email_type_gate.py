@@ -6,7 +6,7 @@ Layers under test:
   B  Tier-1 filter         -> promotions-label + ad-subject rejects (fire even WITH a price)
   C  cheap-LLM classifier  -> ambiguous residue only ("Your order is waiting"), fail-open
   D  STRIPPED at merge — reconcile.py is the single owner of admit/demote/quarantine;
-     staging no longer consults is_purchase (see test_stage_does_not_consult_is_purchase)
+     marketing lines stage DEMOTED with a reason (see test_marketing_lines_are_demoted_not_dropped)
 
 The hard guardrail — NEVER drop a genuine order confirmation — is asserted by the measurement
 corpus at the bottom (real-receipt false-negative count MUST be 0).
@@ -22,7 +22,9 @@ import pytest
 import app.gmail_closet.extraction_service as ES
 from app.core.config import settings
 from app.gmail_closet import email_type_classifier as C
-from app.gmail_closet.extraction_schema import ClosetCategory, ExtractedItem, ExtractedReceipt
+from app.gmail_closet.extraction_schema import (
+    ClosetCategory, EmailKind, OrderInfo, OrderLine, ReceiptDocument,
+)
 from app.gmail_closet.extractor import ExtractionOutcome
 from app.gmail_closet.fetch_service import _FIELDS_GET, _build_query
 from app.gmail_closet.receipt_filter import is_ambiguous_type, passes_tier1_filter
@@ -240,7 +242,8 @@ def test_fetch_and_extract_skips_classifier_for_clear_receipt(monkeypatch):
     monkeypatch.setattr(ES, "classify_is_order_confirmation",
                         lambda *a: (_ for _ in ()).throw(AssertionError("clear receipt must not be classified")))
     sentinel = ExtractionOutcome(
-        receipt=ExtractedReceipt(is_purchase=True, is_clothing=True, items=[], overall_confidence=0.9),
+        receipt=ReceiptDocument(email_kind=EmailKind.order_confirmation, is_clothing=True,
+                                overall_confidence=0.9),
         model="x", escalated=False, parse_failed=False, api_failed=False,
         input_tokens=1, output_tokens=1, est_cost_flash_lite=0.0, est_cost_realistic=0.0,
     )
@@ -264,38 +267,48 @@ def _outcome(receipt):
     )
 
 
-def _item():
-    return ExtractedItem(name="Define Jacket", category=ClosetCategory.outerwear, unit_price=99.0)
+def _line(name="Define Jacket", **kw):
+    return OrderLine(name=name, category=ClosetCategory.outerwear, unit_price=99.0, **kw)
 
 
-def test_stage_does_not_consult_is_purchase(monkeypatch):
-    # Layer D stripped: is_purchase=False alone must NOT block staging here — the
-    # admit/demote decision belongs to the reconcile pass, which demotes with a
-    # machine-readable reason instead of silently staging nothing.
+def test_marketing_lines_are_demoted_not_dropped(monkeypatch):
+    # Reconcile owns the decision: a marketing email's product tiles stage as DEMOTED
+    # rows (rejected_recommendation + reason) — never admitted, never silently dropped.
     calls = []
     monkeypatch.setattr(ES, "_upsert_candidate", lambda db, vals: calls.append(vals))
-    res = ES._MsgExtraction("m", _outcome(
-        ExtractedReceipt(is_purchase=False, is_clothing=True, items=[_item()], overall_confidence=0.9)
-    ), None)
-    keys = ES._stage_message(None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
-    assert len(keys) == 1 and len(calls) == 1
+    res = ES._MsgExtraction("m", _outcome(ReceiptDocument(
+        email_kind=EmailKind.marketing, is_clothing=True, overall_confidence=0.9,
+        recommendation_lines=[_line(section_evidence="Recommended for you")],
+    )), None)
+    decision, admitted, demoted = ES._stage_message(
+        None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
+    assert admitted == [] and len(demoted) == 1
+    assert calls[0]["pipeline_state"] == "rejected_recommendation"
+    assert calls[0]["quarantine_reason"] == "recommendation_tile"
 
 
 def test_stage_skips_when_not_clothing():
-    res = ES._MsgExtraction("m", _outcome(
-        ExtractedReceipt(is_purchase=True, is_clothing=False, items=[_item()], overall_confidence=0.9)
-    ), None)
-    assert ES._stage_message(None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res) == []
+    res = ES._MsgExtraction("m", _outcome(ReceiptDocument(
+        email_kind=EmailKind.order_confirmation, is_clothing=False,
+        order=OrderInfo(order_id="X1"), order_lines=[_line()], overall_confidence=0.9,
+    )), None)
+    decision, admitted, demoted = ES._stage_message(
+        None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
+    assert decision is None and admitted == [] and demoted == []
 
 
 def test_stage_proceeds_for_genuine_clothing_purchase(monkeypatch):
     calls = []
     monkeypatch.setattr(ES, "_upsert_candidate", lambda db, vals: calls.append(vals))
-    res = ES._MsgExtraction("m", _outcome(
-        ExtractedReceipt(is_purchase=True, is_clothing=True, items=[_item()], overall_confidence=0.9)
-    ), None)
-    keys = ES._stage_message(None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
-    assert len(keys) == 1 and len(calls) == 1       # genuine purchase -> staged
+    res = ES._MsgExtraction("m", _outcome(ReceiptDocument(
+        email_kind=EmailKind.order_confirmation, is_clothing=True,
+        order=OrderInfo(order_id="X1"),
+        order_lines=[_line(section_evidence="Order Details")], overall_confidence=0.9,
+    )), None)
+    decision, admitted, demoted = ES._stage_message(
+        None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
+    assert len(admitted) == 1 and len(calls) == 1       # genuine purchase -> staged
+    assert calls[0]["pipeline_state"] == "staged"
 
 
 # ===========================================================================

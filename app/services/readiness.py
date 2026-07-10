@@ -46,7 +46,11 @@ STATE_ORDER = {
     "staged": 0, "canonicalized": 1, "image_pending": 2,
     "image_generated": 3, "verified_clean": 4,
 }
-TERMINAL_STATES = ("ready", "failed")
+TERMINAL_STATES = ("ready", "failed", "rejected_recommendation")
+# 'rejected_recommendation' (migration 0040) is the DEMOTED terminal: a line the
+# reconcile pass judged a recommendation/ad, kept for audit with a machine-readable
+# quarantine_reason. Terminal membership is what keeps it out of the fill/generation
+# selectors, out of advance(), and out of the confirm chokepoint — everywhere at once.
 # image_status values that count as a stored, displayable image for readiness (gmail shape).
 STORED_IMAGE_STATUSES = ("resolved", "user_uploaded")
 

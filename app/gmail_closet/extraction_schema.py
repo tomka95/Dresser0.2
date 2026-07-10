@@ -93,6 +93,80 @@ class ExtractedReceipt(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Receipt DOCUMENT (v2) — the structural schema the Gate-1 redesign extracts.
+# One pass per email: kind + order block + per-line section evidence. The
+# deterministic reconcile pass (reconcile.py) routes on this; the model never
+# decides admit/demote — it only reports STRUCTURE.
+# ---------------------------------------------------------------------------
+
+class EmailKind(str, Enum):
+    order_confirmation = "order_confirmation"
+    shipping = "shipping"
+    delivery = "delivery"
+    return_or_refund = "return_or_refund"
+    review_request = "review_request"
+    marketing = "marketing"
+    other = "other"
+
+
+class OrderInfo(BaseModel):
+    """The email's order block, when one exists. All money fields numeric-only."""
+    order_id: Optional[str] = Field(default=None, description="The order/confirmation number, verbatim.")
+    order_date: Optional[str] = Field(default=None, description="Order date as YYYY-MM-DD if present.")
+    subtotal: Optional[float] = None
+    shipping: Optional[float] = None
+    tax: Optional[float] = None
+    discount: Optional[float] = None
+    total: Optional[float] = None
+    currency: Optional[str] = Field(default=None, description="3-letter ISO currency code.")
+
+
+class OrderLine(BaseModel):
+    """One line in the ORDERED-ITEMS block (or returned/recommendation buckets)."""
+    name: str = Field(description="Product name or variant text, verbatim in the email's language.")
+    brand: Optional[str] = None
+    category: ClosetCategory = Field(description="One of the fixed closet categories.")
+    color: Optional[str] = None
+    size: Optional[str] = None
+    qty: int = Field(default=1)
+    unit_price: Optional[float] = Field(default=None, description="Per-unit price, numeric only.")
+    line_total: Optional[float] = Field(default=None, description="This line's total if shown, numeric only.")
+    section_evidence: Optional[str] = Field(
+        default=None,
+        description="The section header / nearby text this line sat under, verbatim (e.g. "
+                    "'Items shipped:', 'Order Details', 'COMPLETE THE LOOK').",
+    )
+    confidence: FieldConfidence = Field(default_factory=FieldConfidence)
+
+
+class ReceiptDocument(BaseModel):
+    """Top-level v2 extraction result for a single email.
+
+    order_lines: ONLY lines that sit in the ordered-items/summary/shipment block and are
+    associated with the order. recommendation_lines: promo/recommendation tiles — never
+    purchases. returned_lines: lines stated as returned/refunded. The reconcile pass —
+    not this schema, not the model — decides what is admitted to the closet.
+    """
+    email_kind: EmailKind = Field(description="What KIND of email this is.")
+    is_clothing: bool = Field(description="True only if the email involves wearable clothing/footwear.")
+    merchant: Optional[str] = None
+    order: Optional[OrderInfo] = None
+    order_lines: List[OrderLine] = Field(default_factory=list)
+    returned_lines: List[OrderLine] = Field(default_factory=list)
+    recommendation_lines: List[OrderLine] = Field(default_factory=list)
+    stated_item_count: Optional[int] = Field(
+        default=None,
+        description="The item count the email STATES (e.g. '36 Item(s) shipped' -> 36), if any.",
+    )
+    partial_listing_note: Optional[str] = Field(
+        default=None,
+        description="Verbatim text if the email says its item list is truncated "
+                    "(e.g. 'Show up to 12 items due to email length restrictions').",
+    )
+    overall_confidence: float = Field(default=0.0, description="Overall 0..1 confidence.")
+
+
+# ---------------------------------------------------------------------------
 # Deterministic normalizers (no LLM) used at staging time.
 # ---------------------------------------------------------------------------
 
@@ -189,3 +263,33 @@ def make_content_key(
     ]
     raw = "|".join(parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def make_content_key_v2(
+    merchant: Optional[str],
+    order_id: Optional[str],
+    name: Optional[str],
+    size: Optional[str],
+    color: Optional[str],
+) -> str:
+    """Dedup key v2 = hash(merchant | order_id | normalized name + size + color).
+
+    PRICE IS DELIBERATELY EXCLUDED (the v1 flaw: retargeting price drift and
+    confirm-vs-ship price presence produced a new row per price). merchant + order_id
+    scope the key so two retailers' identical product names never collide and the same
+    item in two DIFFERENT orders (a genuine repurchase) stays two rows. Orderless lines
+    (order_id=None) fall back to (merchant, name, size, color); the reconcile pass —
+    not this key — handles date-window merging and the >=2-distinct-prices retargeting
+    rule for those. The returned key is 'v2' + 30 hex chars: same 32-char width as v1
+    keys in the same UNIQUE column, but v2 rows stay cheaply identifiable by prefix
+    (the apply pass uses this to tell rewritten rows from stale v1 rows).
+    """
+    parts = [
+        normalize_name(merchant),
+        (order_id or "").strip().upper(),
+        normalize_name(name),
+        (size or "").strip().lower(),
+        (color or "").strip().lower(),
+    ]
+    raw = "|".join(parts)
+    return "v2" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:30]

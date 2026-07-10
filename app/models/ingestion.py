@@ -124,8 +124,18 @@ class ProcessedMessage(Base):
         UniqueConstraint("user_id", "message_id",
                          name="processed_messages_user_id_message_id_key"),
         CheckConstraint(
-            "status IN ('fetched','filtered_out','extracted','confirmed','rejected','error')",
+            "status IN ('fetched','filtered_out','extracted','confirmed','rejected','error',"
+            "'quarantined')",
             name="status",
+        ),
+        # Stage-1 receipt-document verdict (migration 0040). NULL = not yet extracted
+        # under the v2 pipeline. 'quarantined' status above = an order_confirmation that
+        # reconciled to zero admissible lines (invariant alarm) — held for re-extraction.
+        CheckConstraint(
+            "email_kind IS NULL OR email_kind IN "
+            "('order_confirmation','shipping','delivery','return_or_refund',"
+            "'review_request','marketing','other')",
+            name="email_kind",
         ),
         Index("idx_processed_messages_user_id", "user_id"),
     )
@@ -147,6 +157,14 @@ class ProcessedMessage(Base):
     # Clothing-likely-first extraction ordering (Feature A). 0 = likely (extract first),
     # 1 = other. Computed cheaply at fetch time (receipt_filter.clothing_priority).
     extract_priority = Column(SmallInteger, nullable=False, default=1)
+
+    # Stage-1 email-kind verdict (order_confirmation | shipping | ... | marketing | other,
+    # CHECK above). Written at extraction; the reconcile pass routes on it. 0040.
+    email_kind = Column(Text, nullable=True)
+
+    # Tier-1 keep/drop reason (known_retailer / ad_subject / order_number / ...), was
+    # computed then discarded at fetch time. Persisted for leak forensics. 0040.
+    filter_reason = Column(Text, nullable=True)
 
     processed_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
@@ -186,7 +204,8 @@ class IngestCandidate(Base):
         # 'ready' — no computed/inferred readiness anywhere else.
         CheckConstraint(
             "pipeline_state IN ('staged','canonicalized','image_pending',"
-            "'image_generated','verified_clean','ready','failed')",
+            "'image_generated','verified_clean','ready','failed',"
+            "'rejected_recommendation')",
             name='pipeline_state'),
         # Fail-closed person tri-state (migration 0035): 'unknown' = not affirmatively
         # determined -> MASKED. Only an affirmative 'person_free' may show a raw image.
@@ -310,6 +329,18 @@ class IngestCandidate(Base):
     # generated. Redaction-safe (a provider name + a number, no bytes/PII).
     generation_provider = Column(Text, nullable=True)
     generation_cost_usd = Column(Numeric, nullable=True)
+
+    # --- Receipt-document reconciliation (migration 0040) -----------------------
+    # Per-line evidence from the Stage-1 document: {email_kind, section_evidence,
+    # order_evidence, reconciled, stated_item_count}. NULL for pre-0040 / non-gmail rows.
+    provenance = Column(_jsonb(), nullable=True)
+    # Machine-readable demotion/quarantine reason (mirrors clothing_items, 0038).
+    # Set when pipeline_state='rejected_recommendation'; NULL otherwise.
+    quarantine_reason = Column(Text, nullable=True)
+    # Real purchase line whose source email carried only variant text ("Black-L"):
+    # admitted to the closet, EXCLUDED from image generation until enriched with the
+    # product name from the sibling order-confirmation line.
+    needs_enrichment = Column(Boolean, nullable=False, default=False, server_default="false")
 
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
@@ -527,6 +558,11 @@ class IngestRun(Base):
     generation_total = Column(Integer, nullable=False, default=0)   # candidates to generate
     generation_ready = Column(Integer, nullable=False, default=0)   # verified + stored
     generation_failed = Column(Integer, nullable=False, default=0)  # held pending_retry
+
+    # --- Reconcile metrics (migration 0040; counts only, no content) ------------
+    admitted_count = Column(Integer, nullable=False, default=0, server_default="0")
+    demoted_count = Column(Integer, nullable=False, default=0, server_default="0")
+    quarantined_count = Column(Integer, nullable=False, default=0, server_default="0")
 
     started_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 

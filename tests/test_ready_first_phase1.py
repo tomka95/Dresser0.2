@@ -19,7 +19,9 @@ from sqlalchemy.orm import Session
 
 import app.gmail_closet.extraction_service as ES
 from app.db import Base, SessionLocal, engine
-from app.gmail_closet.extraction_schema import ClosetCategory, ExtractedItem, ExtractedReceipt
+from app.gmail_closet.extraction_schema import (
+    ClosetCategory, EmailKind, OrderInfo, OrderLine, ReceiptDocument,
+)
 from app.gmail_closet.extractor import ExtractionOutcome
 from app.gmail_closet.review_service import _candidate_to_view, list_pending_candidates
 from app.models import IngestCandidate, IngestRun, User
@@ -64,17 +66,20 @@ def _cand(db, user, sync_id, *, state="staged", person="unknown", src="gmail",
 def test_gmail_staging_writes_staged_and_unknown(monkeypatch):
     captured = []
     monkeypatch.setattr(ES, "_upsert_candidate", lambda db, vals: captured.append(vals))
-    receipt = ExtractedReceipt(
-        is_purchase=True, is_clothing=True, overall_confidence=0.9,
-        items=[ExtractedItem(name="Define Jacket", category=ClosetCategory.outerwear)],
+    receipt = ReceiptDocument(
+        email_kind=EmailKind.order_confirmation, is_clothing=True, overall_confidence=0.9,
+        order=OrderInfo(order_id="ORD-1"),
+        order_lines=[OrderLine(name="Define Jacket", category=ClosetCategory.outerwear,
+                               section_evidence="Order Details")],
     )
     outcome = ExtractionOutcome(
         receipt=receipt, model="m", escalated=False, parse_failed=False, api_failed=False,
         input_tokens=0, output_tokens=0, est_cost_flash_lite=0.0, est_cost_realistic=0.0,
     )
     res = ES._MsgExtraction(message_id="m1", outcome=outcome, sent_at=None)
-    keys = ES._stage_message(None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
-    assert len(keys) == 1
+    decision, admitted, demoted = ES._stage_message(
+        None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
+    assert len(admitted) == 1 and demoted == []
     assert captured[0]["pipeline_state"] == "staged"
     assert captured[0]["person_status"] == "unknown"   # fail-closed: no detector ran
 

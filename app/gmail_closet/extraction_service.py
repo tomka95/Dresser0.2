@@ -36,7 +36,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.config import settings
 from app.gmail_closet.extraction_schema import (
-    make_content_key,
     normalize_currency,
     normalize_order_date,
 )
@@ -48,6 +47,14 @@ from app.gmail_closet.fetch_service import (
 )
 from app.gmail_closet.gmail_oauth_service import ensure_fresh_token
 from app.gmail_closet.receipt_filter import is_ambiguous_type
+from app.gmail_closet.reconcile import (
+    REASON_MERGED,
+    LineDecision,
+    MessageDecision,
+    parse_variant,
+    reconcile_message,
+    signatures_match,
+)
 from app.gmail_closet.retailers import match_retailer
 from app.platform.usage import record_extraction_usage
 from app.models import GoogleAccount, IngestCandidate, IngestRun, ProcessedMessage
@@ -83,6 +90,10 @@ class ExtractionStats:
     fetch_errors: int           # messages we could not re-fetch (404 / max retries)
     llm_errors: int             # LLM call never completed (5xx/429 after retries);
                                 # left status='fetched' for a later sync to retry
+    admitted: int               # reconcile: lines admitted as owned purchases
+    demoted: int                # reconcile: lines demoted (rejected_recommendation)
+    quarantined: int            # reconcile: emails quarantined for re-extraction
+    enriched: int               # variant rows bound to their named confirm line
     images_attached: int        # candidates that got an image_url (any tier)
     images_inline: int          # ... resolved via an inline (cid) image part
     images_email_img: int       # ... resolved via an embedded remote product-image URL
@@ -254,6 +265,59 @@ def _upsert_candidate(db, vals: dict) -> None:
                 else_=c.source_message_ids.op("||")(ex.source_message_ids),
             ),
             "seen_count": c.seen_count + case((already, 0), else_=1),
+            # --- Reconcile-aware merge (0040) --------------------------------
+            # provenance: first evidence wins; a later email only fills a gap.
+            "provenance": func.coalesce(c.provenance, ex.provenance),
+            # A row is enriched the moment EITHER contributing email carried the
+            # real product name.
+            "needs_enrichment": c.needs_enrichment & ex.needs_enrichment,
+            # Once returned, stays returned (a later re-seen confirm can't unreturn).
+            "is_return": c.is_return | ex.is_return,
+            # pipeline_state transitions on merge, in precedence order:
+            #  1. RETARGETING fingerprint — the same ORDERLESS key re-seen at a
+            #     DIFFERENT price is an ad impression stream, never a purchase.
+            #     Only early states demote; a verified/ready row is left alone.
+            #  2. REVIVAL — new ORDER EVIDENCE admits a previously demoted row
+            #     (false negatives are the failure mode to avoid; ties go to admit).
+            #  3. otherwise keep the existing state (insert-only semantics).
+            "pipeline_state": case(
+                (
+                    c.order_id.is_(None) & ex.order_id.is_(None)
+                    & c.unit_price.isnot(None) & ex.unit_price.isnot(None)
+                    & (c.unit_price != ex.unit_price)
+                    & c.pipeline_state.in_(("staged", "canonicalized", "image_pending")),
+                    "rejected_recommendation",
+                ),
+                (
+                    # Revival: an ADMITTED line (reconcile already verified its order
+                    # evidence — the v2 key embeds order_id, so an orderless demoted
+                    # row can only collide with another orderless line, admitted via
+                    # the totals-reconcile path) beats a previous demotion.
+                    (c.pipeline_state == "rejected_recommendation")
+                    & (ex.pipeline_state == "staged"),
+                    "staged",
+                ),
+                else_=c.pipeline_state,
+            ),
+            "quarantine_reason": case(
+                (
+                    c.order_id.is_(None) & ex.order_id.is_(None)
+                    & c.unit_price.isnot(None) & ex.unit_price.isnot(None)
+                    & (c.unit_price != ex.unit_price)
+                    & c.pipeline_state.in_(("staged", "canonicalized", "image_pending")),
+                    "retargeting_multi_price",
+                ),
+                (
+                    (c.pipeline_state == "rejected_recommendation")
+                    & (ex.pipeline_state == "staged"),
+                    None,
+                ),
+                (
+                    c.pipeline_state == "rejected_recommendation",
+                    func.coalesce(c.quarantine_reason, ex.quarantine_reason),
+                ),
+                else_=c.quarantine_reason,
+            ),
         },
     )
     db.execute(stmt)
@@ -265,43 +329,45 @@ def _stage_message(
     user_id: UUID,
     sync_id: UUID,
     res: _MsgExtraction,
-) -> list:
-    """Stage one message's clothing items via content-key upsert; return content keys.
+) -> tuple:
+    """Stage one message via reconcile: admitted AND demoted lines both persist.
 
-    The content key per staged line lets the caller count DISTINCT vs merged candidates
-    at run level. The CLOTHING GATE is applied first — non-clothing (or itemless) emails
-    stage NOTHING. Candidates are staged as TEXT ONLY with image_url=NULL and
-    image_status='pending': all image resolution now happens in the background fill, so
-    the card is swipeable the instant it's staged (no image work blocks staging).
-    Idempotency is the content-key upsert itself.
+    Stage 1 (extractor) reported the email's STRUCTURE as a ReceiptDocument; the
+    deterministic reconcile pass routes every line: admitted lines stage at
+    pipeline_state='staged' (the readiness machine's entry), demoted lines stage at
+    the TERMINAL 'rejected_recommendation' with a machine-readable quarantine_reason
+    (demote-never-delete), and a quarantined email stages NOTHING — the caller marks
+    its processed_messages row 'quarantined' for re-extraction. Candidates stage as
+    TEXT ONLY (image work is the background fill's). Idempotency is the v2 content-
+    key upsert. Returns (decision, admitted_keys, demoted_keys).
     """
-    receipt = res.outcome.receipt if res.outcome else None
+    doc = res.outcome.receipt if res.outcome else None
 
-    # CLOTHING GATE: non-clothing (or no items) stages NOTHING. Layer D (is_purchase
-    # gating) was deliberately STRIPPED at merge: exactly ONE gate — the deterministic
-    # reconcile pass — owns the admit/demote/quarantine decision, so a rejection is
-    # always attributable to a single machine-readable reason.
-    if not receipt or not receipt.is_clothing or not receipt.items:
-        return []
+    # CLOTHING GATE: non-clothing emails stage NOTHING. Layer D (is_purchase) was
+    # deliberately STRIPPED at merge: reconcile is the single admit/demote gate.
+    if not doc or not doc.is_clothing:
+        return None, [], []
+    if not (doc.order_lines or doc.recommendation_lines or doc.returned_lines):
+        return None, [], []
 
-    order_date = normalize_order_date(receipt.order_date)
-    currency = normalize_currency(receipt.currency)
+    decision = reconcile_message(res.message_id, doc)
+    if decision.quarantined:
+        return decision, [], []
+
+    order = doc.order
+    order_date = normalize_order_date(order.order_date if order else None)
+    currency = normalize_currency(order.currency if order else None)
     # Known-retailer prior fills merchant/brand when the model left them null.
-    merchant = receipt.merchant or res.retailer
+    merchant = doc.merchant or res.retailer
 
-    content_keys: list = []
-    for item in receipt.items:
-        fields = item.confidence.model_dump() if item.confidence else {}
+    admitted_keys: list = []
+    demoted_keys: list = []
+    for ld in decision.admitted + decision.demoted:
+        line = ld.line
+        fields = line.confidence.model_dump() if line.confidence else {}
         present = [v for v in fields.values() if isinstance(v, (int, float))]
-        item_overall = (sum(present) / len(present)) if present else receipt.overall_confidence
-
-        content_key = make_content_key(item.name, item.size, item.color, item.unit_price)
-        brand = item.brand or res.retailer  # strong brand prior for known retailers
-
-        # Text-only stage: no image yet. The background fill resolves every tier and
-        # flips image_status 'pending' -> 'resolved' (or 'placeholder' when exhausted).
-        image_url = None
-        image_status = "pending"
+        item_overall = (sum(present) / len(present)) if present else doc.overall_confidence
+        brand = line.brand or res.retailer  # strong brand prior for known retailers
 
         _upsert_candidate(
             db,
@@ -309,55 +375,155 @@ def _stage_message(
                 user_id=user_id,
                 sync_id=sync_id,
                 message_id=res.message_id,
-                source_line_key=content_key,
+                source_line_key=ld.content_key,
                 source_message_ids=[res.message_id],
                 seen_count=1,
-                name=item.name,
+                name=line.name,
                 brand=brand,
-                category=item.category.value if item.category else None,
-                color=item.color,
-                size=item.size,
-                quantity=item.qty or 1,
-                unit_price=item.unit_price,
+                category=line.category.value if line.category else None,
+                color=line.color,
+                size=line.size,
+                quantity=line.qty or 1,
+                unit_price=line.unit_price,
                 currency=currency,
                 order_date=order_date,
-                is_return=bool(item.is_return),
+                is_return=ld.is_return,
                 merchant=merchant,
-                order_id=receipt.order_id,
-                image_url=image_url,
-                image_status=image_status,
+                order_id=decision.order_id,
+                image_url=None,
+                image_status="pending",
                 confidence_overall=item_overall,
                 confidence_json={
                     "fields": fields,
-                    "receipt_overall": receipt.overall_confidence,
+                    "receipt_overall": doc.overall_confidence,
                     "model": res.outcome.model,
                     "escalated": res.outcome.escalated,
                 },
                 status="pending",
-                # Ready-first Phase 1: Gmail candidates enter the readiness machine at
-                # 'staged' with an UNKNOWN person status (no detector has run — fail-
-                # closed, masked). Phase 2 (email verify+generation) advances them to
-                # 'ready'; until then they never reach the ready-gated deck. Insert-only:
-                # the ON CONFLICT set_ below never touches either, so a re-seen email
-                # can't regress a candidate that later phases advanced.
-                pipeline_state="staged",
+                # Admitted lines enter the readiness machine at 'staged' (unknown
+                # person status — fail-closed, masked, never deck-visible until
+                # 'ready'). Demoted lines are born TERMINAL at
+                # 'rejected_recommendation' with their reason — kept for audit,
+                # invisible to deck/settle/fill/confirm via the terminal allowlists.
+                pipeline_state="staged" if ld.admitted else "rejected_recommendation",
+                quarantine_reason=ld.reason,
+                needs_enrichment=ld.needs_enrichment,
+                provenance=ld.provenance,
                 person_status="unknown",
             ),
         )
-        content_keys.append(content_key)
+        (admitted_keys if ld.admitted else demoted_keys).append(ld.content_key)
 
-    return content_keys
+    return decision, admitted_keys, demoted_keys
 
 
-def _mark_extracted(db, user_id: UUID, message_id: str) -> None:
-    """Flip processed_messages.status 'fetched' -> 'extracted' for this message."""
+def _mark_extracted(
+    db, user_id: UUID, message_id: str,
+    *, email_kind: Optional[str] = None, quarantined: bool = False,
+) -> None:
+    """Flip processed_messages.status 'fetched' -> 'extracted' (or 'quarantined')
+    and persist the Stage-1 email_kind verdict (0040)."""
+    values = {
+        "status": "quarantined" if quarantined else "extracted",
+        "processed_at": datetime.now(timezone.utc),
+    }
+    if email_kind is not None:
+        values["email_kind"] = email_kind
     db.query(ProcessedMessage).filter(
         ProcessedMessage.user_id == user_id,
         ProcessedMessage.message_id == message_id,
-    ).update(
-        {"status": "extracted", "processed_at": datetime.now(timezone.utc)},
-        synchronize_session=False,
+    ).update(values, synchronize_session=False)
+
+
+def _enrichment_pass(db, user_id: UUID, sync_id: UUID) -> int:
+    """Bind fulfillment variant rows to their named order-confirmation rows (DB level).
+
+    The in-memory corpus join (reconcile.enrichment_join) covers the reprocess script;
+    this is its incremental twin for live syncs, where the confirm and ship emails may
+    arrive in DIFFERENT runs: for every order_id touched by THIS run, load the user's
+    full candidate set for that order and merge each needs_enrichment variant row into
+    the unique named row matching its parsed (color, size) — bidirectionally unique,
+    else it stays needs_enrichment. The named row absorbs the variant's source
+    message ids; the variant row is demoted terminal with reason 'merged_duplicate'
+    (demote-never-delete). Returns #rows merged.
+    """
+    touched = (
+        db.query(IngestCandidate.order_id)
+        .filter(
+            IngestCandidate.user_id == user_id,
+            IngestCandidate.sync_id == sync_id,
+            IngestCandidate.source_type == "gmail",
+            IngestCandidate.order_id.isnot(None),
+        )
+        .distinct()
+        .all()
     )
+    order_ids = [r[0] for r in touched]
+    if not order_ids:
+        return 0
+
+    merged = 0
+    for order_id in order_ids:
+        rows = (
+            db.query(IngestCandidate)
+            .filter(
+                IngestCandidate.user_id == user_id,
+                IngestCandidate.source_type == "gmail",
+                IngestCandidate.order_id == order_id,
+                IngestCandidate.pipeline_state != "rejected_recommendation",
+            )
+            .all()
+        )
+        named = [r for r in rows if not r.needs_enrichment and not r.is_return]
+        variants = [r for r in rows if r.needs_enrichment and not r.is_return]
+        if not named or not variants:
+            continue
+
+        def _named_sig(r):
+            return ((r.color or "").strip().lower() or None,
+                    (r.size or "").strip().lower() or None)
+
+        def _var_sig(r):
+            vcolor, vsize = parse_variant(r.name)
+            if r.color:
+                vcolor = r.color.strip().lower() or vcolor
+            if r.size:
+                vsize = r.size.strip().lower() or vsize
+            return vcolor, vsize
+
+        var_matches = {
+            r.id: [n for n in named if signatures_match(_named_sig(n), _var_sig(r))]
+            for r in variants if _var_sig(r) != (None, None)
+        }
+        claim_count: dict = {}
+        for matches in var_matches.values():
+            if len(matches) == 1:
+                claim_count[matches[0].id] = claim_count.get(matches[0].id, 0) + 1
+
+        for var in variants:
+            matches = var_matches.get(var.id, [])
+            if len(matches) != 1 or claim_count.get(matches[0].id, 0) != 1:
+                continue
+            target = matches[0]
+            # Named row absorbs the variant's provenance trail.
+            existing = set(target.source_message_ids or [])
+            for mid in var.source_message_ids or []:
+                if mid not in existing:
+                    target.source_message_ids = (target.source_message_ids or []) + [mid]
+                    existing.add(mid)
+                    target.seen_count = (target.seen_count or 1) + 1
+            vcolor, vsize = _var_sig(var)
+            target.color = target.color or vcolor
+            target.size = target.size or vsize
+            # Variant row: demoted terminal, reason recorded — never deleted.
+            var.pipeline_state = "rejected_recommendation"
+            var.quarantine_reason = REASON_MERGED
+            var.needs_enrichment = False
+            merged += 1
+
+    if merged:
+        db.commit()
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +589,9 @@ def run_extraction_sync(
         sync_id=sync_id, status="completed",
         emails_to_llm=0, items_extracted=0, candidates_staged=0, merged_duplicates=0,
         clothing_msgs=0, rejected_msgs=0, escalated=0, parse_failures=0,
-        fetch_errors=0, llm_errors=0, images_attached=0,
+        fetch_errors=0, llm_errors=0,
+        admitted=0, demoted=0, quarantined=0, enriched=0,
+        images_attached=0,
         images_inline=0, images_email_img=0, images_og=0,
         input_tokens=0, output_tokens=0,
         est_cost_flash_lite=0.0, est_cost_realistic=0.0, elapsed=0.0,
@@ -524,11 +692,24 @@ def run_extraction_sync(
                         if res.outcome.parse_failed:
                             stats.parse_failures += 1
 
-                        keys = _stage_message(db, user_id=user_id, sync_id=sync_id, res=res)
-                        if keys:
+                        decision, admitted_keys, demoted_keys = _stage_message(
+                            db, user_id=user_id, sync_id=sync_id, res=res)
+
+                        if decision is not None and decision.quarantined:
+                            # Invariant alarm: the email is HELD for re-extraction —
+                            # never marked done, never silently admitted or dropped.
+                            stats.quarantined += 1
+                            _mark_extracted(
+                                db, user_id, res.message_id,
+                                email_kind=decision.email_kind, quarantined=True)
+                            continue
+
+                        stats.admitted += len(admitted_keys)
+                        stats.demoted += len(demoted_keys)
+                        if admitted_keys:
                             stats.clothing_msgs += 1
-                            stats.items_extracted += len(keys)
-                            for k in keys:
+                            stats.items_extracted += len(admitted_keys)
+                            for k in admitted_keys:
                                 if k in seen_keys:
                                     stats.merged_duplicates += 1  # collapsed into existing candidate
                                 else:
@@ -536,7 +717,9 @@ def run_extraction_sync(
                         else:
                             stats.rejected_msgs += 1
 
-                        _mark_extracted(db, user_id, res.message_id)
+                        _mark_extracted(
+                            db, user_id, res.message_id,
+                            email_kind=decision.email_kind if decision else None)
 
                         # Incremental commit so the freshly-staged cards stream out fast.
                         since_commit += 1
@@ -580,9 +763,20 @@ def run_extraction_sync(
         # Images are no longer resolved during extraction (the background fill owns them),
         # so the images_* stats stay 0 here. The real Gemini extraction COST is recorded
         # onto the run below.
+        # Post-run ENRICHMENT PASS: bind this run's fulfillment variant rows to
+        # their order-confirmation named lines (same user + order_id), then record
+        # the reconcile metrics onto the run row.
+        try:
+            stats.enriched = _enrichment_pass(db, user_id, sync_id)
+        except Exception:
+            logger.warning("sync_id=%s: enrichment pass failed (non-fatal)", sync_id)
+
         if run:
             run.status = "completed"
             run.extracted_count = stats.candidates_staged
+            run.admitted_count = stats.admitted
+            run.demoted_count = stats.demoted
+            run.quarantined_count = stats.quarantined
             run.finished_at = datetime.now(timezone.utc)
             db.commit()
 

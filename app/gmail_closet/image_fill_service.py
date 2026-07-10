@@ -601,6 +601,11 @@ def run_image_fill(
                     IngestCandidate.status == "pending",
                     IngestCandidate.source_type == "gmail",
                     IngestCandidate.pipeline_state.notin_(_TERMINAL_STATES),
+                    # Gate-1 locked policy: a needs_enrichment row is a REAL purchase
+                    # whose email carried only variant text ("Black-L") — admitted to
+                    # the closet pipeline but EXCLUDED from image generation until the
+                    # enrichment join (or the user) supplies a product name.
+                    IngestCandidate.needs_enrichment.is_(False),
                 )
                 .order_by(IngestCandidate.created_at.asc())
                 .limit(candidate_limit or settings.GMAIL_IMAGE_FILL_MAX_CANDIDATES)

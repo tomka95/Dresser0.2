@@ -331,6 +331,15 @@ def settle_counts(db: Session, user_id: UUID, sync_id: str) -> SettleCounts:
     )
     out = SettleCounts()
     for c in rows:
+        # Demoted recommendation/ad rows (0040) are OUT of batch accounting entirely:
+        # they are terminal audit rows, never reviewable, and must not block settle.
+        if c.pipeline_state == "rejected_recommendation":
+            continue
+        # needs_enrichment rows are admitted purchases EXCLUDED from generation until
+        # they get a real product name — mid-pipeline by design, not "in flight", so
+        # they must not hold the whole batch's banner hostage either.
+        if c.needs_enrichment and c.pipeline_state not in ("ready", "failed"):
+            continue
         # ready, or verified_clean holding a verified card (ready-eligible now that size
         # is optional — the deck serves it as a normal card) both count as reviewable.
         if c.pipeline_state == "ready" or (
