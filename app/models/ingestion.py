@@ -299,6 +299,11 @@ class IngestCandidate(Base):
     # (affirmatively clean; the ONLY state whose raw image may be displayed).
     person_status = Column(Text, nullable=False, default="unknown", server_default="unknown")
 
+    # Photo-seam Phase 6 (migration 0037): when this row's image was validated against
+    # the verify-v2 invariant gates. NULL = a backfill-sweep target; the card writers
+    # stamp it at creation (a post-P2 generated card is v2-compliant by construction).
+    invariant_checked_at = Column(_tstz(), nullable=True)
+
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 

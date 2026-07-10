@@ -77,6 +77,12 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_STATUSES = ("pending_retry", "generating")
 
 
+def _now_utc():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
 def _next_failure_status(attempts: int) -> str:
     """Terminal 'failed' once a target has burned its attempt ceiling, else 'pending_retry'.
 
@@ -188,10 +194,14 @@ def _stamp_candidate_card_ready(
     deleted best-effort. Non-photo_items references (e.g. a manual add's uploaded
     reference in regenerate_refs/) are only unlinked, never deleted — the
     content-addressed blob store shares identical bytes across rows."""
+    from datetime import datetime, timezone
+
     cand.generated_image_url = url
     cand.generation_status = "ready"
     cand.generation_attempts = 0  # verified success clears the failure ledger
     cand.person_status = "person_free"
+    # A post-P2 generated card passed the verify-v2 invariant gates by construction.
+    cand.invariant_checked_at = datetime.now(timezone.utc)
     advance(cand, "image_generated")
     advance(cand, "verified_clean")
     if not cand.size:
@@ -829,6 +839,7 @@ def run_generation_self_heal(
                     it.generation_status = "ready"
                     it.generation_attempts = 0
                     it.person_status = "person_free"  # cached cards are verified person-free
+                    it.invariant_checked_at = _now_utc()
                     db.commit()
                     stats.ready += 1
                     continue
@@ -846,6 +857,7 @@ def run_generation_self_heal(
                     it.generation_attempts = 0  # verified success clears the ledger
                     # Ready-first: the verified card replacing the crop is person-free.
                     it.person_status = "person_free"
+                    it.invariant_checked_at = _now_utc()
                     db.commit()
                     _maybe_promote_card(
                         brand=it.brand, name=it.name, color=it.color_primary, url=r.url,
@@ -981,6 +993,7 @@ def run_item_regeneration(
             item.generation_attempts = 0  # verified success clears the failure ledger
             # Ready-first: regeneration output passed the verified person-free gate.
             item.person_status = "person_free"
+            item.invariant_checked_at = _now_utc()
             db.commit()
             # Shared-cache promote (branded products only): a freshly verified card for
             # this product identity serves future lookups across both pipelines.

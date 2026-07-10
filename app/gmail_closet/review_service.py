@@ -504,6 +504,9 @@ def _upsert_clothing_item(
         person_status=(
             "person_free" if _used_generated_card(cand) else (cand.person_status or "unknown")
         ),
+        # Photo-seam Phase 6: the candidate's verify-v2 validation marker travels with
+        # the item (a card born v2-compliant needs no backfill re-check).
+        invariant_checked_at=cand.invariant_checked_at,
         # provenance='extracted' seed. INSERT-only: NOT in the on_conflict set_ below, so
         # a re-confirm preserves any 'inferred'/'user_edited' attributes already present.
         attributes_json=extracted_attrs,
@@ -535,6 +538,7 @@ def _upsert_clothing_item(
             "source_type": ex.source_type,
             "on_model": ex.on_model,
             "person_status": ex.person_status,
+            "invariant_checked_at": ex.invariant_checked_at,
             "updated_at": func.now(),
         },
     ).returning(tbl.c.id, literal_column("(xmax = 0)").label("inserted"))

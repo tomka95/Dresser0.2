@@ -84,6 +84,12 @@ _SOURCELESS_TIERS = frozenset({"feed", "search"})
 # Stats
 # ---------------------------------------------------------------------------
 
+def _now_utc():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
 @dataclass
 class ImageFillStats:
     """Redaction-safe summary of one background image-fill run (no email content)."""
@@ -298,6 +304,7 @@ def _reconcile_person(
             cand.image_url = g.url          # the verified person-free card REPLACES it
             cand.image_status = "resolved"
             cand.person_status = "person_free"
+            cand.invariant_checked_at = _now_utc()  # v2-gated card by construction
             promote_verified(
                 brand=cand.brand, name=cand.name, color=cand.color,
                 image_url=g.url, content_sha256=g.content_sha256 or "",
@@ -454,6 +461,9 @@ def _resolve_targets(
                     t.row.person_status = r.person
                     stats.person_checked += 1
                 if r.tier == "generated":
+                    # A generated card passed the verify-v2 invariant gates by construction.
+                    if hasattr(t.row, "invariant_checked_at"):
+                        t.row.invariant_checked_at = _now_utc()
                     stats.generated += 1
                 else:
                     stats.slow_filled += 1
@@ -470,6 +480,8 @@ def _resolve_targets(
                     # hard-requires person_present=false on its verify).
                     t.row.person_status = "person_free"
                     stats.person_checked += 1
+                if hasattr(t.row, "invariant_checked_at"):
+                    t.row.invariant_checked_at = _now_utc()
                 stats.generated += 1
                 stats.tier_counts["generated"] += 1
             else:
@@ -507,6 +519,9 @@ def _resolve_targets(
                     t.row.person_status = r.person
                     stats.person_checked += 1
                 if r.tier == "generated":
+                    # A generated card passed the verify-v2 invariant gates by construction.
+                    if hasattr(t.row, "invariant_checked_at"):
+                        t.row.invariant_checked_at = _now_utc()
                     stats.generated += 1
                 else:
                     stats.slow_filled += 1
@@ -521,6 +536,8 @@ def _resolve_targets(
                 if hasattr(t.row, "person_status"):
                     t.row.person_status = "person_free"  # t2i is person-free by construction
                     stats.person_checked += 1
+                if hasattr(t.row, "invariant_checked_at"):
+                    t.row.invariant_checked_at = _now_utc()
                 stats.generated += 1
                 stats.tier_counts["generated"] += 1
             else:

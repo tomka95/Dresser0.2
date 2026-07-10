@@ -42,8 +42,15 @@ def display_image_url(item) -> Optional[str]:
         if getattr(item, "generation_status", None) == "ready":
             return item.image_url
         return None
-    if getattr(item, "generation_status", None) == "ready":
+    gen_status = getattr(item, "generation_status", None)
+    if gen_status == "ready":
         return item.image_url
+    if gen_status in ("pending_retry", "generating", "failed"):
+        # Photo-seam Phase 6: a gmail item put INTO the generation pipeline (e.g. the
+        # backfill sweep found its resolved image non-compliant and demoted it for
+        # regeneration) is masked until a compliant card lands — person_free alone no
+        # longer overrides an explicit "this image needs replacing" verdict.
+        return None
     if getattr(item, "person_status", None) == "person_free":
         return item.image_url
     return None
@@ -228,6 +235,11 @@ class ClothingItem(Base):
     # 'person_free'. display_image_url shows a raw image ONLY on 'person_free' (or a
     # verified 'ready' generated card). Carried from the candidate at confirm.
     person_status = Column(Text, nullable=False, default="unknown", server_default="unknown")
+
+    # Photo-seam Phase 6 (migration 0037): when this item's image was validated against
+    # the verify-v2 invariant gates. NULL = a backfill-sweep target; carried from the
+    # candidate at confirm, stamped by the regeneration/self-heal writers.
+    invariant_checked_at = Column(_tstz(), nullable=True)
 
     analysis_raw = Column(_jsonb(), nullable=True)  # raw analysis/tags payload (jsonb in DB)
 
