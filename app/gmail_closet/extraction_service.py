@@ -277,12 +277,11 @@ def _stage_message(
     """
     receipt = res.outcome.receipt if res.outcome else None
 
-    # PURCHASE-TYPE GATE (Layer D) + CLOTHING GATE: stage NOTHING unless this is a genuine
-    # purchase (is_purchase) that contains wearable clothing (is_clothing) with items.
-    # is_purchase was already in the schema but never consulted — gating on it here is the
-    # LLM backstop: a promotional / abandoned-cart email that names a garment + price and
-    # slips past the earlier layers still stages nothing once the model marks is_purchase=false.
-    if not receipt or not receipt.is_purchase or not receipt.is_clothing or not receipt.items:
+    # CLOTHING GATE: non-clothing (or no items) stages NOTHING. Layer D (is_purchase
+    # gating) was deliberately STRIPPED at merge: exactly ONE gate — the deterministic
+    # reconcile pass — owns the admit/demote/quarantine decision, so a rejection is
+    # always attributable to a single machine-readable reason.
+    if not receipt or not receipt.is_clothing or not receipt.items:
         return []
 
     order_date = normalize_order_date(receipt.order_date)

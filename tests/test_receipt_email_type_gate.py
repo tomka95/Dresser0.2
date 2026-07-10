@@ -5,7 +5,8 @@ Layers under test:
   A  Tier-0 query          -> excludes Gmail Promotions at the source
   B  Tier-1 filter         -> promotions-label + ad-subject rejects (fire even WITH a price)
   C  cheap-LLM classifier  -> ambiguous residue only ("Your order is waiting"), fail-open
-  D  extractor backstop    -> stage only when is_purchase AND is_clothing AND items
+  D  STRIPPED at merge — reconcile.py is the single owner of admit/demote/quarantine;
+     staging no longer consults is_purchase (see test_stage_does_not_consult_is_purchase)
 
 The hard guardrail — NEVER drop a genuine order confirmation — is asserted by the measurement
 corpus at the bottom (real-receipt false-negative count MUST be 0).
@@ -251,7 +252,9 @@ def test_fetch_and_extract_skips_classifier_for_clear_receipt(monkeypatch):
 
 
 # ===========================================================================
-# Layer D — staging gate consults is_purchase
+# Layer D stripped — staging must NOT consult is_purchase (reconcile owns the
+# admit/demote/quarantine decision; two overlapping gates would make rejection
+# reasons ambiguous).
 # ===========================================================================
 
 def _outcome(receipt):
@@ -265,18 +268,17 @@ def _item():
     return ExtractedItem(name="Define Jacket", category=ClosetCategory.outerwear, unit_price=99.0)
 
 
-def test_stage_skips_when_is_purchase_false(monkeypatch):
-    # An ad the LLM correctly marks is_purchase=false stages NOTHING even though it named a
-    # garment with a price (is_clothing=true, items present). db=None proves the gate returns
-    # before any DB write.
+def test_stage_does_not_consult_is_purchase(monkeypatch):
+    # Layer D stripped: is_purchase=False alone must NOT block staging here — the
+    # admit/demote decision belongs to the reconcile pass, which demotes with a
+    # machine-readable reason instead of silently staging nothing.
     calls = []
     monkeypatch.setattr(ES, "_upsert_candidate", lambda db, vals: calls.append(vals))
     res = ES._MsgExtraction("m", _outcome(
         ExtractedReceipt(is_purchase=False, is_clothing=True, items=[_item()], overall_confidence=0.9)
     ), None)
     keys = ES._stage_message(None, user_id=uuid.uuid4(), sync_id=uuid.uuid4(), res=res)
-    assert keys == []
-    assert calls == []
+    assert len(keys) == 1 and len(calls) == 1
 
 
 def test_stage_skips_when_not_clothing():
@@ -311,6 +313,11 @@ _CORPUS = [
     ("ad-promo-label",   "ad", NIKE, "This week at Nike", "check us out", ["CATEGORY_PROMOTIONS"]),
     ("ad-back-in-stock", "ad", LULU, "Back in stock: the Align legging", "$98 grab it", []),
     ("ad-recommended",   "ad", NIKE, "Recommended for you", "picks from $60", []),
+    # Live AliExpress marker (Gate 1 probe): every ad subject is "Advertisement |"-prefixed;
+    # the deterministic list must catch it without an LLM call, even outside Promotions.
+    ("ad-aliexpress",    "ad", "AliExpress.seller <promotion@aliexpress.com>",
+     "Advertisement | Get US $1.00 off your order",
+     "We noticed you left some items from our store in your cart. US $8.44", []),
     # --- REAL receipts (expected KEEP — FN MUST be 0) ---
     ("real-conf-price",  "real", ASOS, "Order confirmation #12345", "Define Jacket Total $99.00", ["CATEGORY_PURCHASES"]),
     ("real-shipped-upd", "real", ASOS, "Your order has shipped", "Order #987654 $50 shipped", ["CATEGORY_UPDATES"]),
