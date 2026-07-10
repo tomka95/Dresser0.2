@@ -162,6 +162,15 @@ def looks_like_variant_only(name: Optional[str]) -> bool:
     Tight 25\"" -> False. Deliberately conservative: a false False just means an
     enrichable row keeps its (real) name; a false True only flags enrichment.
     """
+    if not name:
+        return True
+    # DEFECT FIX (Gate-2 close-out): manifest furniture in the name ("SIZE: ..."
+    # prefix / "QTY: n" suffix) IS the variant pattern — such a row is a
+    # fulfillment-manifest string regardless of which email KIND rendered it
+    # (a confirmation that rendered a line as variant text must not bypass the
+    # generation exclusion). Checked BEFORE stripping, on the raw name.
+    if _LINE_NOISE_PREFIX_RE.search(name) or _LINE_NOISE_SUFFIX_RE.search(name):
+        return True
     stripped = strip_line_noise(name)
     if not stripped:
         return True

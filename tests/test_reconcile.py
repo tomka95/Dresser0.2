@@ -416,3 +416,19 @@ def test_dimension_rule_never_eats_dimension_bearing_garment_names():
     # While true two-dimensional items stay demoted:
     assert looks_non_garment_variant(_line("SIZE: Multicolor-30x40cm Wood Framed")) is True
     assert looks_non_garment_variant(_line("Canvas Print 60x35cm/23.6x13.7inch")) is True
+
+
+def test_variant_pattern_name_forces_needs_enrichment_even_from_confirmation():
+    # DEFECT FIX: a CONFIRMATION line rendered as manifest variant text must not
+    # bypass the generation exclusion — needs_enrichment keys off name quality,
+    # not source kind.
+    for garbage in ("SIZE: Baby Blue-one-size QTY: 1",
+                    "SIZE: Embossed Beads (A)-110 QTY: 1",
+                    "SIZE: Multicolor-Blue and Red Stripes QTY: 1"):
+        assert looks_like_variant_only(garbage) is True, garbage
+    doc = _doc(EmailKind.order_confirmation, order=OrderInfo(order_id="G1"),
+               lines=[_line("SIZE: Baby Blue-one-size QTY: 1")])
+    d = reconcile_message("m1", doc)
+    assert d.admitted[0].needs_enrichment is True
+    # Real names keep working:
+    assert looks_like_variant_only("SHEIN ICON Crisscross Tie Backless Halter Top") is False

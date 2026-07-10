@@ -182,9 +182,11 @@ class IngestCandidate(Base):
         # for rows created before the column. Drives the streaming swipe deck (Phase 4):
         # 'resolved' = verified image present, 'pending' = still resolving (shimmer +
         # poll), 'placeholder' = slow tiers exhausted with nothing found (terminal).
+        # 'held' (migration 0041): a resolved image attached to a variant-named row —
+        # kept for deck review, excluded from auto-anything until the row is renamed.
         CheckConstraint(
             "image_status IS NULL OR image_status IN "
-            "('resolved','placeholder','pending','user_uploaded')",
+            "('resolved','placeholder','pending','user_uploaded','held')",
             name='image_status'),
         # Wave 2 GENERATION lifecycle (named CHECK; not diffed by autogenerate).
         # SEPARATE from image_status: a photo cutout stays image_status='user_uploaded'
