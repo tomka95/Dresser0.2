@@ -46,7 +46,7 @@ from app.core.gmail_oauth_state import (
     issue_state,
     read_state_purpose,
 )
-from app.core.token_crypto import TokenCryptoError, encrypt_token
+from app.core.token_crypto import TokenCryptoError, decrypt_token, encrypt_token
 from app.dependencies import get_current_user, get_db
 from app.models import GoogleAccount, User
 
@@ -56,6 +56,7 @@ router = APIRouter(prefix="/gmail/oauth", tags=["gmail-oauth"])
 
 _GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+_GOOGLE_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 
 
 def _require_client_config() -> None:
@@ -268,6 +269,53 @@ def gmail_connection_status(
         scope=account.scope if connected else None,
         connected_at=_iso(account.created_at) if connected else None,
     )
+
+
+class DisconnectResponse(BaseModel):
+    connected: bool = False
+
+
+@router.post("/disconnect", response_model=DisconnectResponse)
+def disconnect_gmail(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DisconnectResponse:
+    """Revoke the grant at Google AND wipe the stored Gmail tokens (SCRUM-51).
+
+    A verbatim mirror of the calendar disconnect. Best-effort revoke (a Google-side
+    failure must not strand the user with an un-deletable row); the local token wipe is
+    unconditional. IDEMPOTENT: no row -> already disconnected, returns success.
+
+    Deletes ONLY the google_accounts token row. It deliberately does NOT touch
+    already-ingested closet items or the processed_messages ledger — preserving that
+    ledger is exactly what lets a later reconnect skip every previously-seen message
+    instead of re-importing duplicates.
+    """
+    account = (
+        db.query(GoogleAccount)
+        .filter(GoogleAccount.user_id == current_user.id)
+        .first()
+    )
+    if account is None:
+        return DisconnectResponse(connected=False)
+
+    # Revoke at Google so the refresh token is dead even outside our DB.
+    if account.refresh_token:
+        try:
+            refresh_plain = decrypt_token(account.refresh_token, field="refresh_token")
+            httpx.post(
+                _GOOGLE_REVOKE_ENDPOINT,
+                data={"token": refresh_plain},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=10.0,
+            )
+        except Exception:  # noqa: BLE001 — never log token material; wipe regardless
+            logger.warning("Gmail token revoke call failed for user %s (wiping anyway)", current_user.id)
+
+    db.delete(account)
+    db.commit()
+    logger.info("Disconnected Gmail for user %s", current_user.id)
+    return DisconnectResponse(connected=False)
 
 
 def _iso(value: Any) -> Optional[str]:

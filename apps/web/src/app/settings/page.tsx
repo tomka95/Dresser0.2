@@ -6,12 +6,9 @@
  *
  * WIRED (real):
  *   - identity row (GET /auth/me, Supabase session fallback)
- *   - Gmail connection status + connect (startGmailConnect full-page OAuth)
+ *   - Gmail connection status + connect (startGmailConnect full-page OAuth) AND
+ *     disconnect (disconnectGmail → revoke + wipe tokens; SCRUM-51)
  *   - Log out (signOut → /sign-in), confirmed via a DialogFrame
- *
- * HONEST-DISABLED:
- *   - Gmail switch can only turn ON. Disconnect has no backend endpoint, so
- *     toggling OFF shows a "coming soon" hint instead of faking a disconnect.
  *
  * DEVICE-ONLY (labeled, persisted to localStorage — no preferences backend):
  *   - Sync frequency, Units, Notifications toggle.
@@ -37,7 +34,7 @@ import {
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { signOut } from '@/lib/auth';
 import { getCurrentUser } from '@/lib/api/auth';
-import { fetchGmailConnectionStatus, startGmailConnect } from '@/lib/api/gmail';
+import { disconnectGmail, fetchGmailConnectionStatus, startGmailConnect } from '@/lib/api/gmail';
 import { AppShell } from '@/components/layout/AppShell';
 import {
   Btn,
@@ -275,15 +272,22 @@ export default function SettingsPage() {
                   checked={!!gmailConnected}
                   aria-label="Gmail connection"
                   onChange={(next) => {
-                    // Real connect: full-page OAuth redirect. Disconnect has no
-                    // endpoint yet, so turning OFF only surfaces an honest hint.
+                    // Real connect: full-page OAuth redirect. Real disconnect (SCRUM-51):
+                    // revoke at Google + wipe tokens, then re-read status. Imported items
+                    // and the dedup ledger are preserved.
                     if (next && !gmailConnected) {
                       setGmailHint(null);
                       startGmailConnect().catch(() => undefined);
                     } else if (!next && gmailConnected) {
-                      setGmailHint(
-                        'Disconnect is coming soon — for now, remove Tailor from your Google account permissions.',
-                      );
+                      setGmailHint(null);
+                      setGmailConnected(false); // optimistic; corrected by the refetch below
+                      disconnectGmail()
+                        .then(() => fetchGmailConnectionStatus())
+                        .then((s) => setGmailConnected(s.connected))
+                        .catch(() => {
+                          setGmailConnected(true); // revert on failure
+                          setGmailHint('Could not disconnect Gmail. Please try again.');
+                        });
                     }
                   }}
                 />

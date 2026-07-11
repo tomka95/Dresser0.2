@@ -222,6 +222,22 @@ export async function fetchGmailConnectionStatus(): Promise<GmailConnectionStatu
   return response.json();
 }
 
+/**
+ * Revoke the Gmail grant at Google AND wipe stored tokens (SCRUM-51). Mirrors
+ * disconnectCalendar. Idempotent server-side. Already-ingested closet items and the
+ * dedup ledger are preserved — reconnecting never re-imports what was already seen.
+ */
+export async function disconnectGmail(): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const response = await fetch(`${API_BASE_URL}/gmail/oauth/disconnect`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error('Could not disconnect Gmail. Please try again.');
+}
+
 export interface GmailClothingItem {
   name: string;
   store: string | null;
