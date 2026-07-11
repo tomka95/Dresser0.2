@@ -93,6 +93,36 @@ class SupabaseStorageClient:
         except Exception:
             return False  # best-effort: an orphan blob is acceptable, a crash is not
 
+    def delete_prefix(self, prefix: str) -> int:
+        """Delete EVERY stored object whose key begins with ``prefix``. Best-effort.
+
+        Account deletion (GDPR / App Store 5.1.1): a user's images all live under
+        the ``{user_id}/`` key prefix in this bucket, so one prefix sweep erases
+        their whole storage footprint (originals, crops, generated cards, cutouts,
+        collages). Uses list_objects_v2 pagination + batched delete_objects (1000
+        keys/request, the S3 cap). Returns the number of keys for which a delete was
+        issued. Never raises — a stray orphan object is acceptable, a crash mid-
+        deletion is not (the caller re-runs this idempotently on retry).
+
+        The prefix is REQUIRED to be a non-empty ``{something}/`` — an empty or
+        slash-less prefix is refused (returns 0) so this can never wipe the bucket.
+        """
+        prefix = prefix or ""
+        if not prefix or "/" not in prefix:
+            return 0
+        deleted = 0
+        try:
+            paginator = self.s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                batch = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                if not batch:
+                    continue
+                self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": batch})
+                deleted += len(batch)
+        except Exception:
+            return deleted  # best-effort: return what we managed to delete
+        return deleted
+
     def upload_bytes(
         self,
         image_bytes: bytes,

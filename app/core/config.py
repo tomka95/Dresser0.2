@@ -670,6 +670,13 @@ class Settings(BaseSettings):
     SUPABASE_JWT_AUDIENCE: str = "authenticated"   # Supabase access-token aud claim
     SUPABASE_JWKS_CACHE_TTL_SECONDS: int = 3600
 
+    # Service-role (secret) key. ONLY used server-side by the GoTrue Admin API to
+    # erase the auth.users identity during account deletion (DELETE /account). It
+    # is never sent to a client and is not needed for token verification (that uses
+    # the PUBLIC JWKS). Absent in local dev/tests, where there is no auth.users row
+    # to delete — the deletion path degrades to the local DB erasure only.
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None
+
     @property
     def cors_origins(self) -> list:
         """Allowed CORS origins as a list (parsed from CORS_ALLOWED_ORIGINS)."""

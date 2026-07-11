@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db import check_database_connection
 from app.api.routes import (
+    account,
     auth_google,
     calendar,
     calendar_oauth,
@@ -74,6 +75,10 @@ app.add_middleware(
 
 # Authentication endpoints
 app.include_router(auth_google.router)
+
+# Account lifecycle: JWT-pinned self-service deletion (App Store 5.1.1) + GDPR
+# data export (DELETE /account, GET /account/export).
+app.include_router(account.router)
 
 # Gmail-connect OAuth (gmail.readonly token plumbing; no ingestion)
 app.include_router(gmail_oauth.router)
