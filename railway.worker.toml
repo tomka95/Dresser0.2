@@ -1,0 +1,38 @@
+# Railway config-as-code -- durable-jobs worker service.
+#
+# Second service off the SAME repo/image as the api; only the start command
+# differs. Point this service at this file under Service -> Settings ->
+# Config-as-code. Full runbook + env manifest: docs/railway-deploy.md
+#
+# No public traffic: never "Generate Domain" for this service, and there is
+# deliberately no healthcheckPath (the worker runs no HTTP listener; a
+# healthcheck would fail every deploy). Liveness = the restart policy below.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = [
+  "app/**",
+  "main.py",
+  "alembic/**",
+  "alembic.ini",
+  "scripts/**",
+  "requirements.txt",
+  "requirements.lock.txt",
+  "Dockerfile",
+  "railway.worker.toml",
+]
+
+[deploy]
+# Polls the Postgres jobs queue (FOR UPDATE SKIP LOCKED); reclaims stale jobs
+# on startup. With JOBS_GMAIL_INGEST_ENABLED / JOBS_PHOTO_GENERATION_ENABLED
+# unset (default false) nothing ever enqueues, so this service idles inert
+# until the SCRUM-66 kill-test flips the flags.
+startCommand = "python -m app.worker"
+restartPolicyType = "ON_FAILURE"   # crash -> restart; graceful SIGTERM exit on redeploys is clean
+restartPolicyMaxRetries = 10
+numReplicas = 1                    # single worker; queue semantics allow more later, but keep 1 until SCRUM-66
+sleepApplication = false           # always-on
+# Same region as the api + DB path (Amsterdam <-> Frankfurt). Delete + set in
+# the dashboard if your plan rejects the id.
+region = "europe-west4-drams3a"

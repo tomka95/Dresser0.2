@@ -1,0 +1,18 @@
+# Default-deny build context: ONLY the backend enters the image. This makes it
+# structurally impossible for .env, node_modules, apps/web, tests, or local DB
+# artifacts (tailor.db) to leak into a build -- new repo junk is excluded by
+# default instead of needing a new ignore line.
+*
+.*
+!app
+!alembic
+!alembic.ini
+!main.py
+!requirements.txt
+!requirements.lock.txt
+!scripts
+
+# Junk inside the allowed trees.
+**/__pycache__
+**/*.pyc
+**/.DS_Store
