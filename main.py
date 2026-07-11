@@ -32,6 +32,7 @@ from app.api.routes import (
     onboarding,
     outfit_feedback,
     photo_ingest,
+    profile_style,
     shop,
     todays_look,
     weather,
@@ -90,6 +91,9 @@ app.include_router(events.router)
 
 # Onboarding seed (Wave S1: tap-only onboarding -> style_profiles/preferences/signals)
 app.include_router(onboarding.router)
+
+# My Style Profile (read/edit the distilled facts + narrative + learned preferences)
+app.include_router(profile_style.router)
 
 # AI Stylist chat (Wave S2: SSE agent over closet + Style Profile)
 app.include_router(chat.router)

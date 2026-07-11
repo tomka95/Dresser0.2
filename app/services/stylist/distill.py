@@ -109,6 +109,24 @@ _USER_STATED_SOURCES = frozenset({"onboarding", "chat_explicit"})
 # style_preferences.source values that a distillation recompute must NEVER clobber.
 _PROTECTED_PREF_SOURCES = frozenset({"explicit", "onboarding"})
 
+# The sacred-write marker the /profile/style PATCH stamps into
+# style_preferences.value when the user edits or deletes a learned preference
+# (mirrors the closet attributes_json provenance='user_edited' rule). A row
+# carrying it is FROZEN against distillation: recompute never overwrites it and
+# decay never re-scores or reactivates it, regardless of source or polarity.
+# Deletion is a TOMBSTONE — the row is kept (active=False, user_edited=True) so
+# the dimension slot stays occupied and old signals can never re-emerge it.
+_USER_EDITED_VALUE_KEY = "user_edited"
+
+
+def _is_user_locked(row: "StylePreference") -> bool:
+    """True when the user has manually edited/tombstoned this preference row.
+
+    Such a row is off-limits to every distillation pass — it reflects an explicit
+    user assertion (or forget), which must outrank any inferred recompute."""
+    value = row.value
+    return isinstance(value, dict) and bool(value.get(_USER_EDITED_VALUE_KEY))
+
 _POLARITY_SIGN = {"like": 1.0, "dislike": -1.0, "neutral": 0.0}
 # Below this |net weighted vote| a dimension is too ambivalent to assert a polarity.
 _NET_POLARITY_EPS = 0.05
@@ -572,6 +590,10 @@ def decay_preferences(db: Session, user_id: UUID, now: datetime) -> tuple[int, i
     decayed = 0
     deactivated = 0
     for row in rows:
+        if _is_user_locked(row):
+            # A user-edited/tombstoned preference is sacred: never aged, never
+            # auto-deactivated, never resurrected. Skip it entirely.
+            continue
         if row.confidence is None:
             continue
         seen = _as_naive_utc(row.last_seen_at) or _as_naive_utc(row.updated_at) or now
@@ -679,6 +701,12 @@ def recompute_preferences(
             )
             .one_or_none()
         )
+        if row is not None and _is_user_locked(row):
+            # The user manually edited or deleted (tombstoned) this dimension.
+            # No recompute — inferred OR user-stated — may overwrite or resurrect
+            # it; the sacred write and the tombstone both live here.
+            protected += 1
+            continue
         if row is not None and row.source in _PROTECTED_PREF_SOURCES and desired_source == "inferred":
             # User stated this taste; an inference must not overwrite it.
             protected += 1

@@ -3,52 +3,66 @@
 /**
  * /settings/style — "My style profile".
  *
- * PRIMARY view: "Learned from your activity" — distilled style facts, each with
- * a confidence dot + evidence line + a per-line delete (✕). This mirrors the
- * §7 · P3 design (T2_STYLE_FACTS): learned preferences you can see and forget.
+ * REAL now: reads the server-side brain via GET /profile/style — the distilled
+ * narrative (verbatim), plus the learned per-dimension preferences with a human
+ * explanation line derived from their evidence. Edits are REAL and sacred:
  *
- * HONEST about the backend: there is NO distilled-facts endpoint exposed to the
- * client today (distillation runs server-side but isn't surfaced). So the facts
- * are seeded from a local starter list and per-line delete is LOCAL-ONLY —
- * dismissed facts are remembered in localStorage on this device, they don't
- * actually tell the ranker to forget anything. The header copy says so plainly;
- * we never claim these are live-computed or that deleting them changes
- * recommendations.
+ *   • Delete (✕)  → PATCH { preferences:[{dimension, delete:true}] } — a durable
+ *                    tombstone; distillation can never re-derive that dimension.
+ *   • Flip pill    → PATCH { preferences:[{dimension, polarity}] } — a user
+ *                    override stamped user_edited; re-distill never overwrites it.
  *
- * SECONDARY view: "Tune manually" — the device-only editable archetype chips +
- * colors (unchanged from the prior pass, still localStorage-only).
+ * Honest states: a brand-new user with a sparse profile sees a real empty state
+ * (no seeded filler), not fabricated facts.
  */
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import type React from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
-import { Btn, M, Spark, TopBar, useToastStore } from '@/components/ds';
+import { Btn, ErrorState, M, Sk, SkList, Spark, StateBlock, TopBar, useToastStore } from '@/components/ds';
+import {
+  getStyleProfile,
+  patchStyleProfile,
+  type LearnedPreference,
+  type StyleProfile,
+} from '@/lib/api/profile';
 
-/* ── Learned facts (device-seeded, honest) ────────────────────────────────── */
+/* ── helpers ──────────────────────────────────────────────────────────────── */
 
-interface StyleFact {
-  id: string;
-  text: string;
-  conf: number;
-  from: string;
+const DIMENSION_LABEL: Record<string, string> = {
+  color: 'Color',
+  silhouette: 'Silhouette',
+  fit: 'Fit',
+  formality: 'Formality',
+  pattern: 'Pattern',
+  material: 'Material',
+  category: 'Category',
+  brand: 'Brands',
+  occasion: 'Occasion',
+  length: 'Length',
+  vibe: 'Vibe',
+};
+
+const POLARITY_WORD: Record<string, string> = { like: 'Leans into', dislike: 'Avoids', neutral: 'Noted' };
+
+function dimensionLabel(d: string): string {
+  return DIMENSION_LABEL[d] ?? d.charAt(0).toUpperCase() + d.slice(1);
 }
 
-/** Starter facts — illustrative of what distillation would surface. */
-const SEED_FACTS: StyleFact[] = [
-  { id: 'neutrals', text: 'You reach for neutrals — 78% of wears are white, black, beige', conf: 0.94, from: '212 wear events' },
-  { id: 'fit', text: 'Slim on top, relaxed below', conf: 0.86, from: 'fit sliders + 9 swaps' },
-  { id: 'logos', text: 'You avoid logos and prints', conf: 0.81, from: 'taste deck + 14 rejections' },
-  { id: 'footwear', text: 'Sneakers on weekdays, boots for dinner', conf: 0.66, from: '31 outfit confirms' },
-];
-
-const DISMISSED_KEY = 'tailor.pref.dismissedFacts';
+/** A short detail line from the freeform value blob (notes/colors/styles), if any. */
+function valueDetail(value: Record<string, unknown>): string | null {
+  for (const key of ['notes', 'colors', 'styles', 'brands', 'items']) {
+    const v = value[key];
+    if (Array.isArray(v) && v.length) return v.map(String).join(', ');
+  }
+  const note = value['note'];
+  return typeof note === 'string' && note.trim() ? note.trim() : null;
+}
 
 /** Confidence dot — mint when strong (≥0.7), amber when weak. */
-function ConfDot({ conf }: { conf: number }) {
-  const low = conf < 0.7;
+function ConfDot({ conf }: { conf: number | null }) {
+  const low = conf != null && conf < 0.7;
   return (
     <span
       className="inline-block shrink-0 rounded-full"
@@ -63,116 +77,52 @@ function ConfDot({ conf }: { conf: number }) {
   );
 }
 
-/* ── Manual tune (device-only) ────────────────────────────────────────────── */
-
-const PREFS = [
-  'Minimal',
-  'Street',
-  'Classic',
-  'Smart casual',
-  'Athleisure',
-  'Tailored',
-  'Vintage',
-  'Bold',
-  'Monochrome',
-  'Earthy',
-];
-const COLORS = ['#1a1a1a', '#f5f5f0', '#7d6b56', '#3a4a5a', '#8a3a3a'];
-
-const STORAGE_KEY = 'tailor.pref.style';
-
-function Chip({ on, children, onClick }: { on: boolean; children: React.ReactNode; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      aria-pressed={on}
-      onClick={onClick}
-      className="inline-flex items-center rounded-full text-[13.5px] font-medium transition-colors"
-      style={{
-        height: 37,
-        padding: '0 16px',
-        letterSpacing: '0.1px',
-        ...(on
-          ? {
-              background: 'linear-gradient(165deg, #10635c, #0a3633)',
-              color: '#fff',
-              border: '1px solid rgba(255,255,255,0.2)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.14)',
-            }
-          : {
-              background: 'rgba(255,255,255,0.07)',
-              color: M.soft,
-              border: '1px solid rgba(255,255,255,0.12)',
-            }),
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
 export default function StyleProfilePage() {
-  const router = useRouter();
-  const { session, loading } = useRequireAuth();
+  const { session, loading: authLoading } = useRequireAuth();
   const toast = useToastStore((s) => s.toast);
 
-  // Learned facts, minus the ones dismissed on this device.
-  const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
+  const [profile, setProfile] = useState<StyleProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
 
-  // Manual tune (device-only).
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [colors, setColors] = useState<Record<string, boolean>>({});
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(false);
     try {
-      const rawDismissed = window.localStorage.getItem(DISMISSED_KEY);
-      if (rawDismissed) setDismissed(JSON.parse(rawDismissed) as Record<string, boolean>);
+      setProfile(await getStyleProfile());
     } catch {
-      /* keep defaults */
-    }
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const data = JSON.parse(raw) as { styles?: Record<string, boolean>; colors?: Record<string, boolean> };
-        if (data.styles) setSelected(data.styles);
-        if (data.colors) setColors(data.colors);
-      }
-    } catch {
-      /* keep defaults */
+      setError(true);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  if (loading || !session) return null;
+  const authed = !!session;
+  useEffect(() => {
+    if (authed) void load();
+  }, [authed, load]);
 
-  const facts = SEED_FACTS.filter((f) => !dismissed[f.id]);
+  if (authLoading || !session) return null;
 
-  const dismissFact = (id: string) => {
-    const next = { ...dismissed, [id]: true };
-    setDismissed(next);
+  const prefs = profile?.preferences ?? [];
+
+  const applyEdit = async (dimension: string, edit: { delete?: boolean; polarity?: 'like' | 'dislike' }) => {
+    setBusy((b) => ({ ...b, [dimension]: true }));
     try {
-      window.localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
+      const next = await patchStyleProfile({ preferences: [{ dimension, ...edit }] });
+      setProfile(next);
+      toast({ tone: edit.delete ? 'info' : 'success', title: edit.delete ? 'Forgotten' : 'Updated' });
     } catch {
-      /* in-memory only */
+      toast({ tone: 'error', title: "Couldn't save — try again" });
+    } finally {
+      setBusy((b) => ({ ...b, [dimension]: false }));
     }
-    toast({ tone: 'info', title: 'Removed from this device' });
   };
 
-  const handleSave = () => {
-    setSaving(true);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ styles: selected, colors }));
-    } catch {
-      /* in-memory only */
-    }
-    toast({ tone: 'success', title: 'Style profile saved' });
-    setTimeout(() => {
-      setSaving(false);
-      router.back();
-    }, 500);
-  };
-
-  const chosen = PREFS.filter((p) => selected[p]);
+  const forget = (p: LearnedPreference) => applyEdit(p.dimension, { delete: true });
+  const flip = (p: LearnedPreference) =>
+    applyEdit(p.dimension, { polarity: p.polarity === 'dislike' ? 'like' : 'dislike' });
 
   return (
     <AppShell>
@@ -180,138 +130,137 @@ export default function StyleProfilePage() {
         <TopBar title="My style profile" sub="What Tailor has picked up — yours to see" />
         <div className="h-[18px]" />
 
-        {/* AI-styled summary line. */}
-        <div style={{ ...M.ai(24), padding: 17 }}>
-          <div className="flex items-center gap-1.5">
-            <Spark size={12} />
-            <span
-              className="text-[10px] font-semibold uppercase"
-              style={{ letterSpacing: '0.13em', color: 'var(--mint)' }}
-            >
-              In one line
-            </span>
+        {loading ? (
+          <div className="flex flex-col gap-4">
+            <Sk h={78} r={24} />
+            <SkList n={4} />
           </div>
-          <div
-            className="mt-2 text-white"
-            style={{ fontSize: 16.5, fontWeight: 600, lineHeight: 1.45, letterSpacing: '-0.2px' }}
-          >
-            Quiet minimal — neutral palette, relaxed fits, sneakers by day and boots by night.
-          </div>
-        </div>
-
-        {/* ── PRIMARY: learned facts ──────────────────────────────────────── */}
-        <div className="mb-2 mt-6 flex items-baseline justify-between px-0.5">
-          <span className="text-[15.5px] font-semibold text-white">Learned from your activity</span>
-          <span className="text-[11.5px]" style={{ color: M.ghost }}>
-            dot = confidence
-          </span>
-        </div>
-
-        {facts.length > 0 ? (
-          <div className="flex flex-col" style={{ gap: 9 }}>
-            {facts.map((f) => (
-              <div
-                key={f.id}
-                className="flex items-start gap-3"
-                style={{
-                  padding: '13px 14px',
-                  borderRadius: 18,
-                  background: 'rgba(255,255,255,0.055)',
-                  border: '1px solid rgba(255,255,255,0.09)',
-                }}
-              >
-                <span style={{ marginTop: 5 }}>
-                  <ConfDot conf={f.conf} />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13.5px] leading-snug text-white">{f.text}</div>
-                  <div className="mt-1 text-[11px]" style={{ color: M.ghost }}>
-                    from {f.from} · conf {f.conf.toFixed(2)}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  aria-label={`Remove: ${f.text}`}
-                  onClick={() => dismissFact(f.id)}
-                  className="shrink-0 rounded-full p-1 text-white/[0.36] active:scale-90"
-                  style={{ transition: 'transform 200ms var(--spring)' }}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-            ))}
-          </div>
+        ) : error ? (
+          <ErrorState
+            title="Couldn’t load your profile"
+            sub="Your data is safe. Give it another try."
+            onRetry={load}
+          />
         ) : (
-          <div
-            className="rounded-2xl px-4 py-5 text-center text-[13px] text-white/[0.55]"
-            style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
-          >
-            You&rsquo;ve cleared every learned line on this device.
-          </div>
-        )}
+          <>
+            {/* Distilled narrative — verbatim, only when one exists. */}
+            {profile?.narrative && (
+              <div style={{ ...M.ai(24), padding: 17 }}>
+                <div className="flex items-center gap-1.5">
+                  <Spark size={12} />
+                  <span
+                    className="text-[10px] font-semibold uppercase"
+                    style={{ letterSpacing: '0.13em', color: 'var(--mint)' }}
+                  >
+                    In one line
+                  </span>
+                </div>
+                <div
+                  className="mt-2 text-white"
+                  style={{ fontSize: 16.5, fontWeight: 600, lineHeight: 1.45, letterSpacing: '-0.2px' }}
+                >
+                  {profile.narrative}
+                </div>
+              </div>
+            )}
 
-        {/* Honest note about what these are (and aren't). */}
-        <div className="mt-3.5 px-0.5 text-[12px] leading-relaxed text-white/[0.55]">
-          These are illustrative for now — Tailor distills style facts from your wears and chats,
-          but that feed isn&rsquo;t connected to the app yet. Removing a line hides it on this
-          device only; it doesn&rsquo;t change your recommendations.
-        </div>
+            <div className="mb-2 mt-6 flex items-baseline justify-between px-0.5">
+              <span className="text-[15.5px] font-semibold text-white">Learned about your style</span>
+              {prefs.length > 0 && (
+                <span className="text-[11.5px]" style={{ color: M.ghost }}>
+                  dot = confidence
+                </span>
+              )}
+            </div>
 
-        {/* ── SECONDARY: manual tune ──────────────────────────────────────── */}
-        <div
-          className="mx-0.5 mb-3 mt-7 text-[11px] font-semibold uppercase"
-          style={{ letterSpacing: '0.13em', color: 'rgba(255,255,255,0.36)' }}
-        >
-          Tune manually
-        </div>
-
-        <div className="mx-0.5 mb-3 text-[12.5px] font-semibold text-white/[0.78]">
-          Styles you like
-          {chosen.length > 0 && (
-            <span className="ml-2 font-normal text-white/[0.45]">{chosen.join(', ')}</span>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2.5">
-          {PREFS.map((p) => (
-            <Chip key={p} on={!!selected[p]} onClick={() => setSelected((s) => ({ ...s, [p]: !s[p] }))}>
-              {p}
-            </Chip>
-          ))}
-        </div>
-
-        <div className="mx-0.5 mb-3 mt-[26px] text-[12.5px] font-semibold text-white/[0.78]">
-          Colors you wear
-        </div>
-        <div className="flex gap-3">
-          {COLORS.map((c) => {
-            const on = !!colors[c];
-            return (
-              <button
-                key={c}
-                type="button"
-                aria-label={`Color ${c}`}
-                aria-pressed={on}
-                onClick={() => setColors((s) => ({ ...s, [c]: !s[c] }))}
-                className="rounded-full transition-shadow"
-                style={{
-                  width: 44,
-                  height: 44,
-                  background: c,
-                  border: on ? '2px solid var(--mint)' : '1px solid var(--tr-20)',
-                  boxShadow: on ? '0 0 0 3px rgba(75,226,214,0.18)' : 'none',
-                }}
+            {prefs.length > 0 ? (
+              <div className="flex flex-col" style={{ gap: 9 }}>
+                {prefs.map((p) => {
+                  const detail = valueDetail(p.value);
+                  const word = POLARITY_WORD[p.polarity ?? 'neutral'] ?? 'Noted';
+                  return (
+                    <div
+                      key={p.dimension}
+                      className="flex items-start gap-3"
+                      style={{
+                        padding: '13px 14px',
+                        borderRadius: 18,
+                        background: 'rgba(255,255,255,0.055)',
+                        border: '1px solid rgba(255,255,255,0.09)',
+                        opacity: busy[p.dimension] ? 0.5 : 1,
+                        transition: 'opacity 160ms ease',
+                      }}
+                    >
+                      <span style={{ marginTop: 5 }}>
+                        <ConfDot conf={p.confidence} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] leading-snug text-white">
+                          <span style={{ color: M.soft }}>{word} </span>
+                          {dimensionLabel(p.dimension).toLowerCase()}
+                          {detail ? <span className="text-white/[0.85]"> — {detail}</span> : null}
+                        </div>
+                        <div className="mt-1 text-[11px]" style={{ color: M.ghost }}>
+                          <span>{p.explanation}</span>
+                          {p.confidence != null ? <span>{` · conf ${p.confidence.toFixed(2)}`}</span> : null}
+                        </div>
+                      </div>
+                      {/* Flip like/dislike (a sacred override). */}
+                      {p.polarity === 'like' || p.polarity === 'dislike' ? (
+                        <button
+                          type="button"
+                          disabled={busy[p.dimension]}
+                          aria-label={`Change to ${p.polarity === 'dislike' ? 'like' : 'dislike'}: ${dimensionLabel(p.dimension)}`}
+                          onClick={() => flip(p)}
+                          className="shrink-0 rounded-full text-[11px] font-medium active:scale-95"
+                          style={{
+                            padding: '4px 9px',
+                            color: p.polarity === 'dislike' ? '#f0a23b' : 'var(--mint)',
+                            background: 'rgba(255,255,255,0.06)',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            transition: 'transform 200ms var(--spring)',
+                          }}
+                        >
+                          {p.polarity === 'dislike' ? 'Dislike' : 'Like'}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={busy[p.dimension]}
+                        aria-label={`Forget: ${dimensionLabel(p.dimension)}`}
+                        onClick={() => forget(p)}
+                        className="shrink-0 rounded-full p-1 text-white/[0.36] active:scale-90"
+                        style={{ transition: 'transform 200ms var(--spring)' }}
+                      >
+                        <X size={15} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <StateBlock
+                compact
+                tone="mint"
+                icon={<Spark size={20} />}
+                title="Still learning your style"
+                sub="Chat with the stylist, log what you wear, and swipe the taste deck — the preferences Tailor picks up will show here, and you’ll be able to correct them."
               />
-            );
-          })}
-        </div>
+            )}
 
-        <div className="mt-[22px] text-[11.5px] leading-relaxed text-white/[0.36]">
-          Manual tweaks are saved on this device — not yet feeding recommendations.
-        </div>
+            {/* Honest note about what these are. */}
+            {prefs.length > 0 && (
+              <div className="mt-3.5 px-0.5 text-[12px] leading-relaxed text-white/[0.55]">
+                These are distilled from your wears, chats, and taste swipes. Removing a line tells
+                Tailor to forget it for good; changing like/dislike sticks and won’t be relearned over.
+              </div>
+            )}
 
-        <Btn variant="primary" fullWidth size="lg" className="mt-6" pending={saving} onClick={handleSave}>
-          Save style profile
-        </Btn>
+            <Btn variant="ghost" fullWidth size="lg" className="mt-7" onClick={load}>
+              Refresh
+            </Btn>
+          </>
+        )}
       </div>
     </AppShell>
   );
