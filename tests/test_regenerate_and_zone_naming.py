@@ -22,7 +22,13 @@ from app.db import Base, SessionLocal, engine
 from app.core.config import settings
 from app.models import ClothingItem, PhotoUsage, User
 from app.photo_closet.detection import GarmentDescription, describe_garment_crop
-from app.photo_closet.quota import month_start, photos_used_this_month, record_photo_usage
+from app.photo_closet.quota import (
+    PhotoQuotaExceeded,
+    check_photo_quota,
+    month_start,
+    photos_used_this_month,
+    record_photo_usage,
+)
 from app.services.image_generation.base import GenerationRequest
 from app.services.image_generation.prompt import build_generation_prompt
 from tests._authutil import mint_supabase_token
@@ -246,6 +252,74 @@ def test_record_photo_usage_upserts_monthly(db, user):
     assert row.period_start == month_start()
 
 
+def test_record_photo_usage_zero_is_noop(db, user):
+    # A fully-failed generation reports photos=0 -> the ledger must not create a row.
+    record_photo_usage(db, user.id, photos=0)
+    assert photos_used_this_month(db, user.id) == 0
+    assert db.query(PhotoUsage).filter(PhotoUsage.user_id == user.id).count() == 0
+
+
+def test_check_photo_quota_boundary(db, user):
+    # At the cap the next generation is refused; one below, it is allowed.
+    record_photo_usage(db, user.id, photos=settings.PHOTO_MONTHLY_QUOTA - 1)
+    check_photo_quota(db, user.id)  # 29/30 -> no raise
+
+    record_photo_usage(db, user.id, photos=1)  # -> 30/30
+    with pytest.raises(PhotoQuotaExceeded) as ei:
+        check_photo_quota(db, user.id)
+    assert ei.value.limit == settings.PHOTO_MONTHLY_QUOTA
+    assert ei.value.used == settings.PHOTO_MONTHLY_QUOTA
+    assert ei.value.resets_at  # ISO reset instant
+
+
+def test_regenerate_over_quota_returns_429(client, db, user, monkeypatch):
+    # Route-level: a user at their monthly cap gets a 429 {limit, used, resets_at} and the
+    # background job is never dispatched.
+    monkeypatch.setattr(settings, "JOBS_PHOTO_GENERATION_ENABLED", False)
+    dispatched = []
+    monkeypatch.setattr(
+        gs, "regenerate_item_background",
+        lambda *a, **k: dispatched.append(a),
+    )
+    record_photo_usage(db, user.id, photos=settings.PHOTO_MONTHLY_QUOTA)
+    item = _photo_item(db, user, generation_status="ready")
+    tok = mint_supabase_token(sub=str(user.id))
+
+    r = client.post(f"/closet/{item.id}/regenerate",
+                    headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 429, r.text
+    detail = r.json()["detail"]
+    assert detail["limit"] == settings.PHOTO_MONTHLY_QUOTA
+    assert detail["used"] == settings.PHOTO_MONTHLY_QUOTA
+    assert detail["resets_at"]
+    assert not dispatched  # rejected before dispatch
+    # The card is untouched (still 'ready', not flipped to 'generating').
+    db.expire_all()
+    assert db.query(ClothingItem).filter(ClothingItem.id == item.id).one().generation_status == "ready"
+
+
+def test_run_item_regeneration_charges_on_success(db, user, monkeypatch):
+    # A verified pass records exactly one photo (and one regeneration) against the month.
+    item = _photo_item(db, user, generation_status="generating")
+    monkeypatch.setattr(
+        gs, "_generate_from_crop",
+        lambda **k: gs._HealOutcome("ready", url="https://cdn.example.com/new.png", cost_usd=0.02),
+    )
+    gs.run_item_regeneration(user.id, db, item.id)
+    assert photos_used_this_month(db, user.id) == 1
+    row = db.query(PhotoUsage).filter(PhotoUsage.user_id == user.id).one()
+    assert row.photos_used == 1 and row.regenerations == 1
+
+
+def test_run_item_regeneration_miss_does_not_charge(db, user, monkeypatch):
+    # A generate->verify miss keeps the old image AND must not burn quota (SCRUM-44).
+    item = _photo_item(db, user, generation_status="generating")
+    monkeypatch.setattr(gs, "_generate_from_crop", lambda **k: gs._HealOutcome("held"))
+    gs.run_item_regeneration(user.id, db, item.id)
+    assert photos_used_this_month(db, user.id) == 0
+    assert db.query(PhotoUsage).filter(PhotoUsage.user_id == user.id).count() == 0
+
+
 # --------------------------------------------------------------------------- endpoint
 def test_regenerate_requires_auth(client):
     assert client.post(f"/closet/{uuid.uuid4()}/regenerate").status_code == 401
@@ -293,7 +367,11 @@ def test_regenerate_image_less_item_dispatches_t2i(client, db, user, monkeypatch
     assert scheduled and scheduled[0][3] is None  # no uploaded reference
 
 
-def test_regenerate_photo_marks_generating_and_records_quota(client, db, user, monkeypatch):
+def test_regenerate_marks_generating_and_does_not_charge_until_success(client, db, user, monkeypatch):
+    # SCRUM-44: the request marks the card in-flight and dispatches the background job,
+    # but the monthly quota is NOT charged here — the counter is bumped only when the
+    # regeneration actually succeeds (in run_item_regeneration), so a request whose
+    # generation later fails never burns quota. Background is mocked, so nothing succeeds.
     monkeypatch.setattr(settings, "JOBS_PHOTO_GENERATION_ENABLED", False)
     scheduled = []
     monkeypatch.setattr(
@@ -316,8 +394,8 @@ def test_regenerate_photo_marks_generating_and_records_quota(client, db, user, m
     fresh = db.query(ClothingItem).filter(ClothingItem.id == item.id).one()
     assert fresh.generation_status == "generating"       # marked in-flight, image untouched
     assert fresh.image_url == "https://cdn.example.com/crop.png"
-    # Quota recorded against the monthly counter SCRUM-44 will read.
-    assert photos_used_this_month(db, user.id) == 1
+    # NOT charged at request time — recording is success-only (background is mocked here).
+    assert photos_used_this_month(db, user.id) == 0
     # Background regenerate dispatched with the sanitized reason.
     assert scheduled and scheduled[0][2] == "the swoosh should be red, not black"
 

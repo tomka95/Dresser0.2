@@ -240,6 +240,23 @@ def commit_photo_selection(
     manual_boxes: [[ymin,xmin,ymax,xmax]]}]. Each file binds to its session by
     sha256. Staged candidates are then reviewed through the shared deck/confirm path.
     """
+    # QUOTA (SCRUM-44): reject over-quota BEFORE any staging/generation work. The month
+    # boundary honours the user's tz (facts.location.timezone), else UTC. Successful
+    # cards are charged later, in run_photo_generation (stats.ready) — a failed
+    # generate->verify never burns quota.
+    from app.core.usage_windows import tz_name_from_facts
+    from app.photo_closet.quota import PhotoQuotaExceeded, check_photo_quota
+    from app.services.closet_canonicalize import load_user_facts
+
+    tz_name = tz_name_from_facts(load_user_facts(db, current_user.id))
+    try:
+        check_photo_quota(db, current_user.id, tz_name=tz_name)
+    except PhotoQuotaExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={"limit": exc.limit, "used": exc.used, "resets_at": exc.resets_at},
+        )
+
     sanitized = _sanitize_uploads(files)
     parsed_selections = _parse_selections(selections)
 

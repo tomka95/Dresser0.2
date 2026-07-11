@@ -500,6 +500,14 @@ export async function commitPhotoIngest(
     if (response.status === 410) {
       throw new PhotoSessionExpiredError();
     }
+    // Monthly photo quota reached (SCRUM-44): surface the locked "30 photos a month"
+    // copy. The message reads like a limit so the review screen's looksLikeQuota()
+    // shows the RateLimitState template instead of a raw error string.
+    if (response.status === 429) {
+      throw new Error(
+        'You’ve reached your monthly photo limit — free plans tailor 30 photos a month. Yours resets soon.',
+      );
+    }
     const error = await response.json().catch(() => ({}));
     if (Array.isArray(error.detail)) {
       throw new Error(error.detail.map((e: any) => e.msg).join(', '));

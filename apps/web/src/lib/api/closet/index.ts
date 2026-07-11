@@ -208,6 +208,13 @@ export async function regenerateItemImage(
     if (response.status === 401 || response.status === 403) {
       throw new Error('Not authenticated. Please sign in first.');
     }
+    // Monthly photo quota reached (SCRUM-44): the regenerate toast shows this message.
+    // Reuses the locked "30 photos a month" copy — no new copy invented.
+    if (response.status === 429) {
+      throw new Error(
+        'You’ve reached your monthly photo limit — free plans tailor 30 photos a month. Yours resets soon.',
+      );
+    }
     if (Array.isArray(error.detail)) {
       throw new Error(error.detail.map((err: any) => err.msg).join(', '));
     }

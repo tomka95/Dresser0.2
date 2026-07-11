@@ -153,10 +153,18 @@ async def post_chat(
     conversation_id = _parse_uuid(body.conversationId, field="conversationId")
     images, attached_item_ids = await _decode_attachments(body)
 
+    # Resolve the user's tz so the daily message quota resets on THEIR local day
+    # (facts.location.timezone), else UTC — the same rule the calendar uses. Read once
+    # here and reused for record_turn_usage below so check + record share a day row.
+    from app.core.usage_windows import tz_name_from_facts
+    from app.services.closet_canonicalize import load_user_facts
+
+    tz_name = tz_name_from_facts(load_user_facts(db, current_user.id))
+
     # Shared abuse controls (429 before any model spend).
     try:
         check_rate_limit(db, current_user.id)
-        check_quota(db, current_user.id)
+        check_quota(db, current_user.id, tz_name=tz_name)
     except ChatLimitExceeded as exc:
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
         raise HTTPException(status_code=429, detail={"code": exc.code, "message": str(exc)},
@@ -208,6 +216,7 @@ async def post_chat(
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
                     cost_usd=result.cost_usd,
+                    tz_name=tz_name,
                 )
             finally:
                 usage_db.close()

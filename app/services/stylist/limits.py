@@ -33,6 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.usage_windows import today_local
 from app.db import engine
 from app.models import ChatUsage
 
@@ -64,7 +65,8 @@ class RateLimited(ChatLimitExceeded):
 class QuotaExceeded(ChatLimitExceeded):
     def __init__(self) -> None:
         super().__init__(
-            "You've reached today's free stylist limit. It resets at midnight UTC.",
+            "You've reached today's free stylist limit. It resets at the start of "
+            "your next day.",
             code="quota_exceeded",
         )
 
@@ -115,8 +117,14 @@ def _uid_param(db: Session, user_id: UUID):
 # ---------------------------------------------------------------------------
 # Daily quota (turns + dollars, UTC day)
 # ---------------------------------------------------------------------------
-def check_quota(db: Session, user_id: UUID) -> None:
-    today = datetime.utcnow().date()
+def check_quota(db: Session, user_id: UUID, *, tz_name: Optional[str] = None) -> None:
+    """Raise QuotaExceeded when the caller is at/over today's turn or cost cap.
+
+    The "day" boundary honours the user's tz (facts.location.timezone) when provided,
+    else UTC — the same rule the calendar/photo-quota paths use (app.core.usage_windows).
+    check_quota and record_turn_usage MUST be passed the same tz_name so a turn is read
+    and written under the same day row."""
+    today = today_local(tz_name)
     row = (
         db.query(ChatUsage)
         .filter(ChatUsage.user_id == user_id, ChatUsage.period_start == today)
@@ -137,10 +145,15 @@ def record_turn_usage(
     input_tokens: int,
     output_tokens: int,
     cost_usd: float,
+    tz_name: Optional[str] = None,
 ) -> None:
     """Atomically roll this turn into today's chat_usage row. Best-effort —
-    a bookkeeping failure must never break a delivered reply (usage.py pattern)."""
-    today: date = datetime.utcnow().date()
+    a bookkeeping failure must never break a delivered reply (usage.py pattern).
+
+    ``tz_name`` picks the day row (user-local, else UTC) and MUST match the value
+    check_quota was called with, so a recorded turn counts against the same day it is
+    later checked against."""
+    today: date = today_local(tz_name)
     sql = text(
         """
         INSERT INTO chat_usage
