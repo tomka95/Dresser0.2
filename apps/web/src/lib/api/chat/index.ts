@@ -18,10 +18,9 @@ import type {
 } from '@tailor/contracts';
 
 import { getAccessToken } from '@/lib/auth';
+import { API_BASE_URL } from '@/lib/api/base';
 
 import { parseSSEChunk } from './sse';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export interface ChatStreamHandlers {
   onMeta?: (meta: ChatMetaEvent) => void;

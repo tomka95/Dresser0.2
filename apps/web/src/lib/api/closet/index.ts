@@ -4,9 +4,8 @@
  * Connects to FastAPI backend endpoints at /closet.
  */
 import type { ClosetItem, ClosetItemUpdate } from '@tailor/contracts';
+import { API_BASE_URL } from '@/lib/api/base';
 import { getAccessToken } from '@/lib/auth';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export async function listClosetItems(options?: { includeTags?: boolean }): Promise<ClosetItem[]> {
   const token = await getAccessToken();

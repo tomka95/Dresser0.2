@@ -11,10 +11,9 @@
  * retry; a failed seed must never strand a half-onboarded user past the gate.
  */
 import type { PreferenceDimension, Polarity } from '@tailor/contracts';
+import { API_BASE_URL } from '@/lib/api/base';
 
 import { getAccessToken } from '@/lib/auth';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 /** One structured preference row (dimension is the fixed shared vocabulary). */
 export interface OnboardingPreference {

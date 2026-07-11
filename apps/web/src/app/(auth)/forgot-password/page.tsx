@@ -8,13 +8,20 @@ import { AuthHeader } from "@/components/auth/AuthHeader";
 import { AuthField } from "@/components/auth/AuthField";
 import { Btn, Medallion, M } from "@/components/ds";
 import { resetPasswordForEmail } from "@/lib/auth";
+import { useRedirectIfAuthenticated } from "@/lib/auth/useRedirectIfAuthenticated";
 
 export default function ForgotPasswordPage() {
   const router = useRouter();
+  // An already-signed-in visitor is bounced to the app home before the form paints.
+  const { checking } = useRedirectIfAuthenticated();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Resolve the session before rendering the form — a signed-in user is
+  // redirecting, so never flash the auth form at them.
+  if (checking) return null;
 
   const sendResetLink = async () => {
     if (!email) {

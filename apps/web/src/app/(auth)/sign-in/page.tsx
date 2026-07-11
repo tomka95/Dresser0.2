@@ -12,6 +12,7 @@ import { AuthFooter } from "@/components/auth/AuthFooter";
 import { Btn } from "@/components/ds";
 import { useOnline } from "@/lib/useOnline";
 import { signInWithPassword, signInWithProvider } from "@/lib/auth";
+import { useRedirectIfAuthenticated } from "@/lib/auth/useRedirectIfAuthenticated";
 import type { AuthProviderId } from "@/config/authProviders";
 
 /**
@@ -36,6 +37,8 @@ function formatCountdown(totalSeconds: number): string {
 
 export default function SignInPage() {
   const router = useRouter();
+  // An already-signed-in visitor is bounced to the app home before the form paints.
+  const { checking } = useRedirectIfAuthenticated();
   const online = useOnline();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -151,6 +154,10 @@ export default function SignInPage() {
   const formDisabled = !online || rateLimited;
   const isSubmitDisabled =
     loading || pendingProvider !== null || formDisabled || !email || !password;
+
+  // Resolve the session before rendering the form — a signed-in user is
+  // redirecting, so never flash the auth form at them.
+  if (checking) return null;
 
   return (
     <>

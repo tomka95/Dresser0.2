@@ -1,5 +1,6 @@
 // API client for Gmail endpoints
 import { getAccessToken } from '@/lib/auth';
+import { API_BASE_URL } from '@/lib/api/base';
 
 // ─── Ingest types ─────────────────────────────────────────────────────────────
 
@@ -99,8 +100,6 @@ export interface ConfirmResponse {
   updated_count: number;
   written: ConfirmWrittenItem[];
 }
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export interface GmailConnectionStatus {
   connected: boolean;
