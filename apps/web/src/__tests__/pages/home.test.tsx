@@ -81,7 +81,7 @@ describe('HomePage — review-ready banner', () => {
 
     render(<HomePage />);
 
-    expect(await screen.findByText('3 receipts ready to review')).toBeInTheDocument();
+    expect(await screen.findByText('3 items ready to review')).toBeInTheDocument();
   });
 
   it('does not render the banner when nothing is pending', async () => {
