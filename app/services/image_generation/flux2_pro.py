@@ -5,6 +5,15 @@ image model (validated in the BFL playground for our garment-card use). flux_kon
 stays selectable via GENERATION_PROVIDER='flux_kontext'; nano_banana is the on-cap
 rung-2 verify-fail retry.
 
+TWO ENTRY POINTS, ONE TRANSPORT:
+  * generate(req)                — REFERENCE/edit call: body carries the garment cutout
+                                   in `input_image` (the reference ladder rung-1).
+  * generate_text_to_image(txt)  — PURE TEXT->IMAGE: body OMITS input_image. FLUX.2 [pro]
+                                   supports t2i on the SAME endpoint (input_image is
+                                   optional), so an imageless item (no crop) still gets an
+                                   OFF-CAP generation. This is the t2i-ladder rung-1.
+Both share `_submit_poll_fetch`; only the request body differs.
+
 API SHAPE (confirmed against docs.bfl.ai / bfl.ai, 2026-07):
   1. SUBMIT  POST https://api.bfl.ai/v1/flux-2-pro
              headers {"x-key": BFL_API_KEY}, JSON body with the prompt + the base64
@@ -124,28 +133,83 @@ class Flux2ProProvider:
             detail="bfl flux-2-pro",
         )
 
+    def generate_text_to_image(self, prompt: str) -> Optional[GenerationResult]:
+        """TEXT->IMAGE (no reference) via FLUX.2 [pro] — the OFF-CAP t2i rung.
+
+        FLUX.2 [pro] supports pure text-to-image: `input_image` is OPTIONAL on the
+        same /v1/flux-2-pro endpoint, so omitting it yields a text-only generation
+        (verified against docs.bfl.ai / the BFL API, 2026-07). Reuses the identical
+        submit->poll->fetch path as the reference call, minus the input_image field.
+
+        BFL is OFF the Gemini cap, so this rung runs regardless of the nano flag — it
+        is the imageless-item generator the t2i ladder tries FIRST. The caller owns
+        the full prompt (build_t2i_prompt) and enforces the MANDATORY verify gate on
+        the output (person backstop included). Never raises; None on any failure."""
+        if not settings.BFL_API_KEY:
+            logger.info("t2i [flux2_pro] skipped: BFL_API_KEY not set")
+            return None
+
+        started = time.monotonic()
+        deadline = started + float(settings.GENERATION_TIMEOUT_SECONDS)
+        # input_image OMITTED — this is the pure text-to-image body.
+        body = {
+            "prompt": prompt,
+            "output_format": _OUTPUT_FORMAT,
+            "safety_tolerance": _SAFETY_TOLERANCE,
+        }
+        try:
+            with _client() as http:
+                image_bytes, content_type = self._submit_poll_fetch(http, body, deadline)
+        except Exception as exc:
+            logger.warning(
+                "t2i [flux2_pro] error (%s) latency=%.1fs",
+                error_detail(exc), time.monotonic() - started,
+            )
+            return None
+        if image_bytes is None or content_type is None:
+            return None
+
+        latency = time.monotonic() - started
+        logger.info(
+            "t2i [flux2_pro] ok: latency=%.1fs bytes=%d", latency, len(image_bytes)
+        )
+        return GenerationResult(
+            image_bytes=image_bytes,
+            content_type=content_type,
+            provider=self.name,
+            model=_MODEL,
+            latency_s=latency,
+            cost_usd=settings.FLUX2_PRO_USD_PER_IMAGE,
+            detail="bfl flux-2-pro t2i",
+        )
+
     # -- internal ----------------------------------------------------------
 
     def _run(
         self, http: httpx.Client, prompt: str, req: GenerationRequest, deadline: float
     ) -> Tuple[Optional[bytes], Optional[str]]:
+        # 1. SUBMIT — the garment cutout is the reference image (input_image, base64).
+        body = {
+            "prompt": prompt,
+            "input_image": base64.b64encode(req.image_bytes).decode("ascii"),
+            "output_format": _OUTPUT_FORMAT,
+            "safety_tolerance": _SAFETY_TOLERANCE,
+        }
+        return self._submit_poll_fetch(http, body, deadline)
+
+    def _submit_poll_fetch(
+        self, http: httpx.Client, body: dict, deadline: float
+    ) -> Tuple[Optional[bytes], Optional[str]]:
+        """Shared submit->poll->fetch for BOTH the reference call (body carries
+        input_image) and the t2i call (body omits it). Never raises here beyond the
+        httpx errors the callers already trap; bad response shapes -> (None, None)."""
         headers = {"x-key": settings.BFL_API_KEY or "", "Content-Type": "application/json"}
 
-        # 1. SUBMIT — the garment cutout is the reference image (input_image, base64).
-        submit = http.post(
-            _SUBMIT_URL,
-            headers=headers,
-            json={
-                "prompt": prompt,
-                "input_image": base64.b64encode(req.image_bytes).decode("ascii"),
-                "output_format": _OUTPUT_FORMAT,
-                "safety_tolerance": _SAFETY_TOLERANCE,
-            },
-        )
+        submit = http.post(_SUBMIT_URL, headers=headers, json=body)
         submit.raise_for_status()
-        body = submit.json()
-        request_id = body.get("id")
-        polling_url = body.get("polling_url")
+        submit_body = submit.json()
+        request_id = submit_body.get("id")
+        polling_url = submit_body.get("polling_url")
         if not request_id or not _is_allowed_url(polling_url):
             logger.warning("generation [flux2_pro] failed: bad submit response")
             return None, None
