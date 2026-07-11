@@ -10,8 +10,8 @@
  * group a visit's events.
  */
 import { getAccessToken } from '@/lib/auth';
+import { API_BASE_URL } from '@/lib/api/base';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 const SESSION_KEY = 'tailor_session_id';
 
 const FLUSH_INTERVAL_MS = 2000;

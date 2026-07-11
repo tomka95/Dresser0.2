@@ -7,10 +7,9 @@
  * The server sets user_id from the JWT; this client never sends it.
  */
 import type { OutfitFeedbackAck, OutfitFeedbackRequest } from '@tailor/contracts';
+import { API_BASE_URL } from '@/lib/api/base';
 
 import { getAccessToken } from '@/lib/auth';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export async function sendOutfitFeedback(
   body: OutfitFeedbackRequest

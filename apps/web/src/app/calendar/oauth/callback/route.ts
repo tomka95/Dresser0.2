@@ -13,10 +13,9 @@
  *  - On any failure we bounce to /profile with a coarse ?calendar=error flag only.
  */
 import { NextResponse } from 'next/server';
+import { API_BASE_URL } from '@/lib/api/base';
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);

@@ -8,8 +8,7 @@
 // /signup, /login, /auth/google) were removed from the frontend in the Supabase
 // Auth cutover. The backend endpoints themselves remain for now (retired later).
 import { getAccessToken } from '@/lib/auth';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+import { API_BASE_URL } from '@/lib/api/base';
 
 export interface CurrentUserResponse {
   id: string;

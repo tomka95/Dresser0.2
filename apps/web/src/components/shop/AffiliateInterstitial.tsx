@@ -18,12 +18,11 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { API_BASE_URL } from '@/lib/api/base';
 import { Mark, M } from '@/components/ds';
 
 /** How long the disclosure is shown before the top-level nav fires (ms). */
 const DWELL_MS = 1300;
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export interface AffiliateInterstitialProps {
   /** The opaque click id minted by POST /clicks. Only this is used to navigate. */
