@@ -122,6 +122,20 @@ def test_quota_turns_enforced(db, user1):
         check_quota(db, user1.id)
 
 
+def test_quota_respects_user_timezone(db, user1):
+    # SCRUM-44: the daily boundary follows the user's tz. A row keyed to the user's
+    # LOCAL day is found by check_quota when passed that tz (read + write share the
+    # same day rule via app.core.usage_windows.today_local).
+    from app.core.usage_windows import today_local
+
+    tz = "Asia/Tokyo"
+    db.add(ChatUsage(user_id=user1.id, period_start=today_local(tz),
+                     turns=settings.CHAT_DAILY_TURN_QUOTA, cost_usd=0))
+    db.commit()
+    with pytest.raises(QuotaExceeded):
+        check_quota(db, user1.id, tz_name=tz)
+
+
 def test_quota_cost_enforced(db, user1):
     db.add(ChatUsage(user_id=user1.id, period_start=datetime.utcnow().date(),
                      turns=1, cost_usd=settings.CHAT_DAILY_COST_QUOTA_USD))

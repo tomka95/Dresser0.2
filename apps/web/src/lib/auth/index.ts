@@ -127,8 +127,42 @@ export async function resetPasswordForEmail(email: string): Promise<void> {
 }
 
 /**
+ * Verify the user's CURRENT password (SCRUM-75) WITHOUT disturbing the active
+ * session. Supabase has no "check password" endpoint, so we sign in on a THROWAWAY
+ * client configured to persist nothing (persistSession:false) — the app's real
+ * cookie-backed session is never read or replaced, so this creates no second session
+ * the user has to notice. Returns true iff the password is correct.
+ *
+ * The result is intentionally boolean: the caller shows a single generic "incorrect"
+ * message and never surfaces GoTrue's raw error, so nothing leaks about account state
+ * (the email is the signed-in user's own, so a failure only ever means "wrong password").
+ * Failed attempts are rate-limited server-side by GoTrue's own sign-in throttling.
+ */
+export async function verifyCurrentPassword(email: string, password: string): Promise<boolean> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anon) throw new Error('Supabase is not configured.');
+
+  const { createClient } = await import('@supabase/supabase-js');
+  const probe = createClient(url, anon, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+  try {
+    const { error } = await probe.auth.signInWithPassword({ email, password });
+    return !error;
+  } finally {
+    // The probe never persisted anything; sign it out to drop the in-memory session.
+    await probe.auth.signOut().catch(() => {});
+  }
+}
+
+/**
  * Set a new password for the signed-in user (normal session OR the recovery
  * session created by a reset link).
+ *
+ * NB: this does NOT verify the current password (Supabase can't, and this is also
+ * reused by the reset-link recovery flow which has no current password). The change-
+ * password screen gates on verifyCurrentPassword() before calling this.
  */
 export async function updatePassword(password: string): Promise<void> {
   const { error } = await getSupabaseClient().auth.updateUser({ password });

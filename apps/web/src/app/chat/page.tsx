@@ -355,8 +355,11 @@ export default function ChatPage() {
           onError: (error) => {
             setToolLabel(null);
             setStreaming(false);
-            // Daily-cap: flip to the quota screen (UI copy only).
-            if (error.code === 'rate_limited') setRateLimited(true);
+            // Server 429: the per-minute rate limit (rate_limited) or the daily
+            // message quota (quota_exceeded, SCRUM-44) — both flip to the same locked
+            // "styling limit for today" screen.
+            if (error.code === 'rate_limited' || error.code === 'quota_exceeded')
+              setRateLimited(true);
             patchLast((m) => ({
               ...m,
               pending: false,

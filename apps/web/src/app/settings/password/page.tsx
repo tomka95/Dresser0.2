@@ -3,21 +3,27 @@
 /**
  * /settings/password — change password.
  *
- * WIRED (real): Supabase auth.updateUser sets the new password on the active
- * session (updatePassword).
- *
- * HONEST: Supabase does NOT verify the current password client-side. Rather than
- * imply a check we can't do, the "current password" field is kept for muscle
- * memory but labeled — it is not verified here.
+ * WIRED (real): re-auth then update. SCRUM-75: the CURRENT password is verified
+ * (verifyCurrentPassword — a throwaway, non-persisting Supabase sign-in that never
+ * touches the active session) BEFORE Supabase auth.updateUser sets the new one, so a
+ * stolen unlocked session can't silently change the password. Repeated wrong-password
+ * attempts are rate-limited with a short client-side lockout (GoTrue also throttles
+ * sign-ins server-side); a wrong current password shows a generic inline error that
+ * leaks nothing about account state.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CircleAlert, Key, Lock } from 'lucide-react';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
-import { updatePassword } from '@/lib/auth';
+import { updatePassword, verifyCurrentPassword } from '@/lib/auth';
 import { AppShell } from '@/components/layout/AppShell';
 import { Btn, Field, TopBar } from '@/components/ds';
+
+// Client-side lockout after too many wrong current-password attempts (defense in depth;
+// GoTrue rate-limits sign-in server-side too).
+const MAX_ATTEMPTS = 5;
+const LOCKOUT_MS = 60_000;
 
 function passwordStrength(pw: string): number {
   let score = 0;
@@ -39,15 +45,47 @@ export default function ChangePasswordPage() {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentError, setCurrentError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [attempts, setAttempts] = useState(0);
+  const [lockUntil, setLockUntil] = useState(0);
+  const [remaining, setRemaining] = useState(0);
 
   const strength = useMemo(() => passwordStrength(next), [next]);
   const tooShort = next.length > 0 && next.length < 8;
 
+  // Tick down the lockout so the button + copy update live.
+  useEffect(() => {
+    if (!lockUntil) return;
+    const tick = () => {
+      const r = Math.max(0, Math.ceil((lockUntil - Date.now()) / 1000));
+      setRemaining(r);
+      if (r === 0) {
+        setLockUntil(0);
+        setAttempts(0);
+      }
+    };
+    tick();
+    const iv = setInterval(tick, 500);
+    return () => clearInterval(iv);
+  }, [lockUntil]);
+
   if (loading || !session) return null;
+
+  const locked = remaining > 0;
+  const email = session.user?.email ?? null;
 
   const handleSubmit = async () => {
     setError(null);
+    setCurrentError(null);
+    if (locked) {
+      setError(`Too many attempts. Try again in ${remaining}s.`);
+      return;
+    }
+    if (!current) {
+      setCurrentError('Enter your current password.');
+      return;
+    }
     if (next.length < 8) {
       setError('New password must be at least 8 characters.');
       return;
@@ -56,8 +94,28 @@ export default function ChangePasswordPage() {
       setError("New passwords don't match.");
       return;
     }
+    if (!email) {
+      setError("Couldn't verify your account. Please sign in again.");
+      return;
+    }
     setBusy(true);
     try {
+      // Re-auth first (SCRUM-75): verify the current password on a throwaway client so
+      // the active session is untouched.
+      const ok = await verifyCurrentPassword(email, current);
+      if (!ok) {
+        const n = attempts + 1;
+        setAttempts(n);
+        if (n >= MAX_ATTEMPTS) {
+          setLockUntil(Date.now() + LOCKOUT_MS);
+          setError('Too many attempts. Please wait a minute and try again.');
+        } else {
+          setCurrentError('Current password is incorrect.');
+        }
+        setBusy(false);
+        return;
+      }
+      setAttempts(0);
       await updatePassword(next);
       setDone(true);
       setTimeout(() => router.push('/settings'), 900);
@@ -74,19 +132,18 @@ export default function ChangePasswordPage() {
         <div className="h-[18px]" />
 
         <div className="flex flex-col" style={{ gap: 14 }}>
-          <div>
-            <Field
-              label="Current password"
-              type="password"
-              value={current}
-              onChange={setCurrent}
-              placeholder="••••••••"
-              icon={<Lock size={16} />}
-            />
-            <div className="mt-1.5 text-[11.5px] leading-snug text-white/[0.36]">
-              For your reference only — it isn&rsquo;t verified here.
-            </div>
-          </div>
+          <Field
+            label="Current password"
+            type="password"
+            value={current}
+            onChange={(v) => {
+              setCurrent(v);
+              if (currentError) setCurrentError(null);
+            }}
+            placeholder="••••••••"
+            icon={<Lock size={16} />}
+            error={currentError ?? undefined}
+          />
 
           <div>
             <Field
@@ -146,10 +203,10 @@ export default function ChangePasswordPage() {
           size="lg"
           className="mt-6"
           pending={busy}
-          disabled={busy || !next || !confirm}
+          disabled={busy || locked || !current || !next || !confirm}
           onClick={handleSubmit}
         >
-          Update password
+          {locked ? `Try again in ${remaining}s` : 'Update password'}
         </Btn>
         <div className="mt-3 text-center text-[11.5px]" style={{ color: 'rgba(255,255,255,0.36)' }}>
           You&rsquo;ll stay signed in on this phone.

@@ -354,8 +354,17 @@ class Settings(BaseSettings):
     # has, so the limiter/quota state lives there (chat_rate_windows/chat_usage).
     CHAT_RATE_LIMIT_PER_MINUTE: int = 10   # fixed 60s window per user
     CHAT_MAX_CONCURRENT_STREAMS: int = 2   # per-user in-flight SSE turns
-    CHAT_DAILY_TURN_QUOTA: int = 60        # free-tier: turns per user per UTC day
-    CHAT_DAILY_COST_QUOTA_USD: float = 0.50  # free-tier: $ per user per UTC day
+    # Free-tier: 20 stylist messages per user per day (SCRUM-44; matches the locked
+    # UI copy FREE_DAILY_MESSAGES). The "day" boundary is the user's local day when
+    # facts.location.timezone is set, else UTC (see app.core.usage_windows).
+    CHAT_DAILY_TURN_QUOTA: int = 20        # free-tier: turns per user per (local) day
+    CHAT_DAILY_COST_QUOTA_USD: float = 0.50  # free-tier: $ per user per day (cost backstop)
+
+    # Free-tier: 30 photo generations per user per month (SCRUM-44; matches the locked
+    # UI copy "30 photos a month"). Counts only SUCCESSFUL generations (a failed
+    # generate->verify never burns quota). The "month" boundary is the user's local
+    # month when facts.location.timezone is set, else UTC (app.core.usage_windows).
+    PHOTO_MONTHLY_QUOTA: int = 30
 
     # Retention TTL for conversations (rolling: each message pushes it forward).
     CHAT_RETENTION_DAYS: int = 90

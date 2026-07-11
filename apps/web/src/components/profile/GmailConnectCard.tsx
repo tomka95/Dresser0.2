@@ -168,6 +168,7 @@ export function GmailConnectCard({ email, lastSyncAt, itemCount, initialConnecte
         email={email}
         lastSyncLabel={lastSync}
         itemCount={itemCount}
+        onDisconnected={refresh}
       />
     </div>
   );

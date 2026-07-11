@@ -222,6 +222,22 @@ export async function fetchGmailConnectionStatus(): Promise<GmailConnectionStatu
   return response.json();
 }
 
+/**
+ * Revoke the Gmail grant at Google AND wipe stored tokens (SCRUM-51). Mirrors
+ * disconnectCalendar. Idempotent server-side. Already-ingested closet items and the
+ * dedup ledger are preserved — reconnecting never re-imports what was already seen.
+ */
+export async function disconnectGmail(): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated. Please sign in first.');
+
+  const response = await fetch(`${API_BASE_URL}/gmail/oauth/disconnect`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error('Could not disconnect Gmail. Please try again.');
+}
+
 export interface GmailClothingItem {
   name: string;
   store: string | null;
@@ -499,6 +515,14 @@ export async function commitPhotoIngest(
   if (!response.ok) {
     if (response.status === 410) {
       throw new PhotoSessionExpiredError();
+    }
+    // Monthly photo quota reached (SCRUM-44): surface the locked "30 photos a month"
+    // copy. The message reads like a limit so the review screen's looksLikeQuota()
+    // shows the RateLimitState template instead of a raw error string.
+    if (response.status === 429) {
+      throw new Error(
+        'You’ve reached your monthly photo limit — free plans tailor 30 photos a month. Yours resets soon.',
+      );
     }
     const error = await response.json().catch(() => ({}));
     if (Array.isArray(error.detail)) {

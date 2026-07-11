@@ -589,11 +589,15 @@ async def regenerate_item_image_endpoint(
     MANDATORY either way (never bypassed) and generated output must be person-free; the
     current image is KEPT until a new one passes verify (never blanked). An uploaded
     reference goes through validate_and_sanitize (magic-byte, EXIF strip, HEIC, size cap).
-    A regenerate COUNTS toward the monthly photo quota (SCRUM-44)."""
+    A regenerate COUNTS toward the monthly photo quota (SCRUM-44): over-quota callers
+    get a 429 here; the counter is bumped only when the regeneration actually succeeds
+    (in run_item_regeneration), so a failed generate->verify never burns quota."""
     # Late imports keep the module's import graph light + mirror the photo_ingest pattern.
+    from app.core.usage_windows import tz_name_from_facts
     from app.platform.jobs import enqueue
     from app.photo_closet.generation_service import regenerate_item_background
-    from app.photo_closet.quota import record_photo_usage
+    from app.photo_closet.quota import PhotoQuotaExceeded, check_photo_quota
+    from app.services.closet_canonicalize import load_user_facts
     from app.utils.image_validation import ImageValidationError, validate_and_sanitize
 
     item = (
@@ -606,6 +610,17 @@ async def regenerate_item_image_endpoint(
         raise HTTPException(
             status_code=404,
             detail=f"Clothing item {item_id} not found or access denied",
+        )
+
+    # QUOTA (SCRUM-44): reject over-quota BEFORE any generation work. The month
+    # boundary honours the user's tz (facts.location.timezone), else UTC.
+    tz_name = tz_name_from_facts(load_user_facts(db, current_user.id))
+    try:
+        check_photo_quota(db, current_user.id, tz_name=tz_name)
+    except PhotoQuotaExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={"limit": exc.limit, "used": exc.used, "resets_at": exc.resets_at},
         )
 
     # Sanitize the reason (defense-in-depth; prompt fences it again as untrusted).
@@ -627,10 +642,6 @@ async def regenerate_item_image_endpoint(
     # in-flight state immediately WITHOUT blanking the card — image_url is untouched.
     item.generation_status = "generating"
     db.commit()
-
-    # QUOTA (SCRUM-44): record the regenerate against the monthly photo-usage counter so
-    # enforcement is wired the moment it lands. Best-effort — never blocks the action.
-    record_photo_usage(db, current_user.id, photos=1, regenerations=1)
 
     # Dispatch: durable queue when enabled (mirrors the commit path), else BackgroundTasks.
     payload = {"user_id": str(current_user.id), "item_id": str(item.id)}

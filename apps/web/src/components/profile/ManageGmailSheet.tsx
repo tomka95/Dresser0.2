@@ -6,17 +6,16 @@
  * WIRED (real):
  *   - Re-sync now (POST /gmail/ingest/start → /review; 409-safe)
  *   - Change permissions (restarts the OAuth consent flow)
- *
- * HONEST-DISABLED:
- *   - Disconnect Gmail — no backend endpoint yet. The control is disabled and
- *     explains how to revoke access from Google in the meantime. Never fakes it.
+ *   - Disconnect Gmail (POST /gmail/oauth/disconnect: revoke at Google + wipe tokens;
+ *     SCRUM-51). Already-ingested items and the dedup ledger are preserved, so a later
+ *     reconnect never re-imports duplicates.
  */
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { RotateCw, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { Btn, M, Sheet } from '@/components/ds';
-import { startGmailConnect, startIngest } from '@/lib/api/gmail';
+import { disconnectGmail, startGmailConnect, startIngest } from '@/lib/api/gmail';
 
 interface ManageGmailSheetProps {
   open: boolean;
@@ -24,6 +23,9 @@ interface ManageGmailSheetProps {
   email?: string | null;
   lastSyncLabel?: string | null;
   itemCount?: number;
+  /** Called after a successful disconnect so the card can re-read status + flip to
+   *  the disconnected state. */
+  onDisconnected?: () => void | Promise<void>;
 }
 
 function ManageRow({
@@ -79,9 +81,16 @@ function ManageRow({
   );
 }
 
-export function ManageGmailSheet({ open, onClose, email, lastSyncLabel, itemCount }: ManageGmailSheetProps) {
+export function ManageGmailSheet({
+  open,
+  onClose,
+  email,
+  lastSyncLabel,
+  itemCount,
+  onDisconnected,
+}: ManageGmailSheetProps) {
   const router = useRouter();
-  const [busy, setBusy] = useState<'resync' | 'scope' | null>(null);
+  const [busy, setBusy] = useState<'resync' | 'scope' | 'disconnect' | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
   const handleResync = async () => {
@@ -107,6 +116,20 @@ export function ManageGmailSheet({ open, onClose, email, lastSyncLabel, itemCoun
       await startGmailConnect(); // full-page redirect to Google consent
     } catch (err) {
       setNote(err instanceof Error ? err.message : 'Could not open Google permissions.');
+      setBusy(null);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (busy) return;
+    setBusy('disconnect');
+    setNote(null);
+    try {
+      await disconnectGmail(); // revoke at Google + wipe tokens (idempotent server-side)
+      await onDisconnected?.(); // re-read status so the card flips to "Connect"
+      onClose();
+    } catch (err) {
+      setNote(err instanceof Error ? err.message : 'Could not disconnect Gmail.');
       setBusy(null);
     }
   };
@@ -144,12 +167,13 @@ export function ManageGmailSheet({ open, onClose, email, lastSyncLabel, itemCoun
 
       <div className="my-2 h-px" style={{ background: 'rgba(255,255,255,0.08)' }} aria-hidden />
 
-      {/* HONEST-DISABLED: no disconnect endpoint yet. */}
+      {/* WIRED: POST /gmail/oauth/disconnect (revoke at Google + wipe tokens). Keeps
+          already-ingested items + the dedup ledger, so a reconnect won't re-import. */}
       <button
         type="button"
-        disabled
-        title="Disconnect coming soon"
-        className="flex w-full cursor-not-allowed items-center gap-3 py-3.5 opacity-60"
+        onClick={handleDisconnect}
+        disabled={busy !== null}
+        className="flex w-full items-center gap-3 py-3.5 disabled:opacity-60"
       >
         <span
           className="flex shrink-0 items-center justify-center rounded-xl"
@@ -159,10 +183,10 @@ export function ManageGmailSheet({ open, onClose, email, lastSyncLabel, itemCoun
         </span>
         <span className="min-w-0 flex-1 text-left">
           <span className="block text-[14.5px] font-medium" style={{ color: '#ff8087' }}>
-            Disconnect Gmail
+            {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect Gmail'}
           </span>
           <span className="mt-0.5 block text-[12px] leading-snug text-white/[0.55]">
-            Coming soon — for now, remove Tailor in your Google account permissions
+            Revokes access at Google. Your imported items stay in your closet.
           </span>
         </span>
       </button>

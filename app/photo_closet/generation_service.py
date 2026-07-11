@@ -83,6 +83,26 @@ def _now_utc():
     return datetime.now(timezone.utc)
 
 
+def _record_photo_success(
+    db: Session, user_id: UUID, *, photos: int = 0, regenerations: int = 0
+) -> None:
+    """Charge the monthly photo quota for SUCCESSFUL generations only (SCRUM-44).
+
+    Central point both orchestrators call (ingest: photos=stats.ready; regenerate:
+    photos=1,regenerations=1). Resolves the user's tz so the count lands in the correct
+    monthly period, then defers to the best-effort ledger upsert. A zero count is a
+    no-op (the ledger guards it too), so a fully-failed run never touches the counter."""
+    if int(photos) <= 0 and int(regenerations) <= 0:
+        return
+    from app.core.usage_windows import tz_name_from_facts
+    from app.photo_closet.quota import record_photo_usage
+
+    tz_name = tz_name_from_facts(load_user_facts(db, user_id))
+    record_photo_usage(
+        db, user_id, photos=photos, regenerations=regenerations, tz_name=tz_name
+    )
+
+
 def _next_failure_status(attempts: int) -> str:
     """Terminal 'failed' once a target has burned its attempt ceiling, else 'pending_retry'.
 
@@ -418,6 +438,11 @@ def run_photo_generation(
 
         # Roll the pair-pass verify cost onto the run (per-model priced).
         record_fill_usage(db, sync_id, usage)
+        # QUOTA (SCRUM-44): charge the monthly photo quota for SUCCESSFUL cards only —
+        # stats.ready counts garments that reached a verified card this pass (a failed
+        # generate->verify contributes 0). This is the sole ingest counting point; the
+        # user-initiated commit route enforces the cap up front.
+        _record_photo_success(db, user_id, photos=stats.ready)
     except Exception as exc:
         logger.error("run_photo_generation sync=%s: %s", sync_id, type(exc).__name__)
     finally:
@@ -1127,6 +1152,10 @@ def run_item_regeneration(
             item.generation_provider = new_provider
             item.generation_cost_usd = cost
             db.commit()
+            # QUOTA (SCRUM-44): a regenerate counts toward the monthly photo quota, but
+            # ONLY on a verified success — this is the success branch, so record here
+            # (a miss returns 'held'/'skipped' below and never reaches this line).
+            _record_photo_success(db, user_id, photos=1, regenerations=1)
             # Shared-cache promote (branded products only): a freshly verified card for
             # this product identity serves future lookups across both pipelines.
             _maybe_promote_card(

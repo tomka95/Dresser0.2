@@ -46,9 +46,10 @@ import {
 
 type CardEdits = Record<string, Record<string, unknown>>;
 
-// UI-only quota affordance. There is NO server quota enforcement (locked copy: free tier
-// tailors "30 photos a month"); this only recognises an error that *reads* like a limit so
-// the RateLimitState template can be shown instead of a raw error string.
+// Server quota enforcement lives on the ingest-commit route (SCRUM-44): a 429 there
+// surfaces the locked "30 photos a month" copy as an error message. This recognises an
+// error that *reads* like a limit so the RateLimitState template is shown instead of a
+// raw error string.
 function looksLikeQuota(msg: string | null): boolean {
   if (!msg) return false;
   return /limit|quota|too many|rate|429|30 photos/i.test(msg);

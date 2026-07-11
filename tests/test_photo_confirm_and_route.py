@@ -395,6 +395,49 @@ def test_route_detect_commit_end_to_end_deck_scoped(db, client, monkeypatch):
     assert len(unscoped) == 1
 
 
+def test_route_commit_over_quota_returns_429(db, client, monkeypatch):
+    """SCRUM-44: a user already at their monthly photo cap is rejected at commit with a
+    429 carrying {limit, used, resets_at} — before any staging/generation work."""
+    from app.core.config import settings
+    from app.photo_closet import generation_service as gen_service
+    from app.photo_closet.quota import record_photo_usage
+
+    monkeypatch.setattr(gen_service, "generation_armed", lambda: False)
+    user, headers = _auth(db, "quota429@example.com")
+    record_photo_usage(db, user.id, photos=settings.PHOTO_MONTHLY_QUOTA)  # burn the allowance
+
+    _patch_detect(monkeypatch, _one_garment_detection())
+    raw = _jpeg()
+    session = _detect_via_route(client, headers, raw)
+    resp = _commit_via_route(client, headers, raw, [
+        {"session_id": session["session_id"], "selected_region_ids": [0]},
+    ])
+    assert resp.status_code == 429, resp.text
+    detail = resp.json()["detail"]
+    assert detail["limit"] == settings.PHOTO_MONTHLY_QUOTA
+    assert detail["used"] == settings.PHOTO_MONTHLY_QUOTA
+    assert detail["resets_at"]  # ISO reset instant present for the UI countdown
+
+
+def test_route_commit_just_under_quota_allowed(db, client, monkeypatch):
+    """At limit-1 the commit still proceeds — the boundary rejects only at/over the cap."""
+    from app.core.config import settings
+    from app.photo_closet import generation_service as gen_service
+    from app.photo_closet.quota import record_photo_usage
+
+    monkeypatch.setattr(gen_service, "generation_armed", lambda: False)
+    user, headers = _auth(db, "underquota@example.com")
+    record_photo_usage(db, user.id, photos=settings.PHOTO_MONTHLY_QUOTA - 1)
+
+    _patch_detect(monkeypatch, _one_garment_detection())
+    raw = _jpeg()
+    session = _detect_via_route(client, headers, raw)
+    resp = _commit_via_route(client, headers, raw, [
+        {"session_id": session["session_id"], "selected_region_ids": [0]},
+    ])
+    assert resp.status_code == 200, resp.text
+
+
 def test_route_commit_second_commit_conflicts_409(db, client, monkeypatch):
     _, headers = _auth(db, "c409@example.com")
     _patch_detect(monkeypatch, _one_garment_detection())
