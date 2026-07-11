@@ -16,17 +16,15 @@ type ClosetStoreSlice = {
   fetchItems: () => void;
 };
 
-// The redesigned page navigates (outfit cards → /outfits/[id]).
+// The page navigates (outfit cards → /outfits/[id]).
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
   usePathname: () => '/outfits',
 }));
 
-// The redesign added a required useRequireAuth() guard to the /outfits list
-// (parity with /outfits/[id]). The component destructures { session, loading }
-// and gates on `loading || !session`, so the mock must resolve to an
-// authenticated, non-loading session (mirrors review.test.tsx). Without this the
-// real hook mounts Supabase auth and every test throws "Supabase is not configured".
+// Auth guard: the component destructures { session, loading } and gates on
+// `loading || !session`, so the mock must resolve to an authenticated,
+// non-loading session (mirrors review.test.tsx).
 vi.mock('@/lib/auth/useRequireAuth', () => ({
   useRequireAuth: () => ({
     session: { user: { id: 'u1' } },
@@ -44,127 +42,123 @@ vi.mock('@/stores/useClosetStore', () => ({
   useClosetStore: vi.fn(),
 }));
 
-// Mock analytics
+// Mock analytics + the worn-feedback client ("Wore it" posts /outfits/feedback).
 vi.mock('@/lib/analytics', () => ({
   track: vi.fn(),
 }));
 
+vi.mock('@/lib/api/outfitFeedback', () => ({
+  sendOutfitFeedback: vi.fn().mockResolvedValue({ ok: true }),
+}));
+
+const CLOSET_ITEM: ClosetItem = {
+  id: 'item-1',
+  userId: 'user-1',
+  name: 'Blue Shirt',
+  category: 'top',
+  imageUrl: 'https://example.com/shirt.jpg',
+  createdAt: '2024-01-01T00:00:00.000Z',
+  updatedAt: '2024-01-01T00:00:00.000Z',
+};
+
+function outfitFixture(overrides: Partial<OutfitSuggestion> = {}): OutfitSuggestion {
+  return {
+    id: '0f6f5c1e-6a1a-4c39-9a10-000000000001',
+    userId: 'user-1',
+    name: 'Weekend Look',
+    occasion: 'Casual',
+    items: [CLOSET_ITEM.id],
+    rationale: null,
+    source: 'composer',
+    status: 'active',
+    isLiked: false,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
 describe('OutfitsPage', () => {
   const mockFetchOutfits = vi.fn();
+  const mockGenerateOutfit = vi.fn().mockResolvedValue(true);
   const mockToggleLike = vi.fn();
+  const mockUnsave = vi.fn();
   const mockFetchClosetItems = vi.fn();
+
+  type OutfitsStoreSlice = {
+    outfits: OutfitSuggestion[];
+    likedOutfits: string[];
+    isLoading: boolean;
+    isGenerating: boolean;
+    error?: string;
+    generateNotice?: string;
+    fetchOutfits: typeof mockFetchOutfits;
+    generateOutfit: typeof mockGenerateOutfit;
+    toggleLike: typeof mockToggleLike;
+    unsave: typeof mockUnsave;
+  };
+
+  function mockOutfitsState(overrides: Partial<OutfitsStoreSlice> = {}) {
+    const state: OutfitsStoreSlice = {
+      outfits: [],
+      likedOutfits: [],
+      isLoading: false,
+      isGenerating: false,
+      error: undefined,
+      generateNotice: undefined,
+      fetchOutfits: mockFetchOutfits,
+      generateOutfit: mockGenerateOutfit,
+      toggleLike: mockToggleLike,
+      unsave: mockUnsave,
+      ...overrides,
+    };
+    vi.mocked(useOutfitsStore).mockImplementation((selector) => selector(state));
+    (useOutfitsStore as unknown as { getState?: () => OutfitsStoreSlice }).getState =
+      () => state;
+  }
+
+  function mockClosetState(items: ClosetItem[] = [], isLoading = false) {
+    (useClosetStore as unknown as Mock).mockImplementation(
+      (selector: (s: ClosetStoreSlice) => unknown) =>
+        selector({ items, isLoading, fetchItems: mockFetchClosetItems })
+    );
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(useOutfitsStore).mockImplementation((selector) => {
-      const state = {
-        outfits: [] as OutfitSuggestion[],
-        likedOutfits: [] as string[],
-        isLoading: false,
-        error: undefined as string | undefined,
-        fetchOutfits: mockFetchOutfits,
-        toggleLike: mockToggleLike,
-      };
-      return selector(state);
-    });
-    (useClosetStore as unknown as Mock).mockImplementation(
-      (selector: (s: ClosetStoreSlice) => unknown) =>
-        selector({ items: [], isLoading: false, fetchItems: mockFetchClosetItems })
-    );
+    mockGenerateOutfit.mockResolvedValue(true);
+    mockOutfitsState();
+    mockClosetState();
   });
 
   it('should render empty state when no outfits', () => {
     render(<OutfitsPage />);
 
     expect(screen.getByText('No outfits yet')).toBeInTheDocument();
-    // Redesigned empty-state CTA copy ("Generate outfits" → "Style me for today").
     expect(screen.getByText('Style me for today')).toBeInTheDocument();
   });
 
   it('should render loading state', () => {
-    vi.mocked(useOutfitsStore).mockImplementation((selector) => {
-      const state = {
-        outfits: [],
-        likedOutfits: [],
-        isLoading: true,
-        error: undefined,
-        fetchOutfits: mockFetchOutfits,
-        toggleLike: mockToggleLike,
-      };
-      return selector(state);
-    });
+    mockOutfitsState({ isLoading: true });
 
     render(<OutfitsPage />);
 
-    // The redesign replaced the loading COPY with a skeleton list (aria-hidden,
-    // no queryable text). The remaining visible loading signal is the header
-    // "New look" action entering its pending state — the label is swapped for
-    // brand dots (so its accessible name goes empty) and the button is disabled.
-    // In the loading branch this is the only button on the page. Assert that real
-    // behavior rather than a piece of gone copy.
+    // Skeleton list (aria-hidden) + the header "New look" button only.
+    expect(screen.queryByText('No outfits yet')).not.toBeInTheDocument();
     const buttons = screen.getAllByRole('button');
     expect(buttons).toHaveLength(1);
-    expect(buttons[0]).toBeDisabled();
   });
 
   it('should render error state', () => {
-    vi.mocked(useOutfitsStore).mockImplementation((selector) => {
-      const state = {
-        outfits: [],
-        likedOutfits: [],
-        isLoading: false,
-        error: 'Failed to load',
-        fetchOutfits: mockFetchOutfits,
-        toggleLike: mockToggleLike,
-      };
-      return selector(state);
-    });
+    mockOutfitsState({ error: 'Failed to load' });
 
     render(<OutfitsPage />);
 
     expect(screen.getByText(/Failed to load/)).toBeInTheDocument();
   });
 
-  it('should render outfit suggestions', () => {
-    const mockOutfits: OutfitSuggestion[] = [
-      {
-        id: 'outfit-1',
-        userId: 'user-1',
-        name: 'Weekend Look',
-        occasion: 'Casual',
-        items: ['item-1'],
-        createdAt: '2024-01-01T00:00:00Z',
-      },
-    ];
-
-    const mockClosetItems: ClosetItem[] = [
-      {
-        id: 'item-1',
-        userId: 'user-1',
-        name: 'Blue Shirt',
-        category: 'top',
-        imageUrl: 'https://example.com/shirt.jpg',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z',
-      },
-    ];
-
-    vi.mocked(useOutfitsStore).mockImplementation((selector) => {
-      const state = {
-        outfits: mockOutfits,
-        likedOutfits: [],
-        isLoading: false,
-        error: undefined,
-        fetchOutfits: mockFetchOutfits,
-        toggleLike: mockToggleLike,
-      };
-      return selector(state);
-    });
-
-    (useClosetStore as unknown as Mock).mockImplementation(
-      (selector: (s: ClosetStoreSlice) => unknown) =>
-        selector({ items: mockClosetItems, isLoading: false, fetchItems: mockFetchClosetItems })
-    );
+  it('should render outfits whose items resolve to real closet items', () => {
+    mockOutfitsState({ outfits: [outfitFixture()] });
+    mockClosetState([CLOSET_ITEM]);
 
     render(<OutfitsPage />);
 
@@ -174,34 +168,30 @@ describe('OutfitsPage', () => {
     expect(screen.getByAltText('Blue Shirt')).toBeInTheDocument();
   });
 
+  it('should NOT render an outfit whose items no longer resolve to the closet', () => {
+    // Real closet is loaded but the outfit references a deleted item — the card
+    // must not render as an empty placeholder (honest-rendering rule).
+    mockOutfitsState({
+      outfits: [outfitFixture({ items: ['gone-item'], name: 'Ghost Look' })],
+    });
+    mockClosetState([CLOSET_ITEM]);
+
+    render(<OutfitsPage />);
+
+    expect(screen.queryByText('Ghost Look')).not.toBeInTheDocument();
+    expect(screen.getByText('No outfits yet')).toBeInTheDocument();
+  });
+
   it('should call fetchOutfits on mount when outfits are empty', () => {
     render(<OutfitsPage />);
 
-    expect(mockFetchOutfits).toHaveBeenCalledWith({ limit: 3 });
+    expect(mockFetchOutfits).toHaveBeenCalled();
   });
 
   it('should handle like button click', async () => {
-    const mockOutfits: OutfitSuggestion[] = [
-      {
-        id: 'outfit-1',
-        userId: 'user-1',
-        name: 'Test Outfit',
-        items: [],
-        createdAt: '2024-01-01T00:00:00Z',
-      },
-    ];
-
-    vi.mocked(useOutfitsStore).mockImplementation((selector) => {
-      const state = {
-        outfits: mockOutfits,
-        likedOutfits: [],
-        isLoading: false,
-        error: undefined,
-        fetchOutfits: mockFetchOutfits,
-        toggleLike: mockToggleLike,
-      };
-      return selector(state);
-    });
+    const outfit = outfitFixture();
+    mockOutfitsState({ outfits: [outfit] });
+    mockClosetState([CLOSET_ITEM]);
 
     render(<OutfitsPage />);
 
@@ -209,79 +199,39 @@ describe('OutfitsPage', () => {
     const user = userEvent.setup();
     await user.click(likeButton);
 
-    expect(mockToggleLike).toHaveBeenCalledWith('outfit-1');
+    expect(mockToggleLike).toHaveBeenCalledWith(outfit.id);
   });
 
   it('should show liked state when outfit is liked', () => {
-    const mockOutfits: OutfitSuggestion[] = [
-      {
-        id: 'outfit-1',
-        userId: 'user-1',
-        name: 'Test Outfit',
-        items: [],
-        createdAt: '2024-01-01T00:00:00Z',
-      },
-    ];
-
-    vi.mocked(useOutfitsStore).mockImplementation((selector) => {
-      const state = {
-        outfits: mockOutfits,
-        likedOutfits: ['outfit-1'],
-        isLoading: false,
-        error: undefined,
-        fetchOutfits: mockFetchOutfits,
-        toggleLike: mockToggleLike,
-      };
-      return selector(state);
-    });
+    const outfit = outfitFixture({ isLiked: true });
+    mockOutfitsState({ outfits: [outfit], likedOutfits: [outfit.id] });
+    mockClosetState([CLOSET_ITEM]);
 
     render(<OutfitsPage />);
 
     expect(screen.getByRole('button', { name: 'Unlike outfit' })).toBeInTheDocument();
   });
 
-  it('should handle regenerate button click', async () => {
+  it('should generate a new look via the real endpoint', async () => {
     const user = userEvent.setup();
 
     render(<OutfitsPage />);
 
-    // Redesigned regenerate action is labelled "New look" (was "Regenerate").
-    // The BEHAVIOR is unchanged: it must still call fetchOutfits({ limit: 3 }).
-    const regenerateButton = screen.getByRole('button', { name: /New look/ });
-    await user.click(regenerateButton);
+    const generateButton = screen.getByRole('button', { name: /Style me for today/ });
+    await user.click(generateButton);
 
-    expect(mockFetchOutfits).toHaveBeenCalledWith({ limit: 3 });
+    expect(mockGenerateOutfit).toHaveBeenCalled();
   });
 
-  it('should render recommended items when present', () => {
-    const mockOutfits: OutfitSuggestion[] = [
-      {
-        id: 'outfit-1',
-        userId: 'user-1',
-        name: 'Test Outfit',
-        items: [],
-        recommendedItems: [
-          { id: 'rec-1', name: 'Recommended Shoe', reason: 'Completes the look' },
-        ],
-        createdAt: '2024-01-01T00:00:00Z',
-      },
-    ];
-
-    vi.mocked(useOutfitsStore).mockImplementation((selector) => {
-      const state = {
-        outfits: mockOutfits,
-        likedOutfits: [],
-        isLoading: false,
-        error: undefined,
-        fetchOutfits: mockFetchOutfits,
-        toggleLike: mockToggleLike,
-      };
-      return selector(state);
+  it('should surface the honest composer gap note', () => {
+    mockOutfitsState({
+      generateNotice: 'Your closet is missing a footwear for this.',
     });
 
     render(<OutfitsPage />);
 
-    // The AI strip renders "Add {name} to finish this look".
-    expect(screen.getByText(/recommended shoe/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Your closet is missing a footwear/)
+    ).toBeInTheDocument();
   });
 });

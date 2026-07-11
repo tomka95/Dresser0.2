@@ -13,11 +13,14 @@ export { logEvent, startSession, getSessionId } from '@/lib/api/events';
 // Legacy free-form `track()` names that correspond 1:1 to a backend taxonomy type.
 // Only these are forwarded to /events; other names stay console-only so we never
 // POST an event the server would reject with a 422.
+//
+// outfit_liked / outfit_unliked are deliberately NOT forwarded: likes persist
+// server-side (PUT/DELETE /outfits/{id}/like) and the SERVER emits outfit_rated
+// with the real saved_outfits id — a client-forwarded copy would double-count
+// and, in the mock era, carried fabricated outfit ids.
 const FORWARDED_EVENTS: Record<string, string> = {
   outfit_shown: 'outfit_shown',
   outfit_suggestions_viewed: 'outfit_shown',
-  outfit_liked: 'outfit_accept',
-  outfit_unliked: 'outfit_reject',
 };
 
 export function track(event: string, props?: Record<string, any>): void {

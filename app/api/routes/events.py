@@ -31,10 +31,12 @@ from app.core.config import settings
 from app.dependencies import get_current_user, get_db
 from app.models import User
 from app.services.events_service import (
+    _OUTFIT_ENTITY_TYPES,
     EventValidationError,
     log_events,
     normalize_client_event,
     owned_item_ids_in,
+    owned_outfit_ids_in,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,10 +128,22 @@ def ingest_events(
                 raise HTTPException(status_code=422, detail="itemId is not a valid UUID")
     owned = owned_item_ids_in(db, current_user.id, referenced)
 
+    # Same prefetch for outfit-typed entity ids: an outfit subject must be one of
+    # the caller's own saved_outfits rows (fabricated outfit ids -> 422).
+    referenced_outfits: set[UUID] = set()
+    for e in raw_events:
+        if e.get("entityType") in _OUTFIT_ENTITY_TYPES and e.get("entityId"):
+            try:
+                referenced_outfits.add(UUID(str(e["entityId"])))
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=422, detail="entityId is not a valid UUID")
+    owned_outfits = owned_outfit_ids_in(db, current_user.id, referenced_outfits)
+
     try:
         normalized = [
             normalize_client_event(
-                e, db=db, user_id=current_user.id, owned_item_ids=owned
+                e, db=db, user_id=current_user.id, owned_item_ids=owned,
+                owned_outfit_ids=owned_outfits,
             )
             for e in raw_events
         ]

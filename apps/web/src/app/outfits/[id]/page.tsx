@@ -1,24 +1,25 @@
 'use client';
 
 /**
- * /outfits/[id] — outfit detail (the Home AI-suggestion destination), design restyle.
- * FRONTEND-ONLY composition: the outfit comes from the MOCK suggestions store,
- * item rows use REAL closet items, the "finish the look" strip is the mock shop
- * catalog, and Save / Wear today are LOCAL actions (no outfit backend yet) — the
- * microcopy says so ("Saved on this device" / "wear history coming soon").
+ * /outfits/[id] — outfit detail, wired to the real outfits backend.
+ *
+ * The outfit is a real saved_outfits row (from the store, hydrated by GET
+ * /outfits); item rows are real closet items; the heart persists server-side;
+ * "Wearing this" posts the real worn feedback (/outfits/feedback) and Remove
+ * unsaves the row. Swap hands off to the stylist, which owns the swap loop.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, CloudSun } from 'lucide-react';
+import { Check } from 'lucide-react';
 
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
+import { sendOutfitFeedback } from '@/lib/api/outfitFeedback';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useOutfitsStore } from '@/stores/useOutfitsStore';
 import { AppShell } from '@/components/layout/AppShell';
 import { ItemImage } from '@/components/ui/ItemImage';
 import { Btn, Icon, M, RoundBtn, StateBlock, StylistMark, TopBar } from '@/components/ds';
-import { SHOP_PRODUCTS } from '@/lib/mock/shop';
 
 interface OutfitDetailPageProps {
   params: { id: string };
@@ -34,6 +35,7 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
   const outfitsLoading = useOutfitsStore((state) => state.isLoading);
   const likedOutfits = useOutfitsStore((state) => state.likedOutfits);
   const toggleLike = useOutfitsStore((state) => state.toggleLike);
+  const unsave = useOutfitsStore((state) => state.unsave);
 
   const closetItems = useClosetStore((state) => state.items);
   const fetchClosetItems = useClosetStore((state) => state.fetchItems);
@@ -43,7 +45,7 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
 
   useEffect(() => {
     if (!isAuth) return;
-    if (outfits.length === 0 && !outfitsLoading) fetchOutfits({ limit: 3 });
+    if (outfits.length === 0 && !outfitsLoading) fetchOutfits();
     if (!hasFetchedItems) fetchClosetItems();
   }, [isAuth, outfits.length, outfitsLoading, fetchOutfits, hasFetchedItems, fetchClosetItems]);
 
@@ -54,7 +56,6 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
   const outfitItems = (outfit?.items ?? [])
     .map((id) => closetMap.get(id))
     .filter((i): i is NonNullable<typeof i> => !!i);
-  const shopAdd = SHOP_PRODUCTS[1];
 
   if (loading || !isAuth) return null;
 
@@ -76,7 +77,7 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
               />
             }
             title="This look is gone"
-            sub="It was regenerated away, or the link is stale. Your lookbook has the rest."
+            sub="It was removed, or the link is stale. Your lookbook has the rest."
             cta={
               <Btn variant="primary" size="md" onClick={() => router.push('/outfits')}>
                 Back to Lookbook
@@ -108,11 +109,11 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
             <RoundBtn
               size={40}
               on={liked}
-              aria-label={liked ? 'Saved on this device' : 'Save on this device'}
+              aria-label={liked ? 'Unlike outfit' : 'Like outfit'}
               aria-pressed={liked}
-              title={liked ? 'Saved on this device' : 'Save on this device'}
+              title={liked ? 'Liked' : 'Like this look'}
               style={{ borderRadius: 14 }}
-              onClick={() => toggleLike(outfit.id)}
+              onClick={() => void toggleLike(outfit.id)}
               icon={<Icon name="InterfaceHeart02" size={17} />}
             />
           }
@@ -173,45 +174,26 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
           </div>
         ) : (
           <p className="m-0 text-[13.5px] text-white/50">
-            None of this look&rsquo;s items are in your closet yet.
+            None of this look&rsquo;s items are in your closet anymore.
           </p>
         )}
 
-        {/* Weather stamp — HONEST: there's no weather backend yet, so this is a
-            placeholder styling stamp, not a fabricated live reading. */}
-        <div className="mt-3.5 flex items-center gap-2">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full text-[11.5px] font-semibold"
-            style={{
-              padding: '5px 12px',
-              background: 'rgba(255,255,255,0.06)',
-              border: '1px solid rgba(255,255,255,0.12)',
-              color: 'rgba(255,255,255,0.8)',
-            }}
-            title="Live weather styling is coming soon — this is a placeholder"
-          >
-            <CloudSun size={13} style={{ color: 'var(--mint)' }} /> Weather-aware
-          </span>
-          <span className="text-[11.5px]" style={{ color: M.faint }}>
-            Live weather coming soon
-          </span>
-        </div>
-
-        {/* AI note */}
+        {/* AI note — the composer's real rationale when it has one. */}
         <div style={{ ...M.ai(22), padding: '14px 16px', marginTop: 14 }} className="flex gap-3">
           <span style={{ color: 'var(--mint)', marginTop: 2 }}>
             <StylistMark size={14} />
           </span>
           <div className="text-[13px]" style={{ color: M.soft, lineHeight: 1.55 }}>
-            {its.length > 0
-              ? `${its.length} piece${its.length === 1 ? '' : 's'} from your closet${outfit.occasion ? `, styled for ${outfit.occasion.toLowerCase()}` : ''}.`
-              : 'Add these pieces to your closet and Tailor will style around them.'}
+            {outfit.rationale
+              ? outfit.rationale
+              : its.length > 0
+                ? `${its.length} piece${its.length === 1 ? '' : 's'} from your closet${outfit.occasion ? `, styled for ${outfit.occasion.toLowerCase()}` : ''}.`
+                : 'These pieces are no longer in your closet, so Tailor can’t restyle this look.'}
           </div>
         </div>
 
         {/* Item rows — tap the row to open the piece; the swap glyph routes to
-            the stylist (HONEST: there's no in-place outfit-edit backend, so
-            swap-per-piece hands off to chat, which owns the real swap loop). */}
+            the stylist (which owns the real swap loop). */}
         {its.length > 0 && (
           <div className="mt-3.5 flex flex-col gap-2.5">
             {its.map((item) => (
@@ -255,30 +237,6 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
           </div>
         )}
 
-        {/* Finish the look — actionable (mock catalog). */}
-        <div className="mt-3.5 rounded-[16px] p-3" style={{ ...M.ai(16) }}>
-          <div className="mb-2.5 flex items-center gap-2">
-            <span style={{ color: 'var(--mint)' }}>
-              <StylistMark size={14} />
-            </span>
-            <span className="text-[13.5px] font-semibold text-white">Finish the look</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="shrink-0 overflow-hidden rounded-[9px]" style={{ width: 50, height: 62 }}>
-              <ItemImage src={shopAdd.img} alt={shopAdd.name} fit="cover" />
-            </div>
-            <div className="flex-1">
-              <div className="text-[14px] font-semibold text-white">{shopAdd.name}</div>
-              <div className="text-[12px]" style={{ color: M.faint }}>
-                {shopAdd.brand} · ${shopAdd.price}
-              </div>
-            </div>
-            <Btn variant="mint" size="sm" onClick={() => router.push(`/shop/${shopAdd.id}`)}>
-              View
-            </Btn>
-          </div>
-        </div>
-
         {actionNote && (
           <p
             className="mt-4 rounded-xl px-3 py-2 text-center text-[12.5px]"
@@ -290,7 +248,7 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
         )}
       </div>
 
-      {/* Bottom action bar — LOCAL only (honest copy). */}
+      {/* Bottom action bar — real, persisted actions. */}
       <div
         className="fixed bottom-0 left-0 right-0 z-40 mx-auto flex max-w-[430px] gap-3"
         style={{ padding: '16px 20px 26px', background: 'linear-gradient(to top, rgba(30,30,30,0.98), transparent)' }}
@@ -298,20 +256,26 @@ export default function OutfitDetailPage({ params }: OutfitDetailPageProps) {
         <Btn
           variant="glass"
           size="lg"
-          onClick={() => {
-            if (!liked) toggleLike(outfit.id);
-            flash('Saved on this device');
+          onClick={async () => {
+            await unsave(outfit.id);
+            router.push('/outfits');
           }}
           style={{ width: 130 }}
         >
-          Save
+          Remove
         </Btn>
         <Btn
           variant="mint"
           size="lg"
           fullWidth
           icon={<Check size={16} />}
-          onClick={() => flash('Marked as today’s look — wear history is coming soon')}
+          onClick={async () => {
+            const ack = await sendOutfitFeedback({
+              feedback: 'worn',
+              savedOutfitId: outfit.id,
+            });
+            flash(ack ? 'Marked as worn — Tailor learns from this' : 'Couldn’t record that right now');
+          }}
         >
           Wearing this
         </Btn>
