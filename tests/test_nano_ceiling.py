@@ -50,23 +50,120 @@ def test_flux2_still_resolves_regardless_of_nano_flag(monkeypatch):
     assert gbase.get_generation_provider("flux2_pro").name == "flux2_pro"
 
 
-def test_t2i_disabled_when_nano_off(monkeypatch):
-    monkeypatch.setattr(settings, "GENERATION_NANO_FALLBACK_ENABLED", False)
-    called = {"gen": 0}
-    import app.services.image_generation.nano_banana as nb
-    monkeypatch.setattr(
-        nb, "generate_text_to_image",
-        lambda *a, **k: called.__setitem__("gen", called["gen"] + 1),
+# --- t2i ladder helpers ----------------------------------------------------
+
+def _t2i_res(provider="flux2_pro"):
+    return GenerationResult(
+        image_bytes=b"img", content_type="image/png", provider=provider,
+        model="m", latency_s=0.1, cost_usd=0.045,
     )
-    gb = GenerationBudget(5)
+
+
+def _t2i_ok():
+    """Single-image verify pass: matches, no person, no invariant violation."""
+    return VerifyVerdict(True, True, True, 0.9, "ok", "m")
+
+
+def _t2i_person():
+    """Person backstop trip: matches but a person is present -> must be rejected."""
+    return VerifyVerdict(True, True, True, 0.9, "person", "m", person_present=True)
+
+
+def _drive_t2i(monkeypatch, *, flux, nano, verdict, nano_flag,
+               store="https://cdn/card.png", budget=5):
+    """Drive generate_from_text with spied FLUX.2 t2i + nano t2i + verify.
+
+    flux/nano: the GenerationResult (or None) each rung returns. nano may be the
+    sentinel '__fail__' to assert the nano rung is NEVER invoked."""
+    import app.services.image_generation.flux2_pro as f2
+    import app.services.image_generation.nano_banana as nb
+    seen = {"flux": 0, "nano": 0}
+
+    class _FakeFlux:
+        def generate_text_to_image(self, prompt):
+            seen["flux"] += 1
+            return flux
+
+    def _nano_t2i(prompt, **k):
+        seen["nano"] += 1
+        if nano == "__fail__":
+            pytest.fail("nano t2i invoked despite the OFF ceiling")
+        return nano
+
+    monkeypatch.setattr(settings, "GENERATION_NANO_FALLBACK_ENABLED", nano_flag)
+    monkeypatch.setattr(f2, "Flux2ProProvider", _FakeFlux)
+    monkeypatch.setattr(nb, "generate_text_to_image", _nano_t2i)
+    monkeypatch.setattr(gc, "verify_image", lambda **k: verdict)
+    monkeypatch.setattr(gc, "_store", lambda sc, uid, data, ct: store)
+    gb = GenerationBudget(budget)
     out = gc.generate_from_text(
         name="Tee", category="top", color="red", brand=None,
         storage_client=object(), user_id=uuid4(),
         gen_budget=gb, verify_budget=VerifyBudget(5), usage=UsageAccumulator(),
     )
+    return out, seen, gb
+
+
+def test_t2i_uses_flux2_when_nano_off(monkeypatch):
+    """THE fix: nano off -> FLUX.2 t2i runs FIRST (off-cap), verifies, item -> ready.
+    Nano t2i is NEVER touched on the happy path."""
+    out, seen, gb = _drive_t2i(
+        monkeypatch, flux=_t2i_res(), nano="__fail__", verdict=_t2i_ok(),
+        nano_flag=False,
+    )
+    assert out.outcome == "ready"
+    assert out.url == "https://cdn/card.png"
+    assert out.provider == "flux2_pro"       # BFL, not nano
+    assert seen["flux"] == 1                  # FLUX.2 t2i attempted
+    assert seen["nano"] == 0                  # nano never called (off + not needed)
+    assert gb.remaining == 4                  # exactly one generation call charged
+
+
+def test_t2i_nano_rung_skipped_but_flux_runs_when_flag_off(monkeypatch):
+    """Nano off + FLUX.2 t2i FAILS -> nano rung is SKIPPED (not called), item held.
+    Proves the flag gates only the nano rung, and the FLUX rung still runs."""
+    out, seen, gb = _drive_t2i(
+        monkeypatch, flux=None, nano="__fail__", verdict=_t2i_ok(), nano_flag=False,
+    )
     assert out.outcome == "held"
-    assert called["gen"] == 0            # nano t2i NEVER invoked
-    assert gb.remaining == 5             # no budget consumed on the disabled path
+    assert seen["flux"] == 1                  # FLUX.2 t2i WAS attempted (not gated)
+    assert seen["nano"] == 0                  # nano rung skipped (flag off)
+    assert gb.remaining == 4                  # only the FLUX call was charged
+
+
+def test_t2i_advances_to_nano_when_flag_on_and_flux_fails(monkeypatch):
+    """Flag ON + FLUX.2 t2i fails -> nano t2i rung runs as the on-cap fallback."""
+    out, seen, gb = _drive_t2i(
+        monkeypatch, flux=None, nano=_t2i_res(provider="nano_banana"),
+        verdict=_t2i_ok(), nano_flag=True,
+    )
+    assert out.outcome == "ready"
+    assert out.provider == "nano_banana"
+    assert seen["flux"] == 1 and seen["nano"] == 1
+    assert gb.remaining == 3                  # two generation calls charged
+
+
+def test_t2i_person_backstop_absolute(monkeypatch):
+    """Person in the FLUX.2 t2i output -> rejected even though it 'matches'. With nano
+    off there is no fallback, so the item is held (never a person leaks to ready)."""
+    out, seen, _ = _drive_t2i(
+        monkeypatch, flux=_t2i_res(), nano="__fail__", verdict=_t2i_person(),
+        nano_flag=False,
+    )
+    assert out.outcome == "held"
+    assert out.url is None
+    assert seen["flux"] == 1                  # generated, but person-gated
+    assert seen["nano"] == 0
+
+
+def test_t2i_budget_zero_is_budget_outcome(monkeypatch):
+    """No budget for even the first (FLUX) call -> 'budget', no calls made."""
+    out, seen, _ = _drive_t2i(
+        monkeypatch, flux=_t2i_res(), nano="__fail__", verdict=_t2i_ok(),
+        nano_flag=False, budget=0,
+    )
+    assert out.outcome == "budget"
+    assert seen["flux"] == 0 and seen["nano"] == 0
 
 
 # ===========================================================================

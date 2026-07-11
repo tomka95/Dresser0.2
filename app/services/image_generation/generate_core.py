@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 # Same live ladder as the photo path: FLUX.2 [pro] first (BFL, OFF the Gemini cap),
 # nano_banana (Gemini, ON-cap) only as the verify-fail retry.
 _LADDER: Tuple[str, ...] = ("flux2_pro", "nano_banana")
+# TEXT->IMAGE ladder (imageless items: no crop, no reference). FLUX.2 [pro] t2i first
+# (BFL, OFF the Gemini cap — runs regardless of the nano flag), nano_banana t2i (Gemini,
+# ON-cap) only when the flag is on. The nano flag skips ONLY its own rung; it must never
+# disable the off-cap FLUX.2 rung (that regression stranded 16 imageless Gmail items).
+_T2I_LADDER: Tuple[str, ...] = ("flux2_t2i", "nano_banana")
 _SUFFIX_BY_CT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
@@ -237,56 +242,70 @@ def generate_from_text(
 ) -> GenOutcome:
     """TEXT→IMAGE product image from attributes (no reference), verify, store.
 
-    The last generation rung of the fallback ladder — used when there is no crop / no
-    usable source image at all. Because there is no reference to compare against, the gate
-    is the single-image verify_image PLUS an explicit no-person requirement (person_present
-    must be false). NEVER raises."""
-    # HARD NANO CEILING (second gate): t2i is nano-only and bypasses the
-    # get_generation_provider dispatch, so it is gated here with the SAME flag. Off ->
-    # no t2i generation happens at all (an imageless item simply stays pending rather
-    # than incurring an on-cap charge). No budget is consumed on the disabled path.
-    if not nano_fallback_enabled():
-        logger.info("t2i: nano_banana fallback DISABLED -> no t2i generation")
-        return GenOutcome("held")
-    if not gen_budget.take():
-        return GenOutcome("budget")
-    from app.services.image_generation.nano_banana import generate_text_to_image
+    The generation rung used when there is no crop / no usable source image at all. Walks
+    the T2I LADDER: FLUX.2 [pro] t2i FIRST (off-cap — attempted regardless of the nano
+    flag), then nano_banana t2i (on-cap — SKIPPED entirely when nano_fallback_enabled() is
+    false). Because there is no reference to compare against, EACH candidate is gated on the
+    single-image verify_image PLUS an explicit no-person requirement (person_present must be
+    false). NEVER raises.
 
-    result = generate_text_to_image(build_t2i_prompt(name, category, color, brand, steering))
-    if result is None:
-        return GenOutcome("held")
-    verdict = verify_image(
-        image_bytes=result.image_bytes,
-        content_type=result.content_type,
-        category=category,
-        color=color,
-        name=name,
-        budget=verify_budget,
-        usage=usage,
-    )
-    # MANDATORY invariant gate (verify_image surfaces these but folds none of them into
-    # matches — the email tiers judge REAL retailer images with different rules — so the
-    # t2i caller enforces every generated-image hard gate here): expected garment/color
-    # match, NO person, NO extra items, off-white background, catalog framing.
-    if (
-        not verdict.matches
-        or verdict.person_present
-        or verdict.extra_items_present
-        or not verdict.background_offwhite_ok
-        or not verdict.framing_ok
-    ):
-        return GenOutcome("held")
-    url = _store(storage_client, user_id, result.image_bytes, result.content_type)
-    if not url:
-        return GenOutcome("held")
-    return GenOutcome(
-        "ready",
-        url=url,
-        content_sha256=hashlib.sha256(result.image_bytes).hexdigest(),
-        verify_score=float(verdict.score or 0.0),
-        cost_usd=float(result.cost_usd or 0.0),
-        provider=getattr(result, "provider", "nano_banana"),
-    )
+    NANO FLAG SCOPE: the flag's only job is to gate the nano rung. It NEVER disables the
+    off-cap FLUX.2 rung — so an imageless item still generates when nano is off. Budget
+    counts ACTUAL generation calls (one take() per rung attempted)."""
+    prompt = build_t2i_prompt(name, category, color, brand, steering)
+    calls_made = 0
+    for rung in _T2I_LADDER:
+        if rung == "nano_banana" and not nano_fallback_enabled():
+            # On-cap nano t2i: skip ONLY this rung when the flag is off. The off-cap
+            # FLUX.2 rung above is never gated on the flag.
+            continue
+        if not gen_budget.take():
+            break  # per-run generation-call ceiling hit
+        calls_made += 1
+        if rung == "flux2_t2i":
+            from app.services.image_generation.flux2_pro import Flux2ProProvider
+            result = Flux2ProProvider().generate_text_to_image(prompt)
+        else:  # nano_banana
+            from app.services.image_generation.nano_banana import generate_text_to_image
+            result = generate_text_to_image(prompt)
+        if result is None:
+            continue  # provider failure / missing key -> next rung
+        verdict = verify_image(
+            image_bytes=result.image_bytes,
+            content_type=result.content_type,
+            category=category,
+            color=color,
+            name=name,
+            budget=verify_budget,
+            usage=usage,
+        )
+        # MANDATORY invariant gate (verify_image surfaces these but folds none of them into
+        # matches — the email tiers judge REAL retailer images with different rules — so the
+        # t2i caller enforces every generated-image hard gate here): expected garment/color
+        # match, NO person, NO extra items, off-white background, catalog framing. A miss on
+        # ANY of these -> advance to the next rung (the image is genuinely unusable).
+        if (
+            not verdict.matches
+            or verdict.person_present
+            or verdict.extra_items_present
+            or not verdict.background_offwhite_ok
+            or not verdict.framing_ok
+        ):
+            continue
+        url = _store(storage_client, user_id, result.image_bytes, result.content_type)
+        if not url:
+            break  # passed verify but storage down -> hold (no second gen charge)
+        return GenOutcome(
+            "ready",
+            url=url,
+            content_sha256=hashlib.sha256(result.image_bytes).hexdigest(),
+            verify_score=float(verdict.score or 0.0),
+            cost_usd=float(result.cost_usd or 0.0),
+            provider=getattr(result, "provider", rung),
+        )
+    # No rung produced a verified image. Budget denied before any call -> 'budget'
+    # (caller treats as capped); any call attempted but no pass -> 'held'.
+    return GenOutcome("budget" if calls_made == 0 else "held")
 
 
 # Photo-seam Phase 2: build_t2i_prompt moved to app.services.image_generation.prompt so

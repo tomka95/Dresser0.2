@@ -230,8 +230,9 @@ def get_generation_provider(name: Optional[str] = None) -> GenerationProvider:
     # HARD NANO CEILING — the single dispatch gate. nano_banana (on-cap, $0.134) is
     # NEVER instantiated unless GENERATION_NANO_FALLBACK_ENABLED is true. Every ladder
     # caller resolves each rung through here, so one gate covers worker / self-heal /
-    # manual / backfill / regenerate. (The t2i entry — generate_from_text — bypasses
-    # this dispatch and is gated separately at its own call site with the same flag.)
+    # manual / backfill / regenerate. (The t2i entry — generate_from_text — runs its own
+    # ladder and gates ONLY its nano rung with this flag; its off-cap FLUX.2 t2i rung is
+    # never gated here.)
     if resolved == "nano_banana" and not nano_fallback_enabled():
         logger.info("generation: nano_banana fallback DISABLED -> null provider (off-cap only)")
         return NullGenerationProvider()

@@ -91,6 +91,29 @@ def test_flux2_conditions_on_reference_and_prices(monkeypatch):
     assert body["output_format"] == "jpeg"
 
 
+def test_flux2_text_to_image_omits_input_image(monkeypatch):
+    """The t2i entry submits a PURE text body — no input_image — to the same endpoint,
+    reuses the poll/fetch path, and prices/labels the same off-cap provider."""
+    fake = _FakeClient()
+    monkeypatch.setattr(f2, "_client", lambda: fake)
+
+    result = f2.Flux2ProProvider().generate_text_to_image("a red cotton t-shirt, catalog")
+
+    assert result is not None
+    assert result.provider == "flux2_pro" and result.model == "flux-2-pro"
+    assert result.cost_usd == pytest.approx(settings.FLUX2_PRO_USD_PER_IMAGE)
+    body = fake.submitted_json
+    assert "input_image" not in body           # pure t2i — no reference conditioning
+    assert body["prompt"] == "a red cotton t-shirt, catalog"
+    assert body["output_format"] == "jpeg"
+
+
+def test_flux2_text_to_image_missing_key_returns_none(monkeypatch):
+    monkeypatch.setattr(settings, "BFL_API_KEY", None)
+    monkeypatch.setattr(f2, "_client", lambda: pytest.fail("must not call BFL without a key"))
+    assert f2.Flux2ProProvider().generate_text_to_image("prompt") is None
+
+
 def test_flux2_missing_key_returns_none(monkeypatch):
     monkeypatch.setattr(settings, "BFL_API_KEY", None)
     # Never even builds a client when unconfigured.
