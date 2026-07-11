@@ -1396,6 +1396,15 @@ def _auto_confirm_manual(db: Session, user_id: UUID, cand: IngestCandidate) -> N
             enrich_items_background(str(user_id), item_ids)
         except Exception as exc:  # enrichment is best-effort, never blocks the birth
             logger.warning("manual enrich failed (%s)", type(exc).__name__)
+        # Collage Phase 1 birth hook (manual path): this auto-confirm already runs in
+        # a background generation pass, so matte inline — same best-effort posture as
+        # enrichment above; a failure leaves the item a backfill target.
+        try:
+            from app.services.item_cutout.service import matte_items_background
+
+            matte_items_background(str(user_id), item_ids)
+        except Exception as exc:
+            logger.warning("manual cutout matte failed (%s)", type(exc).__name__)
     logger.info("manual item born user=%s cand=%s items=%d", user_id, cand.id, len(item_ids))
 
 

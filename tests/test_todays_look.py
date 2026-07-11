@@ -232,6 +232,79 @@ def test_no_complete_look_at_any_formality_is_starter(db, user1):
 
 
 # ---------------------------------------------------------------------------
+# Partial looks — compose from AVAILABLE categories; never block on a missing
+# completing piece (e.g. no shoes). A base = a dress, or a top+bottom.
+# ---------------------------------------------------------------------------
+def _netta_closet(db, user):
+    """Netta's EXACT live closet: 4 tops, 2 bottoms, 1 dress, 1 outerwear, and
+    ZERO shoes. Previously returned an empty 'No look yet' despite a complete
+    dress and top+bottom combos."""
+    for i in range(4):
+        _item(db, user, f"Top {i}", "top", formality=2, warmth=2)
+    for i in range(2):
+        _item(db, user, f"Bottom {i}", "bottom", formality=2, warmth=2)
+    _item(db, user, "Summer dress", "dress", formality=2, warmth=1)
+    _item(db, user, "Denim jacket", "outerwear", formality=2, warmth=2)
+    # deliberately NO footwear
+
+
+def test_netta_partial_closet_yields_a_look(db, user1):
+    _netta_closet(db, user1)
+    look = compose_todays_look(db, user1.id, factors=Factors(warmth=2))
+    # A real look, NOT an empty starter — despite owning zero shoes.
+    assert look.kind == "normal"
+    assert len(look.item_ids) >= 2
+    cats = {it["category"] for it in look.items}
+    assert "dress" in cats or {"top", "bottom"} <= cats  # a valid base
+    assert "footwear" not in cats                        # she has none — and that's fine
+
+
+def test_netta_closet_returns_look_via_endpoint(client, db, user1, tok1):
+    """VERIFY: Netta's exact closet returns a look through GET /todays-look."""
+    _netta_closet(db, user1)
+    body = client.get("/todays-look", headers=_auth(tok1)).json()
+    assert body["kind"] == "normal"        # not "starter" -> the tile renders a look
+    assert len(body["itemIds"]) >= 2
+    assert body["collageUrl"] == "https://cdn.test/grid.jpg"
+
+
+def test_dress_only_is_a_complete_look(db, user1):
+    dress = _item(db, user1, "Wrap dress", "dress", formality=2, warmth=1)
+    look = compose_todays_look(db, user1.id, factors=Factors(warmth=1))
+    assert look.kind == "normal"
+    assert look.item_ids == [str(dress.id)]              # the dress alone is the look
+    assert {it["category"] for it in look.items} == {"dress"}
+
+
+def test_top_bottom_no_shoes_yields_look_with_shoe_nudge(db, user1):
+    top = _item(db, user1, "Oxford shirt", "top", formality=2, warmth=2)
+    bottom = _item(db, user1, "Chinos", "bottom", formality=2, warmth=2)
+    look = compose_todays_look(db, user1.id, factors=Factors(warmth=2))
+    assert look.kind == "normal"                          # a look, not a starter
+    assert set(look.item_ids) == {str(top.id), str(bottom.id)}
+    # The optional completing nudge is surfaced — additive, never a blocker.
+    assert look.note == "Add shoes to finish the look."
+    assert "add shoes to finish the look" in look.caption.lower()
+
+
+def test_full_look_has_no_completing_nudge(db, user1):
+    _full_closet(db, user1)  # top + bottom + footwear
+    look = compose_todays_look(db, user1.id, factors=Factors(warmth=2))
+    assert look.kind == "normal"
+    assert look.note is None                              # nothing missing -> no nudge
+    assert "add shoes" not in look.caption.lower()
+
+
+def test_lone_bottom_without_top_is_still_starter(db, user1):
+    # A missing *category* never blocks a look — but a missing BASE does. A bottom
+    # with no top and no dress is not a wearable look.
+    _item(db, user1, "Solo trousers", "bottom", formality=2)
+    look = compose_todays_look(db, user1.id, factors=Factors())
+    assert look.kind == "starter"
+    assert look.note and "shoes" not in look.note.lower()
+
+
+# ---------------------------------------------------------------------------
 # Prefer owned real photos; exclude undergarments / bags / hair accessories
 # ---------------------------------------------------------------------------
 def test_prefers_owned_real_photo_over_imageless(db, user1):
@@ -312,12 +385,13 @@ def test_cache_hit_returns_identical_without_recompute(client, db, user1, tok1):
 
 
 def test_grid_collage_background_is_warm_offwhite():
-    # grid-v3: a CLEARLY warm off-white (#F3EEE6) that visibly differs from white
-    # and from the near-white porcelain.
+    # grid-v6 (Collage Phase 2): still the CLEARLY warm off-white (#F3EEE6) that
+    # visibly differs from white and from the near-white porcelain; version
+    # bumped so every pre-v2 cached card re-renders through the new compositor.
     assert collage_mod._GRID_BG == (243, 238, 230)
     assert collage_mod._GRID_BG != (255, 255, 255)
     assert collage_mod._GRID_BG != collage_mod._CANVAS
-    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v5"
+    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v6"
 
 
 def test_grid_collage_dimensions_are_two_by_one():
@@ -326,17 +400,18 @@ def test_grid_collage_dimensions_are_two_by_one():
 
     png = _tiny_png()
     data = collage_mod.compose_grid([
-        Image.open(io.BytesIO(png)).convert("RGB") for _ in range(3)
+        (slot, Image.open(io.BytesIO(png)).convert("RGB"))
+        for slot in ("top", "bottom", "footwear")
     ])
     w, h = Image.open(io.BytesIO(data)).size
     assert (w, h) == (1080, 540)
     assert round(w / h, 3) == 2.0
 
 
-def test_knockout_preserves_interior_light_regions():
-    # A light-grey garment on a white JPEG bg, with a WHITE patch inside it (like
-    # light denim / a white sneaker body). The border-connected flood fill must
-    # remove the outer white but PRESERVE the enclosed interior white — no hole.
+def test_unmatted_item_renders_flat_never_keyed():
+    # Collage Phase 2: the render-time color key is GONE. An opaque display
+    # image (no stored matte) renders FLAT — its own pixels survive verbatim
+    # inside a rounded tile; nothing is knocked out, shredded, or re-keyed.
     from PIL import Image, ImageDraw
 
     img = Image.new("RGB", (200, 200), (255, 255, 255))  # white bg (no alpha)
@@ -344,13 +419,13 @@ def test_knockout_preserves_interior_light_regions():
     d.rectangle((40, 40, 159, 159), fill=(180, 180, 180))   # the garment
     d.rectangle((85, 85, 114, 114), fill=(255, 255, 255))   # interior white patch
 
-    canvas_bg = (243, 238, 230)
-    flat, mask = collage_mod._normalize_item(img, canvas_bg)
-    assert mask is not None  # a cutout was produced
-    cw, ch = flat.size
-    r, g, b = flat.getpixel((cw // 2, ch // 2))[:3]
-    # Interior stayed WHITE (blue ~255), NOT punched to the canvas bg (blue 230).
-    assert b >= 246, f"interior white was keyed out to the canvas (got {(r, g, b)})"
+    rgb, mask, is_cutout = collage_mod._prepare_cell(img)
+    assert is_cutout is False                      # opaque -> flat tile, not a cutout
+    assert rgb.getpixel((100, 100)) == (255, 255, 255)   # interior white untouched
+    assert rgb.getpixel((4, 4)) == (255, 255, 255)       # its own bg survives (flat)
+    # the mask is the rounded TILE (near-fully opaque), not a garment key-out
+    hist = mask.histogram()
+    assert hist[255] > 0.9 * (200 * 200)
 
 
 def test_collage_version_bump_invalidates_cache(client, db, user1, tok1, monkeypatch):

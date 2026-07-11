@@ -1,6 +1,8 @@
-"""Wave S3 outfit lookbook card: background unification, band hierarchy,
-graceful degradation, item-set caching, and the compose_outfit attach point
-(completeness-gated, incognito-off).
+"""Wave S3 outfit lookbook card, v2 (Collage Phase 2): stored-alpha
+compositing (the render-time color key is deleted), flat-tile fallback for
+un-matted items, band hierarchy, item-set caching (cutout-aware), category
+scale + baseline anchoring + the one synthetic shadow on the grid, and the
+compose_outfit attach point (completeness-gated, incognito-off).
 """
 
 import io
@@ -39,6 +41,14 @@ def _product_shot(color, bg=(255, 255, 255), size=(400, 500), inset=80):
     """A synthetic product photo: solid garment rectangle on its own bg."""
     img = Image.new("RGB", size, bg)
     img.paste(color, (inset, inset, size[0] - inset, size[1] - inset))
+    return img
+
+
+def _cutout_shot(color, size=(400, 500), inset=80):
+    """A synthetic STORED MATTE (Phase 1 shape): solid garment rectangle with
+    real alpha — transparent everywhere else."""
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    img.paste(color + (255,), (inset, inset, size[0] - inset, size[1] - inset))
     return img
 
 
@@ -95,28 +105,40 @@ def test_card_geometry_and_bands():
     assert b.height - a.height == _BAND_GAP + _MINOR_H
 
 
-def test_backgrounds_unified_to_canvas():
-    # Mismatched source backgrounds (pure white / grey / warm) must all land
-    # on ONE porcelain field — corners, gutters, and cell interiors alike.
+def test_matted_items_unify_on_canvas_via_stored_alpha():
+    # Collage Phase 2: unification comes from the STORED MATTES, not a render-
+    # time key. Cutouts with real alpha land on ONE porcelain field — corners,
+    # gutters, and everything the sources' transparent regions covered.
     data = compose_lookbook([
-        ("top", _product_shot(RED, bg=(255, 255, 255))),
-        ("bottom", _product_shot(BLUE, bg=(214, 214, 214))),
-        ("footwear", _product_shot(GREEN, bg=(246, 241, 232))),
+        ("top", _cutout_shot(RED)),
+        ("bottom", _cutout_shot(BLUE)),
+        ("footwear", _cutout_shot(GREEN)),
     ])
     out = Image.open(io.BytesIO(data)).convert("RGB")
     assert _close(out.getpixel((4, 4)), _CANVAS)
     assert _close(out.getpixel((out.width - 5, out.height - 5)), _CANVAS)
     assert _close(out.getpixel((out.width // 2, out.height - _PAD // 2)), _CANVAS)
-    # Sources' own bg colors must not survive anywhere as large fields: the
-    # grey (214) band would sit right of center in the hero band if unwashed.
-    # (214 is far from the rule/eyebrow neutrals, so the title band can't trip this.)
-    grey_box = _color_extent(out, (214, 214, 214), tol=6)
-    assert grey_box is None or (
-        (grey_box[2] - grey_box[0]) * (grey_box[3] - grey_box[1]) < 40 * 40
-    )
+    # Garments composite; no source background exists to survive.
+    assert _color_extent(out, RED) is not None
+    assert _color_extent(out, BLUE) is not None
 
 
-def test_garments_survive_knockout():
+def test_cutout_routes_via_stored_alpha_not_a_key():
+    # A stored matte routes through the alpha path; an opaque JPEG-like image
+    # routes to the flat tile. NOTHING is ever color-keyed at render time.
+    rgb, mask, is_cutout = collage._prepare_cell(_cutout_shot(RED))
+    assert is_cutout is True
+    # trimmed to the garment's alpha bbox (+small margin), not the full frame
+    assert rgb.size[0] < 400 and rgb.size[1] < 500
+
+    rgb2, mask2, is_cutout2 = collage._prepare_cell(_product_shot(RED))
+    assert is_cutout2 is False
+    assert rgb2.size == (400, 500)  # flat tile keeps the photo verbatim
+    # flat tile's own bg pixel is untouched (no knockout to canvas)
+    assert rgb2.getpixel((4, 4)) == (255, 255, 255)
+
+
+def test_garments_survive_compositing():
     data = compose_lookbook([("top", _product_shot(RED)),
                              ("bottom", _product_shot(BLUE))])
     out = Image.open(io.BytesIO(data)).convert("RGB")
@@ -141,9 +163,9 @@ def test_hero_larger_than_accessory():
     assert minor_box[1] > hero_box[3]
 
 
-def test_busy_photo_falls_back_unwashed():
-    # A scene with no uniform border (noise) must not be knocked out — it is
-    # pasted as-is rather than shredded by a bad mask.
+def test_busy_photo_renders_flat_never_shredded():
+    # v2: any opaque image — however busy — is a flat tile, pasted as-is.
+    # There is no key left to shred it with.
     import random
 
     rng = random.Random(7)
@@ -154,6 +176,110 @@ def test_busy_photo_falls_back_unwashed():
     out = Image.open(io.BytesIO(data)).convert("RGB")
     # the busy tile survives as a dense multicolor region (its extent exists)
     assert out.width == _W
+
+
+# ---------------------------------------------------------------------------
+# Grid v2 (grid-v6): category scale, baseline anchoring, the one shadow,
+# cutout-aware cache keys, render speed, generation-free.
+# ---------------------------------------------------------------------------
+def test_grid_category_scale_and_baseline_anchor():
+    # A sneaker must NOT render as tall as a shirt (spike cause 4), and it sits
+    # LOW (baseline-anchored), not floating on the midline.
+    data = collage.compose_grid([
+        ("top", _cutout_shot(RED)),
+        ("bottom", _cutout_shot(BLUE)),
+        ("footwear", _cutout_shot(GREEN)),
+    ])
+    out = Image.open(io.BytesIO(data)).convert("RGB")
+    top_box = _color_extent(out, RED)
+    shoe_box = _color_extent(out, GREEN)
+    assert top_box and shoe_box
+    top_h = top_box[3] - top_box[1]
+    shoe_h = shoe_box[3] - shoe_box[1]
+    # category scale: footwear (0.36) is well under half the top's height (0.66)
+    assert shoe_h < top_h * 0.75
+    # baseline anchor: the shoe's bottom edge sits near 0.86 * H, i.e. clearly
+    # BELOW the top's bottom edge (the top is centered on the midline)
+    assert shoe_box[3] > top_box[3]
+    assert abs(shoe_box[3] - int(0.86 * collage._GRID_H)) < 20
+
+
+def test_grid_synthetic_shadow_grounds_cutouts():
+    # One soft shadow, slightly right+down of the garment: a pixel just below
+    # the cutout is darker than the pristine canvas far away.
+    data = collage.compose_grid([("top", _cutout_shot(RED))])
+    out = Image.open(io.BytesIO(data)).convert("RGB")
+    box = _color_extent(out, RED)
+    assert box
+    below = out.getpixel(((box[0] + box[2]) // 2 + 4, min(box[3] + 8, collage._GRID_H - 1)))
+    corner = out.getpixel((4, 4))
+    assert _close(corner, collage._GRID_BG, tol=6)          # canvas pristine
+    assert sum(below) < sum(corner) - 10                    # shadow present
+    # and the shadow is subtle grounding, not a black blob
+    assert sum(below) > sum(corner) - 90
+
+
+def test_grid_cache_key_invalidates_when_matte_lands():
+    user = uuid.uuid4()
+    item = _fake_item("http://cdn/a.jpg")
+    before = collage._grid_key(user, [("top", item)])
+    item.cutout_status = "ready"
+    item.cutout_url = "http://cdn/cutouts/a.png"
+    after = collage._grid_key(user, [("top", item)])
+    assert before != after  # a landing matte re-renders the card
+
+
+def test_matted_item_downloads_cutout_and_falls_back_flat(monkeypatch):
+    # cutout_status='ready' -> the stored matte is fetched (first); if that
+    # download fails, the item falls back to its display image (flat tile) —
+    # never dropped, never keyed.
+    fetched = []
+
+    def fake_download(url):
+        fetched.append(url)
+        if "cutouts" in url and "dead" not in url:
+            return (_png_bytes(_cutout_shot(RED)), "image/png")
+        if "dead" in url:
+            return None
+        return (_png_bytes(_product_shot(BLUE)), "image/png")
+
+    monkeypatch.setattr(collage, "_download", fake_download)
+
+    matted = _fake_item("http://cdn/a.jpg")
+    matted.cutout_status = "ready"
+    matted.cutout_url = "http://cdn/cutouts/a.png"
+    img = collage._fetch_item_image(matted)
+    assert fetched[0] == "http://cdn/cutouts/a.png"
+    assert collage._source_alpha(img) is not None  # the stored matte won
+
+    broken = _fake_item("http://cdn/b.jpg")
+    broken.cutout_status = "ready"
+    broken.cutout_url = "http://cdn/cutouts/dead.png"
+    img2 = collage._fetch_item_image(broken)
+    assert img2 is not None
+    assert collage._source_alpha(img2) is None     # fell back to the flat display image
+
+
+def test_grid_render_is_fast_and_generation_free():
+    # STAYS PURE: a full 4-cell render completes well under the 1s budget, and
+    # the module never touches a generation provider (the rejected option).
+    import inspect
+    import time
+
+    cells = [
+        ("top", _cutout_shot(RED)),
+        ("bottom", _cutout_shot(BLUE)),
+        ("outerwear", _product_shot(GREEN)),   # flat-tile path too
+        ("footwear", None),                    # placeholder path too
+    ]
+    t0 = time.perf_counter()
+    data = collage.compose_grid(cells)
+    assert time.perf_counter() - t0 < 1.0
+    assert data
+
+    src = inspect.getsource(collage)
+    for forbidden in ("generate_core", "nano_banana", "flux", "genai", "GenerationRequest"):
+        assert forbidden not in src
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +384,9 @@ def test_cache_key_semantics():
     assert key != outfit_collage_key(user, [a])             # membership
     changed = SimpleNamespace(id=a.id, image_url="http://cdn/a-v2.jpg")
     assert key != outfit_collage_key(user, [changed, b])    # image version
+    matted = SimpleNamespace(id=a.id, image_url=a.image_url,
+                             cutout_url="http://cdn/cutouts/a.png")
+    assert key != outfit_collage_key(user, [matted, b])     # a matte landing re-keys
     assert key != outfit_collage_key(user, [a, b], occasion="brunch")  # title
     # occasion normalization: whitespace/case/snake_case fold into the same key
     assert outfit_collage_key(user, [a, b], occasion=" Brunch ") == \

@@ -105,6 +105,13 @@ class ClothingItem(Base):
         CheckConstraint(
             "person_status IN ('unknown','person_present','person_free')",
             name='person_status'),
+        # Item-cutout lifecycle (Collage Phase 1, migration 0042). Named CHECK (not
+        # diffed by autogenerate). NULL = never matted (backfill target); 'ready' =
+        # cutout_url holds the stored true-alpha PNG; 'no_matte' = the QA gate refused
+        # every matte — the collage renders this item FLAT on its own tile.
+        CheckConstraint(
+            "cutout_status IS NULL OR cutout_status IN ('ready','no_matte')",
+            name='cutout_status'),
         # --- AI Stylist universal garment schema (Wave S0, migration 0018) --------
         # Named CHECKs (not diffed by autogenerate). category is a SUPERSET: the
         # canonical 12 + the legacy aliases ('shoes','accessories','other') that still
@@ -247,6 +254,15 @@ class ClothingItem(Base):
     # non-generated (e.g. gmail retailer-image) item. Redaction-safe.
     generation_provider = Column(Text, nullable=True)
     generation_cost_usd = Column(Numeric, nullable=True)
+
+    # Item cutout (Collage Phase 1, migration 0042): TRUE-ALPHA matte of this item's
+    # display card, matted ONCE at birth (confirm chokepoint background task) or by the
+    # backfill sweep — local u2net ONNX, QA-gated, never derived at render time again.
+    # cutout_url = the stored item_cutouts/{user_id}/ PNG; cutout_status per the CHECK
+    # above. The matte source is always display_image_url (fail-closed), so a person or
+    # raw crop can never end up inside a stored cutout.
+    cutout_url = Column(Text, nullable=True)
+    cutout_status = Column(Text, nullable=True)
 
     # Photo-seam Phase 6b (migration 0038): EXPLICIT, provable quarantine — a row
     # the backfill sweep judged non-wearable (junk mis-filed as a closet item, e.g.
