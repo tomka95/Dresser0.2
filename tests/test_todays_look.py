@@ -312,12 +312,13 @@ def test_cache_hit_returns_identical_without_recompute(client, db, user1, tok1):
 
 
 def test_grid_collage_background_is_warm_offwhite():
-    # grid-v3: a CLEARLY warm off-white (#F3EEE6) that visibly differs from white
-    # and from the near-white porcelain.
+    # grid-v6 (Collage Phase 2): still the CLEARLY warm off-white (#F3EEE6) that
+    # visibly differs from white and from the near-white porcelain; version
+    # bumped so every pre-v2 cached card re-renders through the new compositor.
     assert collage_mod._GRID_BG == (243, 238, 230)
     assert collage_mod._GRID_BG != (255, 255, 255)
     assert collage_mod._GRID_BG != collage_mod._CANVAS
-    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v5"
+    assert collage_mod._GRID_LAYOUT_VERSION == "grid-v6"
 
 
 def test_grid_collage_dimensions_are_two_by_one():
@@ -326,17 +327,18 @@ def test_grid_collage_dimensions_are_two_by_one():
 
     png = _tiny_png()
     data = collage_mod.compose_grid([
-        Image.open(io.BytesIO(png)).convert("RGB") for _ in range(3)
+        (slot, Image.open(io.BytesIO(png)).convert("RGB"))
+        for slot in ("top", "bottom", "footwear")
     ])
     w, h = Image.open(io.BytesIO(data)).size
     assert (w, h) == (1080, 540)
     assert round(w / h, 3) == 2.0
 
 
-def test_knockout_preserves_interior_light_regions():
-    # A light-grey garment on a white JPEG bg, with a WHITE patch inside it (like
-    # light denim / a white sneaker body). The border-connected flood fill must
-    # remove the outer white but PRESERVE the enclosed interior white — no hole.
+def test_unmatted_item_renders_flat_never_keyed():
+    # Collage Phase 2: the render-time color key is GONE. An opaque display
+    # image (no stored matte) renders FLAT — its own pixels survive verbatim
+    # inside a rounded tile; nothing is knocked out, shredded, or re-keyed.
     from PIL import Image, ImageDraw
 
     img = Image.new("RGB", (200, 200), (255, 255, 255))  # white bg (no alpha)
@@ -344,13 +346,13 @@ def test_knockout_preserves_interior_light_regions():
     d.rectangle((40, 40, 159, 159), fill=(180, 180, 180))   # the garment
     d.rectangle((85, 85, 114, 114), fill=(255, 255, 255))   # interior white patch
 
-    canvas_bg = (243, 238, 230)
-    flat, mask = collage_mod._normalize_item(img, canvas_bg)
-    assert mask is not None  # a cutout was produced
-    cw, ch = flat.size
-    r, g, b = flat.getpixel((cw // 2, ch // 2))[:3]
-    # Interior stayed WHITE (blue ~255), NOT punched to the canvas bg (blue 230).
-    assert b >= 246, f"interior white was keyed out to the canvas (got {(r, g, b)})"
+    rgb, mask, is_cutout = collage_mod._prepare_cell(img)
+    assert is_cutout is False                      # opaque -> flat tile, not a cutout
+    assert rgb.getpixel((100, 100)) == (255, 255, 255)   # interior white untouched
+    assert rgb.getpixel((4, 4)) == (255, 255, 255)       # its own bg survives (flat)
+    # the mask is the rounded TILE (near-fully opaque), not a garment key-out
+    hist = mask.histogram()
+    assert hist[255] > 0.9 * (200 * 200)
 
 
 def test_collage_version_bump_invalidates_cache(client, db, user1, tok1, monkeypatch):
