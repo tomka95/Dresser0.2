@@ -414,6 +414,19 @@ class Settings(BaseSettings):
     DISTILL_SESSION_IDLE_MINUTES: int = 30
     DISTILL_SWEEP_MAX_SESSIONS: int = 20
 
+    # --- Item cutouts (Collage Phase 1) --------------------------------------
+    # TRUE-ALPHA garment mattes, computed ONCE per item at image-birth (confirm
+    # chokepoint background task) or by scripts/backfill_cutouts.py — u2net via
+    # onnxruntime, LOCAL CPU, $0 marginal, no generation API, never per collage
+    # render. Kill-switch: OFF makes the birth hook + backfill inert (items stay
+    # cutout_status NULL, i.e. remain backfill targets; nothing else changes).
+    CUTOUT_MATTING_ENABLED: bool = True
+    # Approved decision: u2net ONLY (no dual-model fallback — QA-refused mattes go
+    # 'no_matte' and render flat). A rembg model name; weights land in U2NET_HOME
+    # (default ~/.u2net) on first session init — point U2NET_HOME at a persistent
+    # volume in deploy. See app/services/item_cutout/engine.py for the full shape.
+    CUTOUT_MODEL: str = "u2net"
+
     # --- Durable job queue (P3.8, ARCHITECTURE_AUDIT R1, Wave 1) ------------
     # A Postgres-native durable queue (jobs table, claimed via FOR UPDATE SKIP
     # LOCKED, reclaimed after a crash by a stale-lock sweep) replaces the

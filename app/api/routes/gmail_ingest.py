@@ -646,6 +646,16 @@ def confirm_ingest_candidates(
         background_tasks.add_task(
             enrich_items_background, str(current_user.id), written_ids,
         )
+        # Collage Phase 1 birth hook: matte each newborn item's display card to a
+        # stored true-alpha cutout (local u2net, $0, off the response path — same
+        # in-process BackgroundTasks shape as enrichment). Best-effort: a matting
+        # failure leaves cutout_status NULL for the backfill sweep, never fails
+        # the confirm.
+        from app.services.item_cutout.service import matte_items_background
+
+        background_tasks.add_task(
+            matte_items_background, str(current_user.id), written_ids,
+        )
 
     # --- Interaction telemetry (Wave S0 Branch C) ---------------------------
     # Server-derived: the swipe decisions that reached the closet. Accept -> `save`
