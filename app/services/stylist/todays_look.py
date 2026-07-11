@@ -319,6 +319,20 @@ class TodaysLook:
 _STARTER_NOTE = (
     "Add a few more pieces and Tailor can build you a full look for the day."
 )
+# Additive completing nudge for a based look that owns no shoes — never a blocker.
+_SHOE_NUDGE = "Add shoes to finish the look."
+
+
+def _has_wearable_base(outfit: ComposedOutfit) -> bool:
+    """The minimum that reads as an outfit: a dress on its own, OR a top+bottom pair.
+
+    Today's Look treats FOOTWEAR AS OPTIONAL — many real closets own zero shoes — so a
+    based look whose ONLY remaining gap is footwear is still a complete look. Every
+    other missing required slot (a base half) still blocks. This rule is LOCAL to
+    Today's Look; the shared ``compose_outfit`` stays strict about footwear gaps so
+    chat keeps reporting them honestly (see module docstring)."""
+    slots = set(outfit.slots)
+    return "dress" in slots or {"top", "bottom"} <= slots
 
 
 def _item_payload(item) -> Dict[str, Any]:
@@ -344,8 +358,12 @@ def _finalize(
     item_ids = [str(it.id) for _slot, it in ordered]
 
     # Completeness — not "sufficient" (which folds in occasion-fit confidence).
-    # A complete look below the day's ideal formality is STILL a real look.
-    starter = (not outfit.slots) or bool(outfit.gaps)
+    # A complete look below the day's ideal formality is STILL a real look. Footwear
+    # is OPTIONAL here: a wearable base (dress, or top+bottom) with ONLY a footwear gap
+    # is a real look; a missing base half (or no items) is a starter.
+    based = _has_wearable_base(outfit)
+    non_footwear_gaps = [g for g in outfit.gaps if g != "footwear"]
+    starter = (not outfit.slots) or (not based) or bool(non_footwear_gaps)
     kind = "starter" if starter else "normal"
 
     collage_url: Optional[str] = None
@@ -366,6 +384,15 @@ def _finalize(
     if extra_note and not starter:
         caption = f"{caption}  {extra_note}".strip()
 
+    # Note: starter -> the add-pieces prompt; a based look missing only shoes -> the
+    # completing nudge (folded into the caption, mirroring extra_note); otherwise none.
+    note: Optional[str] = None
+    if starter:
+        note = _STARTER_NOTE
+    elif based and "footwear" not in outfit.slots:
+        note = _SHOE_NUDGE
+        caption = f"{caption}  {note}".strip()
+
     return TodaysLook(
         kind=kind,
         outfit=outfit,
@@ -377,7 +404,7 @@ def _finalize(
         occasion=factors.occasion,
         warmth=factors.warmth,
         formality=composed.used_formality,
-        note=_STARTER_NOTE if starter else None,
+        note=note,
     )
 
 
