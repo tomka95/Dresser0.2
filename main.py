@@ -31,6 +31,7 @@ from app.api.routes import (
     gmail_oauth,
     onboarding,
     outfit_feedback,
+    outfits,
     photo_ingest,
     profile_style,
     shop,
@@ -100,6 +101,9 @@ app.include_router(chat.router)
 
 # Outfit feedback -> learning (Wave S3: reject/modify/worn -> preference_signals)
 app.include_router(outfit_feedback.router)
+
+# Lookbook backend (list / generate-on-demand / like / unsave over saved_outfits)
+app.include_router(outfits.router)
 
 # Shopping feed (Wave F2: closet-aware Stage-1 ranker -> GET /shop mixed cards)
 app.include_router(shop.router)

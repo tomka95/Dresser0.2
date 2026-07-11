@@ -349,9 +349,12 @@ def _finalize(
     no_persist: bool,
     *,
     extra_note: Optional[str] = None,
+    with_collage: bool = True,
 ) -> TodaysLook:
     """Build the response object from a composed result — kind, collage, title,
-    caption. Shared by GET and Remix so their kind/collage rules match exactly."""
+    caption. Shared by GET and Remix so their kind/collage rules match exactly.
+    ``with_collage=False`` skips the grid render entirely (Lookbook cards draw
+    per-item thumbnails, so composing a collage there is pure waste)."""
     outfit = composed.outfit
     ordered = _ordered_items(outfit)
     items = [_item_payload(it) for _slot, it in ordered]
@@ -367,7 +370,7 @@ def _finalize(
     kind = "starter" if starter else "normal"
 
     collage_url: Optional[str] = None
-    if outfit.slots:
+    if outfit.slots and with_collage:
         try:
             collage_url = get_or_create_grid_collage(
                 user_id, outfit.slots, no_persist=no_persist
@@ -436,6 +439,45 @@ def compose_todays_look(
         owned=owned,
     )
     return _finalize(user_id, composed, factors, no_persist)
+
+
+def compose_lookbook_look(
+    db: Session,
+    user_id: UUID,
+    *,
+    occasion: Optional[str] = None,
+    exclude_item_ids: Optional[List[UUID]] = None,
+) -> TodaysLook:
+    """On-demand Lookbook generate: the SAME weather + calendar + profile factors
+    and formality step-down pipeline as Today's Look, with two differences:
+
+      * an explicit ``occasion`` (when the user asked for one) replaces the
+        calendar-derived occasion — the composer's occasion-family hard rules
+        (athletic etc.) then apply exactly as they do in chat;
+      * no collage — Lookbook cards render per-item closet thumbnails.
+
+    Honesty contract unchanged: ``kind='starter'`` (with ``outfit.gaps``) when the
+    closet can't complete a look; the caller must surface that, never force-fill.
+    """
+    profile = assemble_profile(db, user_id)
+    factors = derive_factors(db, user_id, profile)
+    if occasion:
+        # The request's occasion replaces the calendar's, and the calendar-derived
+        # formality goes with it — it described today's schedule, not this ask.
+        # The step-down ladder then runs unconstrained ([None]), so the composer's
+        # own occasion scoring/family rules decide.
+        factors.occasion = occasion
+        factors.formality_target = None
+    owned = _load_owned(db, user_id)
+    composed = _compose_best(
+        db, user_id, profile,
+        warmth=factors.warmth,
+        occasion=factors.occasion,
+        derived_formality=factors.formality_target,
+        request_exclude=set(exclude_item_ids or []),
+        owned=owned,
+    )
+    return _finalize(user_id, composed, factors, False, with_collage=False)
 
 
 # Slot swap priority for Remix: vary the most-swappable slot first, and keep sole

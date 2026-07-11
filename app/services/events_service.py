@@ -219,12 +219,21 @@ def log_events(db: Session, user_id: UUID, events: Iterable[Dict[str, Any]]) -> 
     return count
 
 
+# Client-POSTed entity types whose entity_id MUST reference one of the caller's
+# own saved_outfits rows. This closes the fabricated-outfit-id door: in the mock
+# era the web client attached likes to outfit UUIDs that existed nowhere, and
+# nothing rejected them. Server-derived emitters are unaffected (they only ever
+# pass freshly-flushed row ids).
+_OUTFIT_ENTITY_TYPES = frozenset({"saved_outfit", "outfit"})
+
+
 def normalize_client_event(
     raw: Dict[str, Any],
     *,
     db: Session,
     user_id: UUID,
     owned_item_ids: set[UUID],
+    owned_outfit_ids: Optional[set[UUID]] = None,
 ) -> Dict[str, Any]:
     """Validate one UNTRUSTED client event into log_event kwargs.
 
@@ -232,12 +241,15 @@ def normalize_client_event(
       * event_type must be in the taxonomy,
       * item_id (if given) must belong to ``user_id`` — a client cannot attach an
         event to another user's item,
+      * an outfit entityId (entityType in _OUTFIT_ENTITY_TYPES) must reference one
+        of the caller's saved_outfits rows — fabricated outfit subjects are
+        rejected, never stored,
       * properties are sanitized/size-capped,
       * user_id can NEVER come from the payload (ignored if present).
 
-    ``owned_item_ids`` is the pre-fetched set of the caller's item ids referenced
-    across the batch, so ownership is checked with one query, not one-per-event.
-    Raises EventValidationError.
+    ``owned_item_ids`` / ``owned_outfit_ids`` are the pre-fetched sets of the
+    caller's ids referenced across the batch, so ownership is checked with one
+    query each, not one-per-event. Raises EventValidationError.
     """
     event_type = raw.get("eventType") or raw.get("event_type")
     if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
@@ -256,6 +268,15 @@ def normalize_client_event(
     for name, val in (("entityType", entity_type), ("source", source)):
         if val is not None and not isinstance(val, str):
             raise EventValidationError(f"{name} must be a string")
+
+    # Outfit subjects must be REAL: an outfit-typed entity_id has to reference one
+    # of the caller's own saved_outfits rows (same non-leaking posture as itemId).
+    if entity_type in _OUTFIT_ENTITY_TYPES and entity_id is not None:
+        outfit_id = _coerce_uuid(entity_id, "entityId")
+        if outfit_id not in (owned_outfit_ids or set()):
+            raise EventValidationError(
+                "entityId does not reference one of your saved outfits"
+            )
 
     return {
         "event_type": event_type,
@@ -276,6 +297,24 @@ def owned_item_ids_in(db: Session, user_id: UUID, item_ids: Iterable[UUID]) -> s
     rows = (
         db.query(ClothingItem.id)
         .filter(ClothingItem.user_id == user_id, ClothingItem.id.in_(ids))
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def owned_outfit_ids_in(
+    db: Session, user_id: UUID, outfit_ids: Iterable[UUID]
+) -> set[UUID]:
+    """Return the subset of ``outfit_ids`` that are ``user_id``'s saved_outfits
+    rows (one query) — the ownership prefetch for outfit-typed entity ids."""
+    from app.models import SavedOutfit
+
+    ids = {i for i in outfit_ids if i is not None}
+    if not ids:
+        return set()
+    rows = (
+        db.query(SavedOutfit.id)
+        .filter(SavedOutfit.user_id == user_id, SavedOutfit.id.in_(ids))
         .all()
     )
     return {r[0] for r in rows}

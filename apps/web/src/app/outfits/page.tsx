@@ -1,11 +1,14 @@
 'use client';
 
 /**
- * /outfits — Lookbook (design restyle).
+ * /outfits — Lookbook, wired to the real outfits backend.
  *
- * Data is the MOCK suggestions store (no outfits backend yet); likes are
- * client-side only ("Saved on this device"). Closet thumbnails are REAL item
- * images. Auth-guarded to match /outfits/[id].
+ * Data is GET /outfits (saved_outfits: chat saves, worn Today's Looks, composer
+ * generates); "New look" is POST /outfits/generate through the same composer +
+ * weather + Style Profile pipeline as Today's Look. Likes persist server-side
+ * (PUT/DELETE /outfits/{id}/like). Every card references real closet items —
+ * an outfit whose items no longer resolve to the closet is not rendered, and a
+ * closet that can't complete a look surfaces the composer's honest gap note.
  */
 
 import { useEffect, useMemo } from 'react';
@@ -13,6 +16,7 @@ import { useRouter } from 'next/navigation';
 import { Check } from 'lucide-react';
 
 import { track } from '@/lib/analytics';
+import { sendOutfitFeedback } from '@/lib/api/outfitFeedback';
 import { useRequireAuth } from '@/lib/auth/useRequireAuth';
 import { useClosetStore } from '@/stores/useClosetStore';
 import { useOutfitsStore } from '@/stores/useOutfitsStore';
@@ -34,15 +38,18 @@ import {
 export default function OutfitsPage() {
   const router = useRouter();
 
-  // Auth guard — parity with /outfits/[id] (the list had none before).
+  // Auth guard — parity with /outfits/[id].
   const { session, loading } = useRequireAuth();
   const isAuth = !!session;
 
   const outfits = useOutfitsStore((state) => state.outfits);
   const likedOutfits = useOutfitsStore((state) => state.likedOutfits);
   const isLoading = useOutfitsStore((state) => state.isLoading);
+  const isGenerating = useOutfitsStore((state) => state.isGenerating);
   const error = useOutfitsStore((state) => state.error);
+  const generateNotice = useOutfitsStore((state) => state.generateNotice);
   const fetchOutfits = useOutfitsStore((state) => state.fetchOutfits);
+  const generateOutfit = useOutfitsStore((state) => state.generateOutfit);
   const toggleLike = useOutfitsStore((state) => state.toggleLike);
 
   const closetItems = useClosetStore((state) => state.items);
@@ -51,18 +58,13 @@ export default function OutfitsPage() {
 
   useEffect(() => {
     if (!isAuth) return;
-    track('outfit_suggestions_viewed', {
-      outfit_count: outfits.length,
-      has_recommended_items: outfits.some(
-        (o) => o.recommendedItems && o.recommendedItems.length > 0
-      ),
-    });
+    track('outfit_suggestions_viewed', { outfit_count: outfits.length });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuth]);
 
   useEffect(() => {
     if (!isAuth) return;
-    if (outfits.length === 0 && !isLoading) fetchOutfits({ limit: 3 });
+    if (outfits.length === 0 && !isLoading) fetchOutfits();
   }, [isAuth, fetchOutfits, isLoading, outfits.length]);
 
   useEffect(() => {
@@ -70,40 +72,35 @@ export default function OutfitsPage() {
     if (closetItems.length === 0 && !closetLoading) fetchClosetItems();
   }, [isAuth, closetItems.length, closetLoading, fetchClosetItems]);
 
-  useEffect(() => {
-    if (outfits.length > 0 && !isLoading) {
-      track('outfit_suggestions_loaded', {
-        count: outfits.length,
-        has_recommended_items: outfits.some(
-          (o) => o.recommendedItems && o.recommendedItems.length > 0
-        ),
-        total_recommended_items: outfits.reduce(
-          (sum, o) => sum + (o.recommendedItems?.length || 0),
-          0
-        ),
-      });
-    }
-  }, [outfits, isLoading]);
-
   const closetMap = useMemo(
     () => new Map(closetItems.map((item) => [item.id, item])),
     [closetItems]
   );
 
-  async function handleRegenerate() {
+  // HONEST RENDERING: a card exists only when its outfit still resolves to at
+  // least one real closet item (items can be archived/deleted after a save).
+  const renderableOutfits = useMemo(
+    () =>
+      outfits.filter((outfit) =>
+        outfit.items.some((itemId) => closetMap.has(itemId))
+      ),
+    [outfits, closetMap]
+  );
+
+  async function handleGenerate() {
     track('outfit_regenerate_clicked');
-    try {
-      await fetchOutfits({ limit: 3 });
-    } catch (err) {
-      track('outfit_regenerate_failed', {
-        error: err instanceof Error ? err.message : 'Unknown error',
-      });
+    const added = await generateOutfit();
+    if (!added) {
+      const { error: err } = useOutfitsStore.getState();
+      if (err) track('outfit_regenerate_failed', { error: err });
     }
   }
 
   if (loading || !isAuth) return null;
 
-  const showEmpty = outfits.length === 0 && !isLoading && !error;
+  const busy = isLoading || closetLoading;
+  const showEmpty =
+    renderableOutfits.length === 0 && !busy && !isGenerating && !error;
 
   return (
     <AppShell>
@@ -122,28 +119,39 @@ export default function OutfitsPage() {
             variant="glass"
             size="sm"
             icon={<StylistMark size={13} />}
-            onClick={handleRegenerate}
-            pending={isLoading}
+            onClick={handleGenerate}
+            pending={isGenerating}
           >
             New look
           </Btn>
         </div>
 
+        {/* Honest composer gap — the closet can't complete a look right now. */}
+        {generateNotice && (
+          <p
+            className="mt-3 rounded-xl px-3 py-2 text-[12.5px]"
+            style={{ background: 'var(--tr-10)', color: 'rgba(255,255,255,0.75)' }}
+            role="status"
+          >
+            {generateNotice}
+          </p>
+        )}
+
         {/* Loading */}
-        {isLoading && outfits.length === 0 && (
+        {busy && renderableOutfits.length === 0 && (
           <div className="mt-4">
             <SkList n={3} />
           </div>
         )}
 
         {/* Error */}
-        {error && outfits.length === 0 && (
+        {error && renderableOutfits.length === 0 && !busy && (
           <div className="mt-6">
             <ErrorState
               compact
               title="Couldn’t load your looks"
               sub={`${error}. Your closet is safe.`}
-              onRetry={handleRegenerate}
+              onRetry={() => fetchOutfits()}
             />
           </div>
         )}
@@ -157,7 +165,7 @@ export default function OutfitsPage() {
               title="No outfits yet"
               sub="Ask the stylist for a look, or let Tailor propose one from today's weather."
               cta={
-                <Btn variant="mint" size="md" icon={<StylistMark size={13} />} onClick={handleRegenerate}>
+                <Btn variant="mint" size="md" icon={<StylistMark size={13} />} onClick={handleGenerate}>
                   Style me for today
                 </Btn>
               }
@@ -171,9 +179,9 @@ export default function OutfitsPage() {
         )}
 
         {/* Populated */}
-        {!showEmpty && !error && outfits.length > 0 && (
+        {renderableOutfits.length > 0 && (
           <div className="mt-3 flex flex-col gap-3">
-            {outfits.map((outfit) => {
+            {renderableOutfits.map((outfit) => {
               const isLiked = likedOutfits.includes(outfit.id);
               const itemsWithData = outfit.items
                 .map((itemId) => closetMap.get(itemId))
@@ -191,7 +199,7 @@ export default function OutfitsPage() {
                   className="flex cursor-pointer items-center gap-3.5"
                   style={{ ...M.glass(24), padding: 14 }}
                 >
-                  {/* 2×2 thumb grid */}
+                  {/* 2×2 thumb grid — always real closet items (filter above). */}
                   <div
                     className="shrink-0"
                     style={{
@@ -232,21 +240,6 @@ export default function OutfitsPage() {
                         +
                       </span>
                     )}
-                    {itemsWithData.length === 0 && (
-                      <span
-                        className="flex items-center justify-center text-[10px]"
-                        style={{
-                          gridColumn: '1 / 3',
-                          gridRow: '1 / 3',
-                          borderRadius: 12,
-                          background: 'rgba(255,255,255,0.05)',
-                          border: '1px dashed rgba(255,255,255,0.18)',
-                          color: M.ghost,
-                        }}
-                      >
-                        no closet items
-                      </span>
-                    )}
                   </div>
 
                   <div className="min-w-0 flex-1">
@@ -261,15 +254,9 @@ export default function OutfitsPage() {
                         {outfit.occasion}
                       </div>
                     )}
-                    {outfit.recommendedItems && outfit.recommendedItems.length > 0 && (
-                      <div className="mt-2 flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--mint)' }}>
-                        <StylistMark size={11} /> Add {outfit.recommendedItems[0].name.toLowerCase()} to finish
-                      </div>
-                    )}
 
-                    {/* Feedback parity with chat — HONEST: these route to the
-                        stylist (which owns the real reject/swap/worn loop).
-                        No persistence is faked here. */}
+                    {/* Wore it hits the REAL feedback loop (/outfits/feedback);
+                        Swap hands off to the stylist, which owns the swap loop. */}
                     <div className="mt-2.5 flex gap-1.5">
                       <Btn
                         variant="mint"
@@ -277,8 +264,11 @@ export default function OutfitsPage() {
                         icon={<Check size={11} />}
                         onClick={(e) => {
                           e.stopPropagation();
-                          track('outfit_feedback_to_chat', { outfit_id: outfit.id, action: 'worn' });
-                          router.push('/chat');
+                          track('outfit_worn_clicked', { outfit_id: outfit.id });
+                          void sendOutfitFeedback({
+                            feedback: 'worn',
+                            savedOutfitId: outfit.id,
+                          });
                         }}
                       >
                         Wore it
@@ -298,20 +288,19 @@ export default function OutfitsPage() {
                     </div>
                   </div>
 
-                  {/* Like — local only ("Saved on this device"). */}
+                  {/* Like — persisted server-side. */}
                   <RoundBtn
                     size={32}
                     on={isLiked}
                     aria-label={isLiked ? 'Unlike outfit' : 'Like outfit'}
                     aria-pressed={isLiked}
-                    title={isLiked ? 'Saved on this device' : 'Save on this device'}
+                    title={isLiked ? 'Liked' : 'Like this look'}
                     onClick={(e) => {
                       e.stopPropagation();
                       const wasLiked = isLiked;
-                      toggleLike(outfit.id);
+                      void toggleLike(outfit.id);
                       track(wasLiked ? 'outfit_unliked' : 'outfit_liked', {
                         outfit_id: outfit.id,
-                        has_recommended_items: (outfit.recommendedItems?.length || 0) > 0,
                         occasion: outfit.occasion,
                       });
                     }}

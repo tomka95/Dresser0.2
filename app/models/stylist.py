@@ -310,6 +310,13 @@ class SavedOutfit(Base):
     # message content. NULL until the first feedback lands.
     feedback = Column(_jsonb(), nullable=True)
 
+    # --- Lookbook like state (migration 0043) --------------------------------
+    # The /outfits heart, persisted server-side (it used to be a client-only
+    # array). liked_at records the last like for analytics recency; cleared on
+    # unlike so it never claims a stale like.
+    is_liked = Column(Boolean, nullable=False, default=False)
+    liked_at = Column(_tstz(), nullable=True)
+
     created_at = Column(_tstz(), default=datetime.utcnow, nullable=False)
 
 
